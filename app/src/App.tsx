@@ -234,17 +234,43 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     level: "warn",
     text: "Loading board...",
   });
+  const [deletedOnDisk, setDeletedOnDisk] = useState(false);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const saveTimerRef = useRef<number | undefined>();
   const applyingRemoteRef = useRef(false);
+  const deletedOnDiskRef = useRef(false);
   const lastLoadedHashRef = useRef<string>("");
   const lastSavedHashRef = useRef<string>("");
+  const currentSceneRef = useRef<{
+    elements: readonly ExcalidrawElement[];
+    appState: Partial<AppState>;
+    files: BinaryFiles;
+  }>({ elements: [], appState: DEFAULT_APP_STATE, files: {} });
+
+  const setDeletedState = useCallback((value: boolean) => {
+    deletedOnDiskRef.current = value;
+    setDeletedOnDisk(value);
+  }, []);
+
+  const markDeletedOnDisk = useCallback(() => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    setDeletedState(true);
+    setStatus({ level: "warn", text: "This board was deleted on disk." });
+  }, [setDeletedState]);
 
   // `recenter` frames the drawing: on first load and when Mermaid brings in new content.
   // Live reloads from agent edits keep the user's current view.
   const applyScene = useCallback((scene: SceneFile, hash: string, recenter = false) => {
     lastLoadedHashRef.current = hash;
     applyingRemoteRef.current = true;
+    currentSceneRef.current = {
+      elements: scene.elements,
+      appState: scene.appState ?? DEFAULT_APP_STATE,
+      files: scene.files ?? {},
+    };
     setInitialData((current) => current ?? { ...scene, scrollToContent: true });
     const api = apiRef.current;
     const files = Object.values(scene.files ?? {});
@@ -270,10 +296,10 @@ const BoardView = ({ boardName }: { boardName: string }) => {
   }, []);
 
   const saveText = useCallback(
-    async (text: string, reason: string) => {
+    async (text: string, reason: string, options: { force?: boolean } = {}) => {
       const persistedText = text.endsWith("\n") ? text : `${text}\n`;
       const hash = textHash(persistedText);
-      if (hash === lastSavedHashRef.current) {
+      if (!options.force && hash === lastSavedHashRef.current) {
         return hash;
       }
 
@@ -368,13 +394,14 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         }
         const scene = sceneFromText(text);
         applyScene(scene, hash);
+        setDeletedState(false);
         setStatus({ level: "ok", text: `Loaded ${boardName}.excalidraw (${reason})` });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setStatus({ level: "error", text: message });
       }
     },
-    [applyScene, boardName, convertMermaidInbox],
+    [applyScene, boardName, convertMermaidInbox, setDeletedState],
   );
 
   const scheduleSave = useCallback(
@@ -383,13 +410,16 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       appState: AppState,
       files: BinaryFiles,
     ) => {
-      if (applyingRemoteRef.current) {
+      if (applyingRemoteRef.current || deletedOnDiskRef.current) {
         return;
       }
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current);
       }
       saveTimerRef.current = window.setTimeout(async () => {
+        if (deletedOnDiskRef.current) {
+          return;
+        }
         try {
           const text = sceneToText(elements, appState, files ?? {});
           await saveText(text, "browser edit");
@@ -401,6 +431,18 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     },
     [saveText],
   );
+
+  const restoreFromThisTab = useCallback(async () => {
+    try {
+      const scene = currentSceneRef.current;
+      const text = sceneToText(scene.elements, scene.appState, scene.files);
+      await saveText(text, "restored from this tab", { force: true });
+      setDeletedState(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus({ level: "error", text: message });
+    }
+  }, [saveText, setDeletedState]);
 
   useEffect(() => {
     void loadBoard("initial");
@@ -417,10 +459,15 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         if (data.name !== boardName) {
           return;
         }
+        if (data.kind === "deleted") {
+          markDeletedOnDisk();
+          return;
+        }
         if (data.kind === "mermaid") {
           void convertMermaidInbox();
           return;
         }
+        setDeletedState(false);
         void loadBoard("file change");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -431,7 +478,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       setStatus({ level: "warn", text: "SSE disconnected; retrying..." });
     };
     return () => events.close();
-  }, [boardName, convertMermaidInbox, loadBoard]);
+  }, [boardName, convertMermaidInbox, loadBoard, markDeletedOnDisk, setDeletedState]);
 
   return (
     <main className="app-shell">
@@ -441,7 +488,15 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           <strong>Local Excalidraw workspace</strong>
           <span className="board-name">boards/{boardName}.excalidraw</span>
         </div>
-        <div className={`status ${status.level}`}>{status.text}</div>
+        {deletedOnDisk ? (
+          <div className="deleted-board-banner">
+            <span>This board was deleted on disk.</span>
+            <button type="button" onClick={restoreFromThisTab}>Restore from this tab</button>
+            <button type="button" onClick={() => window.location.assign(window.location.pathname)}>Close</button>
+          </div>
+        ) : (
+          <div className={`status ${status.level}`}>{status.text}</div>
+        )}
       </header>
       <section className="canvas-wrap">
         {initialData ? (
@@ -451,6 +506,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
             }}
             initialData={initialData}
             onChange={(elements, appState, files) => {
+              currentSceneRef.current = { elements, appState, files: files ?? {} };
               scheduleSave(elements, appState, files ?? {});
             }}
           />

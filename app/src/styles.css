@@ -70,6 +70,34 @@ a {
   background: #7f1d1d;
 }
 
+.deleted-board-banner {
+  align-items: center;
+  background: #fef3c7;
+  border-radius: 10px;
+  color: #78350f;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 8px;
+  max-width: 55%;
+  padding: 6px 10px;
+}
+
+.deleted-board-banner button {
+  background: #ffffff;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  color: #78350f;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 8px;
+}
+
+.deleted-board-banner button:hover {
+  background: #fffbeb;
+}
+
 .canvas-wrap {
   flex: 1 1 auto;
   min-height: 0;

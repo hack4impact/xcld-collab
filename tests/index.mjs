@@ -2,6 +2,7 @@
 import "./api.test.mjs";
 import "./board-path.test.mjs";
 import "./cli.test.mjs";
+import "./deleted-events.test.mjs";
 import "./diff.test.mjs";
 import "./export.test.mjs";
 import "./ids.test.mjs";

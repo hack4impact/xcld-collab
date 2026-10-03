@@ -213,6 +213,7 @@ levels.
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes. Subgraphs are the known cause; the exact error is in the browser console (F12) | Remove `subgraph` blocks (fold the group into labels) and have the agent rewrite the `.mmd` |
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
+| I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |
 | The browser shows an invalid-board banner | The `?board=` path is invalid | Fix the path in the URL or open <http://127.0.0.1:3100/> and choose a board |
 | Linux: `permission denied` writing boards | The container user doesn't match yours | Rerun `./build.sh` (it writes `XCLD_UID`/`XCLD_GID` to `.env`), then `docker compose up -d --wait` |
 | Ctrl+S downloads a file | Excalidraw's own "Save to…" | Ignore it. The board saves itself (see the top bar) |

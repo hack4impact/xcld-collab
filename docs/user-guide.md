@@ -11,6 +11,8 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
   top bar says `Saved <path>.excalidraw`.
 - **Agents edit files.** When the file changes on disk, the open tab reloads it within
   about a second.
+- **Deleting a board on disk stops that tab's autosave.** Use its top-bar banner to restore
+  from the tab or close it.
 - **Mermaid goes in through the inbox.** An agent writes `boards/<path>.mmd`, and the open
   tab converts it into the board. A board opened for the first time converts too.
 - **Feedback comes out through `xcld diff`.** It compares the board with a snapshot and lists

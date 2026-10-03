@@ -48,6 +48,11 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
     `XCLD_WATCH_POLL_MS` ms (default 1000; 0 disables).
   - Both sources share one signature map, so each change is published once. Both behaviors
     are covered by `tests/api.test.mjs`, and the host-edit SSE event was verified end to end.
+  - **Lead decision (2026-10-02):** if a known `.excalidraw` file disappears, the server
+    waits 300 ms and re-checks before publishing one SSE `board` event with `kind:
+    "deleted"`. That debounce lets editor-style delete+recreate writes settle. The open
+    tab stops autosaving and shows a restore-or-close banner instead of recreating the file
+    automatically; a later real recreate publishes the normal `kind: "board"` event.
   - Board paths can now be nested, e.g. `boards/myproject/demo.excalidraw` and
     `?board=myproject/demo`. The poller walks recursively, skips dot-folders such as
     `.snapshots`, skips `node_modules`, and never follows symlinks. Folder depth is unlimited

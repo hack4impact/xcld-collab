@@ -109,6 +109,7 @@ export function createBoardApi({
   maxDepth = maxDepthFromEnv(),
   useFsWatch = true,
   autoExport = autoExportFromEnv(),
+  deleteDebounceMs = 300,
 }) {
   const root = path.resolve(boardsDir);
   mkdirSync(root, { recursive: true });
@@ -139,6 +140,7 @@ export function createBoardApi({
   // host-side agents write. A cheap mtime+size poll covers that case; signatures
   // dedupe the two so each change is published once.
   const signatures = new Map();
+  const pendingDeletes = new Map();
   let warnedSlowPoll = false;
   const nameFromRelativeFile = (relativeFile) => {
     const normalized = String(relativeFile).replace(/\\/g, "/").split("/").filter(Boolean).join("/");
@@ -153,6 +155,48 @@ export function createBoardApi({
     const name = normalized.slice(0, -extension.length);
     return validateBoardPath(name, { maxDepth }).ok ? { name, kind, relativeFile: normalized } : null;
   };
+  const cancelPendingDelete = (relativeFile) => {
+    const timer = pendingDeletes.get(relativeFile);
+    if (timer) {
+      clearTimeout(timer);
+      pendingDeletes.delete(relativeFile);
+    }
+  };
+  const scheduleDeleteIfKnown = (item) => {
+    if (item.kind !== "board" || !signatures.has(item.relativeFile) || pendingDeletes.has(item.relativeFile)) {
+      if (item.kind !== "board") {
+        signatures.delete(item.relativeFile);
+      }
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const stat = await fs.lstat(path.join(root, ...item.relativeFile.split("/")));
+        if (stat.isFile()) {
+          pendingDeletes.delete(item.relativeFile);
+          return;
+        }
+      } catch {
+        signatures.delete(item.relativeFile);
+        pendingDeletes.delete(item.relativeFile);
+        publish({
+          name: item.name,
+          kind: "deleted",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+      signatures.delete(item.relativeFile);
+      pendingDeletes.delete(item.relativeFile);
+      publish({
+        name: item.name,
+        kind: "deleted",
+        timestamp: Date.now(),
+      });
+    }, deleteDebounceMs);
+    timer.unref?.();
+    pendingDeletes.set(item.relativeFile, timer);
+  };
   const publishIfChanged = async (relativeFile) => {
     const item = nameFromRelativeFile(relativeFile);
     if (!item) {
@@ -162,14 +206,15 @@ export function createBoardApi({
     try {
       const stat = await fs.lstat(path.join(root, ...item.relativeFile.split("/")));
       if (!stat.isFile()) {
-        signatures.delete(item.relativeFile);
+        scheduleDeleteIfKnown(item);
         return;
       }
       signature = `${stat.mtimeMs}:${stat.size}`;
     } catch {
-      signatures.delete(item.relativeFile);
+      scheduleDeleteIfKnown(item);
       return;
     }
+    cancelPendingDelete(item.relativeFile);
     if (signatures.get(item.relativeFile) === signature) {
       return;
     }
@@ -220,9 +265,14 @@ export function createBoardApi({
       for (const file of files) {
         await publishIfChanged(file.relativeFile);
       }
-      for (const known of signatures.keys()) {
+      for (const known of [...signatures.keys()]) {
         if (!names.has(known)) {
-          signatures.delete(known);
+          const item = nameFromRelativeFile(known);
+          if (item) {
+            scheduleDeleteIfKnown(item);
+          } else {
+            signatures.delete(known);
+          }
         }
       }
       const elapsed = performance.now() - start;
@@ -370,6 +420,10 @@ export function createBoardApi({
     if (poller) {
       clearInterval(poller);
     }
+    for (const timer of pendingDeletes.values()) {
+      clearTimeout(timer);
+    }
+    pendingDeletes.clear();
     for (const client of clients) {
       client.end();
     }
