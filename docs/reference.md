@@ -123,7 +123,8 @@ children. `--json` prints the same shape as `GET /api/boards`.
 ```text
 > xcld list
 myproject/demo   board+mmd (mermaid pending)   2026-10-02 15:46
-1 board
+chat/imported   view (view pending)   2026-10-02 16:10
+2 boards
 ```
 
 ### `xcld diff <a.excalidraw> <b.excalidraw> [--json]`
@@ -148,6 +149,28 @@ flowchart TD
 
 Free-text notes come out as comments, e.g.
 `%% Free text note_schema near n_valid (108px): Human note: validate schema edge`.
+
+### `xcld open-in-canvas <checkpointId> <board> [--overwrite]`
+
+Bridges a drawing from the Excalidraw MCP Apps chat widget into the persistent canvas. It
+reads `<checkpointId>.json` from `XCLD_MCP_CHECKPOINTS` (default:
+`/boards/.xcld/mcp-checkpoints/excalidraw-mcp-checkpoints`), drops widget pseudo-elements
+such as `cameraUpdate`, writes `boards/<board>.view.json`, and prints the canvas URL.
+
+`board` is required. The command refuses to target an existing
+`boards/<board>.excalidraw` unless `--overwrite` is passed; snapshot or read the board first.
+
+```text
+> xcld open-in-canvas cb545782f1f048efb0 myproject/chat-flow
+{
+  "path": "/boards/myproject/chat-flow.view.json",
+  "url": "http://127.0.0.1:3100/?board=myproject/chat-flow",
+  "checkpointId": "cb545782f1f048efb0",
+  "board": "myproject/chat-flow",
+  "elements": 6,
+  "reminder": "Open or keep open the canvas URL; an open tab converts this view inbox into the board."
+}
+```
 
 ### `xcld help`
 
@@ -185,6 +208,7 @@ Prints usage.
 | `boards/<path>.excalidraw` | The board. Standard Excalidraw JSON that excalidraw.com can open too |
 | `boards/examples/` | Example boards, **tracked in git**. Copy them before editing, e.g. into `boards/sandbox/`. Everything else in `boards/` is gitignored, and board edits never make the image tag `-dirty` |
 | `boards/<path>.mmd` | Mermaid inbox. An open tab on `<path>` converts it and **replaces** the board |
+| `boards/<path>.view.json` | View inbox from `open_in_canvas`. An open tab on `<path>` converts it into the board; `xcld list` shows `view pending` until a non-empty board save is newer |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.excalidraw` | Snapshots from `xcld snapshot`; flat boards still use `boards/.snapshots/<name>.<timestamp>.excalidraw` |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.mmd` | The snapshot's Mermaid twin. Written unless `XCLD_AUTO_EXPORT=off` |
 | `boards/.exports/<path>.mmd` | Always-current Mermaid of each board. Only with `XCLD_AUTO_EXPORT=save` |
@@ -198,8 +222,11 @@ levels.
 
 ## API
 
-- `GET /api/boards` returns `{ boards, folders }` with board paths, folder/leaf names, board
-  and Mermaid presence, Mermaid pending state and last modified time.
+- `GET /api/boards` returns `{ boards, folders }` with board paths, folder/leaf names, board,
+  Mermaid and view-inbox presence, pending states and last modified time.
+- `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
+- `GET /api/events` publishes `event: board` with `kind: "board"`, `"mermaid"`, `"view"` or
+  `"deleted"`.
 
 ## MCP
 
@@ -207,11 +234,11 @@ There are two MCP entry points in the image:
 
 1. **`xcld mcp`** is the primary agent tools server. It speaks MCP over stdio, so clients
    launch it with `docker exec -i xcld-collab xcld mcp`. It adds no port and uses the same
-   board volume as the canvas.
-2. **`excalidraw-mcp`** is the MCP Apps UI service. Compose serves it at
-   `http://127.0.0.1:3001/mcp` for hosts that render MCP Apps widgets, such as VS Code and
-   Claude Desktop. Its `export_to_excalidraw` upload flow and Excalidraw Plus menu link are
-   patched out at build time.
+   board volume as the canvas. It is enabled by default.
+2. **`excalidraw-mcp`** is the optional MCP Apps chat-widget UI service. Compose serves it
+   only when the `widget` profile is enabled, at `http://127.0.0.1:3001/mcp`, for hosts that
+   render MCP Apps widgets, such as VS Code and Claude Desktop. Its `export_to_excalidraw`
+   upload flow and Excalidraw Plus menu link are patched out at build time.
 
 ### `xcld mcp` tools
 
@@ -232,6 +259,7 @@ re-import replaces the board, use light blue for proposed parts
 | `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
 | `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff` |
 | `board_url` | `board` | `XCLD_PUBLIC_URL/?board=<path>`, defaulting to `http://127.0.0.1:3100/?board=<path>` |
+| `open_in_canvas` | `checkpointId`, required `board`, optional `overwrite` = `false` | Writes `boards/<path>.view.json` from an Excalidraw MCP checkpoint and returns the canvas URL |
 
 Host development:
 
@@ -346,7 +374,13 @@ the widget was not rendered in a real chat session on this machine.
 
 ### Excalidraw MCP Apps UI service
 
-Compose starts a second service named `mcp` from the same image:
+The chat widget starts by default: it's the second service, named `mcp`, from the same image,
+under the `widget` Compose profile, which the build seeds as `COMPOSE_PROFILES=widget` in `.env`.
+When it renders, the widget loads React/Excalidraw from esm.sh (#9). For canvas only, with no
+outside requests, set `COMPOSE_PROFILES=` (empty) in `.env` and run `docker compose up -d --wait`. The primary `xcld mcp` stdio tools still run through `docker exec -i
+xcld-collab xcld mcp` in the canvas container.
+
+When enabled, the service is:
 
 ```text
 http://127.0.0.1:3001/mcp
@@ -356,12 +390,12 @@ It is upstream `excalidraw-mcp` at the pinned SHA in `pins.json`, patched during
 build. Checkpoints use `TMPDIR=/boards/.xcld/mcp-checkpoints`, so user edits survive service
 restarts and the dot-folder stays hidden from the board browser and `xcld list`.
 
-**Network status:** the widget currently loads React, React DOM, Excalidraw and morphdom from
-`https://esm.sh` through upstream Vite externals and the MCP Apps CSP. This is intentionally
-left as an open item for the part 3c network spike. Do **not** claim the widget is zero-egress
-yet. The switch points are the excalidraw-mcp build patch for `vite.config.ts`
-(`rollupOptions.external` / `output.paths`) and `src/server.ts` (`resourceDomains` /
-`connectDomains`).
+**Network status:** when enabled, the widget currently loads React, React DOM, Excalidraw and
+morphdom from `https://esm.sh` through upstream Vite externals and the MCP Apps CSP; this is
+issue #9 / the widget network spike. Fonts come from the canvas container's
+`/excalidraw-assets/` endpoint. Do **not** claim the widget is zero-egress yet. The switch
+points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.external` /
+`output.paths`) and `src/server.ts` (`resourceDomains` / `connectDomains`).
 
 ## Troubleshooting
 
@@ -371,8 +405,9 @@ yet. The switch points are the excalidraw-mcp build patch for `vite.config.ts`
 | `Bind for 127.0.0.1:3100 failed: port is already allocated` | Something else is using 3100 | Put `XCLD_PORT=3200` in `.env`, run `docker compose up -d --wait`, then use `http://127.0.0.1:3200` |
 | `No snapshots found for <board>` | `diff <board>` needs a "before" picture | `xcld snapshot <board>`, edit, then `diff` |
 | `Board not found: <board>` | The board file doesn't exist yet | Open `http://127.0.0.1:3100/?board=<board>` (it converts `<board>.mmd` if present), or check the path |
-| The board opens but the canvas is empty | The URL was opened before Mermaid was written, so the browser created and saved an empty board | Call MCP `write_mermaid` or write `boards/<board>.mmd` while the tab stays open. The browser replaces the blank canvas; reload once if it misses the update |
+| The board opens but the canvas is empty | The URL was opened before an inbox was written | Call MCP `write_mermaid`, `open_in_canvas`, or write an inbox while the tab stays open. The browser replaces the blank canvas; reload once if it misses the update |
 | The agent wrote `<board>.mmd` but nothing appeared | Conversion runs in the browser | Open (or keep open) a tab on `?board=<board>` |
+| Widget **Edit** does nothing in VS Code | The host refused the widget's fullscreen editor | Ask your assistant to call `open_in_canvas` with the checkpoint id shown in the widget hint and an explicit board path, then open the returned canvas URL |
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |

@@ -10,6 +10,7 @@ import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { openInCanvas } from "./open-in-canvas.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 const maxDepth = () => maxDepthFromEnv();
@@ -209,6 +210,23 @@ export const createXcldMcpServer = () => {
       }
       const result = { url: boardUrl(board) };
       return okText(result.url, result);
+    },
+  );
+
+  registerTool(
+    server,
+    "open_in_canvas",
+    {
+      description: `Bridge a drawing from the Excalidraw MCP Apps chat widget into the persistent localhost canvas when the user wants to edit it there, or when VS Code cannot open the widget editor. Reads a checkpoint id from the widget, writes boards/<path>.view.json, and returns the canvas URL. Refuses to overwrite an existing board unless overwrite=true; snapshot first. ${conventions}`,
+      inputSchema: {
+        checkpointId: z.string().describe("Checkpoint id shown by the widget hint or returned in create_view structuredContent."),
+        board: z.string().describe("Destination board path without extension."),
+        overwrite: z.boolean().optional().default(false).describe("Allow writing a view inbox when boards/<path>.excalidraw already exists. Snapshot first."),
+      },
+    },
+    async ({ checkpointId, board, overwrite }) => {
+      const result = await openInCanvas({ checkpointId, board, overwrite: Boolean(overwrite), boardsDir: boardsDir(), publicUrl: publicUrl() });
+      return okText(JSON.stringify(result, null, 2), result);
     },
   );
 

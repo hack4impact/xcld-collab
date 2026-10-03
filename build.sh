@@ -135,12 +135,15 @@ fi
 
 if [ "$dry_run" -eq 0 ] && [ "$target" = runtime ]; then
   # Hand the tag (and, on Linux, your uid/gid for bind-mount writes) to compose.yaml
-  # via .env, keeping any other user settings in it.
+  # via .env, keeping any other user settings in it. COMPOSE_PROFILES=widget is seeded
+  # once (chat widget on by default); an existing line, including an empty opt-out
+  # "COMPOSE_PROFILES=", is left alone.
   env_path="$root/.env"
   keep=""
   [ -f "$env_path" ] && keep="$(grep -Ev '^[[:space:]]*(XCLD_IMAGE|XCLD_TAG|XCLD_UID|XCLD_GID)[[:space:]]*=' "$env_path" || true)"
   {
     [ -n "$keep" ] && printf '%s\n' "$keep"
+    printf '%s\n' "$keep" | grep -Eq '^[[:space:]]*COMPOSE_PROFILES[[:space:]]*=' || printf 'COMPOSE_PROFILES=widget\n'
     printf 'XCLD_IMAGE=%s\nXCLD_TAG=%s\n' "$image" "$tag"
     if [ "$(uname -s)" = Linux ]; then printf 'XCLD_UID=%s\nXCLD_GID=%s\n' "$(id -u)" "$(id -g)"; fi
   } > "$env_path.tmp" && mv "$env_path.tmp" "$env_path"

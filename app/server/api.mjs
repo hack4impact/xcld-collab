@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, watch } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/board-path.mjs";
-import { boardKindForExtension, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
+import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
@@ -144,16 +144,14 @@ export function createBoardApi({
   let warnedSlowPoll = false;
   const nameFromRelativeFile = (relativeFile) => {
     const normalized = String(relativeFile).replace(/\\/g, "/").split("/").filter(Boolean).join("/");
-    const extension = path.extname(normalized);
-    const kind = boardKindForExtension(extension);
-    if (!kind) {
+    const info = boardInfoForRelativeFile(normalized);
+    if (!info) {
       return null;
     }
     if (normalized.split("/").some((segment) => segment.startsWith(".") || segment === "node_modules")) {
       return null;
     }
-    const name = normalized.slice(0, -extension.length);
-    return validateBoardPath(name, { maxDepth }).ok ? { name, kind, relativeFile: normalized } : null;
+    return validateBoardPath(info.name, { maxDepth }).ok ? { name: info.name, kind: info.kind, relativeFile: normalized } : null;
   };
   const cancelPendingDelete = (relativeFile) => {
     const timer = pendingDeletes.get(relativeFile);
@@ -402,6 +400,20 @@ export function createBoardApi({
         }
         const content = await fs.readFile(filePath, "utf8");
         send(res, 200, "text/plain; charset=utf-8", content);
+        return true;
+      }
+
+      const viewPrefix = "/api/view/";
+      if (rawPathname.startsWith(viewPrefix) && req.method === "GET") {
+        const rawName = rawPathname.slice(viewPrefix.length);
+        const name = decodeURIComponent(rawName);
+        const filePath = filePathFor(root, name, ".view.json");
+        if (!existsSync(filePath)) {
+          sendError(res, 404, "view-not-found", { name });
+          return true;
+        }
+        const content = await fs.readFile(filePath, "utf8");
+        send(res, 200, "application/json; charset=utf-8", content);
         return true;
       }
 

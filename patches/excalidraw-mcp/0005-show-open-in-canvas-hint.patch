@@ -1,0 +1,124 @@
+diff --git a/src/global.css b/src/global.css
+index 25d5756..e83908a 100644
+--- a/src/global.css
++++ b/src/global.css
+@@ -321,3 +321,47 @@ body {
+   padding: 1rem;
+   color: #dc2626;
+ }
++
++
++.edit-hint {
++  position: absolute;
++  top: 44px;
++  right: 8px;
++  z-index: 101;
++  max-width: min(360px, calc(100% - 16px));
++  padding: 10px 34px 10px 12px;
++  border-radius: 10px;
++  border: 1px solid #f59e0b;
++  background: #fffbeb;
++  color: #78350f;
++  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
++  font-size: 0.82rem;
++  line-height: 1.35;
++}
++
++.edit-hint-close {
++  position: absolute;
++  top: 4px;
++  right: 6px;
++  border: 0;
++  background: transparent;
++  color: inherit;
++  cursor: pointer;
++  font-size: 1.1rem;
++}
++
++.edit-hint-checkpoint {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  margin-top: 6px;
++}
++
++.edit-hint-checkpoint button {
++  border: 1px solid #f59e0b;
++  border-radius: 6px;
++  background: #ffffff;
++  color: #78350f;
++  cursor: pointer;
++  padding: 2px 8px;
++}
+diff --git a/src/mcp-app.tsx b/src/mcp-app.tsx
+index 3557b18..fe80743 100644
+--- a/src/mcp-app.tsx
++++ b/src/mcp-app.tsx
+@@ -570,6 +570,8 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
+   const [editorReady, setEditorReady] = useState(false);
+   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
+   const [editorSettled, setEditorSettled] = useState(false);
++  const [editHint, setEditHint] = useState<{ checkpointId: string | null } | null>(null);
++  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+   const appRef = useRef<App | null>(null);
+   const svgViewportRef = useRef<ViewportRect | null>(null);
+   const elementsRef = useRef<any[]>([]);
+@@ -591,8 +593,16 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
+       const result = await appRef.current.requestDisplayMode({ mode: newMode });
+       fsLog(`requestDisplayMode result: ${result.mode}`);
+       setDisplayMode(result.mode as "inline" | "fullscreen");
++      if (newMode === "fullscreen" && result.mode !== "fullscreen") {
++        setEditHint({ checkpointId: checkpointIdRef.current });
++      } else if (result.mode === "fullscreen") {
++        setEditHint(null);
++      }
+     } catch (err) {
+       fsLog(`requestDisplayMode FAILED: ${err}`);
++      if (newMode === "fullscreen") {
++        setEditHint({ checkpointId: checkpointIdRef.current });
++      }
+     }
+   }, [displayMode, elements.length, inputIsFinal]);
+ 
+@@ -767,6 +777,18 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
+     }
+   }, [displayMode, isNarrow, safeAreaInsets]);
+ 
++  const canCopyCheckpoint = Boolean(editHint?.checkpointId && navigator.clipboard?.writeText);
++  const copyCheckpointId = useCallback(async () => {
++    if (!editHint?.checkpointId || !navigator.clipboard?.writeText) return;
++    try {
++      await navigator.clipboard.writeText(editHint.checkpointId);
++      setCopyStatus("copied");
++    } catch (err) {
++      fsLog(`checkpoint clipboard copy failed: ${err}`);
++      setCopyStatus("failed");
++    }
++  }, [editHint?.checkpointId]);
++
+   return (
+     <main className={`main${displayMode === "fullscreen" ? " fullscreen" : ""}`} style={displayMode === "fullscreen" && containerHeight ? { height: containerHeight } : undefined}>
+       {displayMode === "inline" && (
+@@ -781,6 +803,22 @@ export function ExcalidrawAppCore({ app }: { app: App }) {
+           </button>
+         </div>
+       )}
++      {displayMode === "inline" && editHint && (
++        <div className="edit-hint" role="status">
++          <button className="edit-hint-close" type="button" aria-label="Dismiss" onClick={() => setEditHint(null)}>×</button>
++          <div>This app can't open the editor here. Ask your assistant to open this drawing in the canvas.</div>
++          {editHint.checkpointId && (
++            <div className="edit-hint-checkpoint">
++              <span>Checkpoint: <code>{editHint.checkpointId}</code></span>
++              {canCopyCheckpoint && (
++                <button type="button" onClick={copyCheckpointId}>
++                  {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy"}
++                </button>
++              )}
++            </div>
++          )}
++        </div>
++      )}
+       {/* Editor: mount hidden when ready, reveal after viewport is set */}
+       {mountEditor && (
+         <div style={{

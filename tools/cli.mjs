@@ -7,6 +7,7 @@ import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { openInCanvas } from "./open-in-canvas.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 const helpText = `xcld - local Excalidraw workspace tools
@@ -17,6 +18,7 @@ Usage:
   xcld to-mermaid <board|file>
   xcld snapshot <board>
   xcld list [folder] [--json]
+  xcld open-in-canvas <checkpointId> <board> [--overwrite]
   xcld mcp
   xcld help
 `;
@@ -59,8 +61,16 @@ const filterList = (data, folder) => {
 
 const printList = (data) => {
   for (const board of data.boards) {
-    const state = board.hasBoard && board.hasMermaid ? "board+mmd" : board.hasBoard ? "board" : "mmd";
-    const pending = board.mermaidPending ? " (mermaid pending)" : "";
+    const state = [
+      board.hasBoard ? "board" : null,
+      board.hasMermaid ? "mmd" : null,
+      board.hasView ? "view" : null,
+    ].filter(Boolean).join("+") || "unknown";
+    const pendingItems = [
+      board.mermaidPending ? "mermaid pending" : null,
+      board.viewPending ? "view pending" : null,
+    ].filter(Boolean);
+    const pending = pendingItems.length ? ` (${pendingItems.join(", ")})` : "";
     console.log(`${board.name}   ${state}${pending}   ${formatLocalTime(board.modified)}`);
   }
   console.log(`${data.boards.length} board${data.boards.length === 1 ? "" : "s"}`);
@@ -96,6 +106,14 @@ const run = async (argv) => {
   if (command === "to-mermaid") {
     if (args.length !== 1) throw new Error("Usage: xcld to-mermaid <board|file>");
     console.log(await fileToMermaid(resolveBoardOrFile(args[0])));
+    return;
+  }
+  if (command === "open-in-canvas") {
+    const overwrite = args.includes("--overwrite");
+    const names = args.filter((arg) => arg !== "--overwrite");
+    if (names.length !== 2) throw new Error("Usage: xcld open-in-canvas <checkpointId> <board> [--overwrite]");
+    const result = await openInCanvas({ checkpointId: names[0], board: names[1], overwrite });
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
   if (command === "diff") {

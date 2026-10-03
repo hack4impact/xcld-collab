@@ -19,10 +19,24 @@ Follow this order:
 4. Call `read_board` to verify that conversion produced the expected nodes and edges.
 5. Call `snapshot` before asking the user to review the board.
 
-Do not present `board_url` as board creation. Opening a URL before `write_mermaid` can create
-and autosave an empty `.excalidraw` board. If that already happened, call `write_mermaid`
-while the tab remains open; the browser should replace the blank canvas. Ask the user to
-reload once only if the watcher misses the update.
+Do not present `board_url` as board creation. Opening a URL before `write_mermaid` starts an
+empty unsaved canvas; the first real edit saves it. If the tab is already open, call
+`write_mermaid` while it remains open; the browser should replace the blank canvas. Ask the
+user to reload once only if the watcher misses the update.
+
+## Edit a chat drawing in the canvas
+
+When a user wants to edit a drawing created by the `excalidraw-probe` chat widget, or the
+widget says the host cannot open the editor:
+
+1. Get the checkpoint id from the widget response or its hint.
+2. Choose an explicit destination board path with the user or from the current task context.
+3. Call `open_in_canvas` with `checkpointId` and `board`. Do not omit `board`.
+4. If it refuses because the board exists, snapshot/read the existing board first; retry with
+   `overwrite=true` only when replacing it is intentional.
+5. Give the returned URL to the user or open it. The canvas consumes
+   `boards/<path>.view.json`, saves `boards/<path>.excalidraw`, recenters, then the normal
+   review loop (`read_board`, `snapshot`, `diff`) applies.
 
 ## Mermaid input
 

@@ -2,6 +2,7 @@
 # image tag from the exact source commits and write it to .env as XCLD_TAG.
 #
 #   docker compose up -d --wait     # start; returns once the healthcheck passes
+#   (the chat widget starts too: the build seeds COMPOSE_PROFILES=widget in .env)
 #   docker compose down             # stop; boards stay on disk
 #
 # Optional overrides in .env (or your shell):
@@ -13,6 +14,7 @@
 #   XCLD_MAX_DEPTH=0                # nested folder limit; 0 is unlimited
 #   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
 #   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
+#   COMPOSE_PROFILES=widget         # default (seeded by the build); set empty for canvas only
 name: xcld-collab
 
 services:
@@ -32,6 +34,7 @@ services:
     restart: unless-stopped
 
   mcp:
+    profiles: ["widget"]
     image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
     container_name: ${XCLD_MCP_CONTAINER:-xcld-mcp}
     entrypoint: ["node", "/opt/xcld-collab/excalidraw-mcp/dist/index.js"]

@@ -150,12 +150,15 @@ if ($UpdatePins) {
 
 if (-not $DryRun -and $Target -eq 'runtime') {
   # Hand the tag to compose.yaml via .env, keeping any other user settings in it.
+  # COMPOSE_PROFILES=widget is seeded once (chat widget on by default); an existing line,
+  # including an empty opt-out "COMPOSE_PROFILES=", is left alone.
   $envPath = Join-Path $root '.env'
   $settings = [ordered]@{ XCLD_IMAGE = $Image; XCLD_TAG = $tag }
   $lines = @()
   if (Test-Path $envPath) {
     $lines = @(Get-Content $envPath | Where-Object { $_ -notmatch '^\s*(XCLD_IMAGE|XCLD_TAG)\s*=' })
   }
+  if (-not ($lines | Where-Object { $_ -match '^\s*COMPOSE_PROFILES\s*=' })) { $lines += 'COMPOSE_PROFILES=widget' }
   $lines += $settings.Keys | ForEach-Object { "$_=$($settings[$_])" }
   [System.IO.File]::WriteAllText($envPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
   Write-Host "`n.env updated (XCLD_TAG=$tag). Start or restart the workspace:"

@@ -15,9 +15,11 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
   from the tab or close it.
 - **Mermaid goes in through the inbox.** An agent writes `boards/<path>.mmd`, and the open
   tab converts it into the board. A board opened for the first time converts too.
-- **A board URL does not seed a diagram.** Opening `?board=<path>` without first writing
-  Mermaid creates and saves an empty board. The agent must write the Mermaid inbox before
-  it gives you the URL.
+- **Chat-widget drawings go in through the view inbox.** `open_in_canvas` writes
+  `boards/<path>.view.json` from an Excalidraw MCP Apps checkpoint, and the open tab turns
+  it into an editable board.
+- **A board URL does not seed a diagram.** Opening `?board=<path>` without first writing an
+  inbox starts an empty, unsaved canvas. The first real edit saves it.
 - **Feedback comes out through `xcld diff`.** It compares the board with a snapshot and lists
   what changed, by meaning rather than by pixel.
 
@@ -54,9 +56,26 @@ the order matters:
 6. The agent calls `diff` before changing anything, acts on every reported edit, and
    snapshots the next review baseline.
 
-Calling `board_url` first is not creation: visiting that URL can create a saved but empty
-board. If that happens, keep the tab open and call `write_mermaid`; the tab will consume the
-inbox and replace the blank canvas. Reload once if the watcher misses the update.
+Calling `board_url` first is not creation: visiting that URL starts an empty unsaved canvas.
+Keep the tab open and call `write_mermaid`; the tab will consume the inbox and replace the
+blank canvas. Reload once if the watcher misses the update.
+
+### Edit a chat drawing in the canvas
+
+Use this when the `excalidraw-probe` chat widget made a useful drawing, but you want the
+persistent localhost canvas for review, or the widget says the host cannot open fullscreen
+editing.
+
+1. Ask the agent to copy the widget checkpoint id from the widget response or hint.
+2. Choose an explicit destination board, for example `myproject/chat-architecture`.
+3. The agent calls `open_in_canvas(checkpointId, board)`.
+4. Open the returned URL. The browser consumes `boards/<path>.view.json`, saves
+   `boards/<path>.excalidraw` and recenters on the imported drawing.
+5. Continue the usual loop: the agent verifies with `read_board`, snapshots, you edit in
+   the canvas, and the agent uses `diff` at handoff.
+
+If the destination board already exists, `open_in_canvas` refuses unless the agent passes
+`overwrite=true`. Snapshot or read the existing board before intentionally replacing it.
 
 Use `excalidraw-probe` when you only need a transient diagram inside chat. Use `xcld-probe`
 when the diagram must persist as a named board that a human can edit in the localhost canvas

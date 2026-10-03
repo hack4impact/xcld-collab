@@ -66,7 +66,7 @@ export const boardFilePath = (root, name, ext, options = {}) => {
   if (typeof root !== "string" || !root) {
     throw new Error("invalid-board-root");
   }
-  if (typeof ext !== "string" || !/^\.[A-Za-z0-9]+$/.test(ext)) {
+  if (typeof ext !== "string" || !/^\.[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/.test(ext)) {
     throw new Error("invalid-board-extension");
   }
   const separator = preferredSeparator(root);

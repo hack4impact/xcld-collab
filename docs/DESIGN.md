@@ -33,9 +33,10 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
                                    └──── ./boards  (bind mount, source of truth)
 ```
 
-- **Boards are files.** `boards/<path>.excalidraw` is the source of truth, and
-  `boards/<path>.mmd` is the Mermaid inbox. Any agent can take part by reading and
-  writing files, with or without MCP.
+- **Boards are files.** `boards/<path>.excalidraw` is the source of truth,
+  `boards/<path>.mmd` is the Mermaid inbox, and `boards/<path>.view.json` is the
+  Excalidraw MCP checkpoint/view inbox. Any agent can take part by reading and writing
+  files, with or without MCP.
 - **Mermaid conversion happens in the host's default browser** through the mapped port.
   Mermaid needs a DOM, and this avoids putting headless Chromium in the image. When it
   needs a conversion or review, the agent opens the board with
@@ -56,6 +57,13 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     "deleted"`. That debounce lets editor-style delete+recreate writes settle. The open
     tab stops autosaving and shows a restore-or-close banner instead of recreating the file
     automatically; a later real recreate publishes the normal `kind: "board"` event.
+  - **Lead decision (2026-10-02):** an empty board loaded from a first-time URL is not
+    persisted until the user makes a real element edit. If an existing board has no live
+    elements and a newer `.mmd` or `.view.json` inbox exists, the browser converts the inbox
+    instead of treating the empty board as final.
+  - `.view.json` files are indexed as the board name (for example `x.view.json` appears as
+    `x`), publish SSE `kind: "view"`, and stay `viewPending` until a non-empty
+    `.excalidraw` save is newer.
   - Board paths can now be nested, e.g. `boards/myproject/demo.excalidraw` and
     `?board=myproject/demo`. The poller walks recursively, skips dot-folders such as
     `.snapshots`, skips `node_modules`, and never follows symlinks. Folder depth is unlimited
@@ -131,7 +139,10 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **Running:** `compose.yaml` (lead decision, 2026-10-02) replaced the per-OS start
   scripts. The build scripts compute the tag and write `XCLD_IMAGE`/`XCLD_TAG` to a
   gitignored `.env`, plus `XCLD_UID`/`XCLD_GID` on Linux. `docker compose up -d --wait`
-  reads them. It starts the canvas and the optional `excalidraw-mcp` MCP Apps service.
+  reads them. The `excalidraw-mcp` MCP Apps chat widget is under the `widget` profile. The build
+  scripts seed `COMPOSE_PROFILES=widget` in `.env` once, so the widget starts **by default**
+  (lead decision, 2026-10-03). An existing value is never overwritten; `COMPOSE_PROFILES=`
+  (empty) runs the canvas only, with zero runtime egress.
   `container_name` is overridable (`XCLD_CONTAINER`, `XCLD_MCP_CONTAINER`) so parallel smoke
   projects do not collide with the default `xcld-collab` container.
 - **User docs:** `README.md` (getting started, coming soon), `docs/user-guide.md`
@@ -160,9 +171,19 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **Part 3a (built):** `xcld mcp`, the primary tools server for Copilot CLI, Claude Code,
   Codex and OpenCode. It is bundled at build time with esbuild and runs over stdio, usually
   as `docker exec -i xcld-collab xcld mcp`.
-- **Part 3b (built):** `excalidraw-mcp` at its pinned SHA as a second HTTP service for MCP
-  Apps hosts. Its upload/export flow is patched out; checkpoints persist under the boards
-  volume through `TMPDIR=/boards/.xcld/mcp-checkpoints`.
+- **Part 3b (built, on by default):** `excalidraw-mcp` at its pinned SHA as a second HTTP
+  service for MCP Apps hosts. It is profile-gated (`widget`), and the build seeds that profile,
+  so it runs by default (lead, 2026-10-03; it was opt-in on 2026-10-02). Opting out is one line
+  in `.env`. Issue #9 (moving the widget's JS off esm.sh) is still open. Its
+  upload/export flow is patched out; checkpoints persist under the boards volume through
+  `TMPDIR=/boards/.xcld/mcp-checkpoints`.
+- **Part 3b bridge (built):** `open_in_canvas(checkpointId, board, overwrite=false)` and
+  `xcld open-in-canvas` read a required, validated checkpoint id from
+  `XCLD_MCP_CHECKPOINTS`, drop widget pseudo-elements (`cameraUpdate`, `restoreCheckpoint`,
+  `delete`), write `boards/<path>.view.json`, and refuse to replace an existing board unless
+  overwrite is explicit. The canvas converts full Excalidraw elements with `restoreElements`
+  and skeleton elements with `convertToExcalidrawElements({ regenerateIds: false })`, then
+  recenters.
 - **Part 3c (not built):** decide the widget network boundary collaboratively.
 
 ## Data boundary
@@ -184,13 +205,18 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **MCP widget CDN (verified, `excalidraw-mcp@157aa23`).** The widget leaves React and
   Excalidraw 0.18.0 out of its bundle and loads them from `https://esm.sh` at runtime
   (`vite.config.ts` externals; CSP `resourceDomains` in `server.ts:650`).
-  - **Decision (lead, 2026-10-02):** leave this as upstream for parts 3a/3b. Part 3c will
+  - **Decision (lead, 2026-10-02):** leave this as upstream for parts 3a/3b, with the
+    service behind the `widget` Compose profile (on by default since 2026-10-03). Part 3c / issue #9 will later
     decide between serving those dependencies from our container and inlining them into the
     widget. The exact switch points are a new patch under `patches/excalidraw-mcp/` that
     changes `vite.config.ts` (`rollupOptions.external` / `output.paths`) and `src/server.ts`
     (`resourceDomains` / `connectDomains`).
   - Test the VS Code and Claude Desktop widget sandboxes in part 3c. If they block localhost
     loads, inline everything into the widget's single HTML file.
+- **Widget edit fallback (2026-10-02):** when `requestDisplayMode({mode:"fullscreen"})`
+  returns a different mode or throws, the upstream widget remains inline and shows a
+  dismissible hint with the checkpoint id and copy button. Hosts that support fullscreen
+  editing keep the unchanged path.
 - **DNS rebinding:** ports are bound to `127.0.0.1` on the host. The MCP Apps service binds
   `0.0.0.0` inside the container so Docker port publishing can reach it. No cheap
   `createMcpExpressApp` allowed-hosts option was verified in this pass, so host-header

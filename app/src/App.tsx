@@ -33,7 +33,9 @@ type BoardSummary = {
   leaf: string;
   hasBoard: boolean;
   hasMermaid: boolean;
+  hasView: boolean;
   mermaidPending: boolean;
+  viewPending: boolean;
   modified: string | null;
 };
 
@@ -74,7 +76,7 @@ const readBoardParam = () => {
     : { boardName: null, invalidBoardName: raw };
 };
 
-const boardApiPath = (prefix: "board" | "mermaid", boardName: string) => `/api/${prefix}/${encodeURIComponent(boardName)}`;
+const boardApiPath = (prefix: "board" | "mermaid" | "view", boardName: string) => `/api/${prefix}/${encodeURIComponent(boardName)}`;
 
 const sceneFromText = (text: string): SceneFile => {
   const parsed = JSON.parse(text) as SceneFile;
@@ -93,6 +95,57 @@ const sceneToText = (
   appState: Partial<AppState>,
   files: BinaryFiles,
 ) => serializeAsJSON(elements, appState, files, "local");
+
+const persistedSceneText = (
+  elements: readonly ExcalidrawElement[],
+  appState: Partial<AppState>,
+  files: BinaryFiles,
+) => {
+  const text = sceneToText(elements, appState, files);
+  return text.endsWith("\n") ? text : `${text}\n`;
+};
+
+const sceneHash = (scene: SceneFile) => textHash(persistedSceneText(scene.elements, scene.appState ?? {}, scene.files ?? {}));
+
+const elementHash = (elements: readonly ExcalidrawElement[]) => textHash(JSON.stringify(
+  elements.map((element) => ({
+    id: element.id,
+    type: element.type,
+    isDeleted: element.isDeleted ?? false,
+    version: element.version ?? null,
+    versionNonce: (element as { versionNonce?: number }).versionNonce ?? null,
+    seed: (element as { seed?: number }).seed ?? null,
+    x: element.x,
+    y: element.y,
+    width: element.width,
+    height: element.height,
+    text: (element as { text?: string }).text ?? null,
+  })),
+));
+
+const hasLiveElements = (elements: readonly ExcalidrawElement[]) => elements.some((element) => !element.isDeleted);
+
+const isFullExcalidrawElement = (element: unknown) => {
+  const candidate = element as { version?: unknown; seed?: unknown; versionNonce?: unknown };
+  return typeof candidate?.version === "number" || typeof candidate?.seed === "number" || typeof candidate?.versionNonce === "number";
+};
+
+const sceneFromViewInbox = (view: { elements?: unknown[] }): SceneFile => {
+  const rawElements = Array.isArray(view.elements) ? view.elements : [];
+  const elements = rawElements.length && rawElements.every(isFullExcalidrawElement)
+    ? restoreElements(rawElements as ExcalidrawElement[], null)
+    : convertToExcalidrawElements(disambiguateDuplicateElementIds(rawElements), {
+        regenerateIds: false,
+      }) as ExcalidrawElement[];
+  return {
+    type: "excalidraw",
+    version: 2,
+    source: "xcld-view-inbox",
+    elements,
+    appState: DEFAULT_APP_STATE,
+    files: {},
+  };
+};
 
 const formatModified = (value: string | null) => {
   if (!value) {
@@ -213,7 +266,9 @@ const BoardBrowser = ({ invalidBoardName }: { invalidBoardName: string | null })
                   <span className="badges">
                     {board.hasBoard ? <span className="badge">board</span> : null}
                     {board.hasMermaid ? <span className="badge">mmd</span> : null}
+                    {board.hasView ? <span className="badge">view</span> : null}
                     {board.mermaidPending ? <span className="badge warn">Mermaid waiting to convert</span> : null}
+                    {board.viewPending ? <span className="badge warn">View waiting to convert</span> : null}
                   </span>
                   <span className="modified">{formatModified(board.modified)}</span>
                 </li>
@@ -241,6 +296,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
   const deletedOnDiskRef = useRef(false);
   const lastLoadedHashRef = useRef<string>("");
   const lastSavedHashRef = useRef<string>("");
+  const lastLoadedElementHashRef = useRef<string>("");
   const currentSceneRef = useRef<{
     elements: readonly ExcalidrawElement[];
     appState: Partial<AppState>;
@@ -265,6 +321,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
   // Live reloads from agent edits keep the user's current view.
   const applyScene = useCallback((scene: SceneFile, hash: string, recenter = false) => {
     lastLoadedHashRef.current = hash;
+    lastLoadedElementHashRef.current = elementHash(scene.elements);
     applyingRemoteRef.current = true;
     currentSceneRef.current = {
       elements: scene.elements,
@@ -299,7 +356,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     async (text: string, reason: string, options: { force?: boolean } = {}) => {
       const persistedText = text.endsWith("\n") ? text : `${text}\n`;
       const hash = textHash(persistedText);
-      if (!options.force && hash === lastSavedHashRef.current) {
+      if (!options.force && (hash === lastSavedHashRef.current || hash === lastLoadedHashRef.current)) {
         return hash;
       }
 
@@ -318,6 +375,23 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     },
     [boardName],
   );
+
+  const convertViewInbox = useCallback(async () => {
+    const response = await fetch(boardApiPath("view", boardName));
+    if (!response.ok) {
+      return false;
+    }
+
+    const view = await response.json() as { type?: string; elements?: unknown[] };
+    if (view.type !== "xcld-view") {
+      throw new Error("View inbox is not an xcld-view file.");
+    }
+    const scene = sceneFromViewInbox(view);
+    const text = sceneToText(scene.elements, scene.appState ?? {}, scene.files ?? {});
+    const hash = await saveText(text, "converted view inbox");
+    applyScene(scene, hash, true);
+    return true;
+  }, [applyScene, boardName, saveText]);
 
   const convertMermaidInbox = useCallback(async () => {
     const response = await fetch(boardApiPath("mermaid", boardName));
@@ -365,7 +439,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       try {
         const response = await fetch(boardApiPath("board", boardName));
         if (response.status === 404) {
-          const converted = await convertMermaidInbox();
+          const converted = await convertViewInbox() || await convertMermaidInbox();
           if (!converted) {
             const scene: SceneFile = {
               type: "excalidraw",
@@ -375,7 +449,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
               appState: DEFAULT_APP_STATE,
               files: {},
             };
-            applyScene(scene, "empty");
+            applyScene(scene, sceneHash(scene));
             setStatus({
               level: "warn",
               text: `Started empty ${boardName}.excalidraw; first edit will save it.`,
@@ -393,6 +467,10 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           return;
         }
         const scene = sceneFromText(text);
+        if (!hasLiveElements(scene.elements) && (await convertViewInbox() || await convertMermaidInbox())) {
+          setDeletedState(false);
+          return;
+        }
         applyScene(scene, hash);
         setDeletedState(false);
         setStatus({ level: "ok", text: `Loaded ${boardName}.excalidraw (${reason})` });
@@ -401,7 +479,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         setStatus({ level: "error", text: message });
       }
     },
-    [applyScene, boardName, convertMermaidInbox, setDeletedState],
+    [applyScene, boardName, convertMermaidInbox, convertViewInbox, setDeletedState],
   );
 
   const scheduleSave = useCallback(
@@ -421,8 +499,13 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           return;
         }
         try {
+          const nextElementHash = elementHash(elements);
+          if (nextElementHash === lastLoadedElementHashRef.current) {
+            return;
+          }
           const text = sceneToText(elements, appState, files ?? {});
           await saveText(text, "browser edit");
+          lastLoadedElementHashRef.current = nextElementHash;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           setStatus({ level: "error", text: message });
@@ -437,6 +520,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       const scene = currentSceneRef.current;
       const text = sceneToText(scene.elements, scene.appState, scene.files);
       await saveText(text, "restored from this tab", { force: true });
+      lastLoadedElementHashRef.current = elementHash(scene.elements);
       setDeletedState(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -467,6 +551,10 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           void convertMermaidInbox();
           return;
         }
+        if (data.kind === "view") {
+          void convertViewInbox();
+          return;
+        }
         setDeletedState(false);
         void loadBoard("file change");
       } catch (error) {
@@ -478,7 +566,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       setStatus({ level: "warn", text: "SSE disconnected; retrying..." });
     };
     return () => events.close();
-  }, [boardName, convertMermaidInbox, loadBoard, markDeletedOnDisk, setDeletedState]);
+  }, [boardName, convertMermaidInbox, convertViewInbox, loadBoard, markDeletedOnDisk, setDeletedState]);
 
   return (
     <main className="app-shell">

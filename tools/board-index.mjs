@@ -2,7 +2,13 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 
-const WATCHED_EXTENSIONS = new Set([".excalidraw", ".mmd"]);
+export const VIEW_INBOX_SUFFIX = ".view.json";
+
+const WATCHED_SUFFIXES = [
+  { suffix: ".excalidraw", kind: "board" },
+  { suffix: ".mmd", kind: "mermaid" },
+  { suffix: VIEW_INBOX_SUFFIX, kind: "view" },
+];
 
 export const boardKindForExtension = (extension) => {
   if (extension === ".excalidraw") {
@@ -10,6 +16,23 @@ export const boardKindForExtension = (extension) => {
   }
   if (extension === ".mmd") {
     return "mermaid";
+  }
+  if (extension === VIEW_INBOX_SUFFIX) {
+    return "view";
+  }
+  return null;
+};
+
+export const boardInfoForRelativeFile = (relativeFile) => {
+  const normalized = String(relativeFile).replace(/\\/g, "/");
+  for (const item of WATCHED_SUFFIXES) {
+    if (normalized.endsWith(item.suffix)) {
+      return {
+        name: normalized.slice(0, -item.suffix.length).split(path.sep).join("/"),
+        kind: item.kind,
+        suffix: item.suffix,
+      };
+    }
   }
   return null;
 };
@@ -23,12 +46,24 @@ export const boardFolderAndLeaf = (name) => {
   return { folder, leaf };
 };
 
-const toBoardName = (relativeFile) => {
-  const extension = path.extname(relativeFile);
-  if (!WATCHED_EXTENSIONS.has(extension)) {
+const toBoardFile = (relativeFile) => {
+  const info = boardInfoForRelativeFile(relativeFile);
+  if (!info) {
     return null;
   }
-  return relativeFile.slice(0, -extension.length).split(path.sep).join("/");
+  return {
+    name: info.name.split(path.sep).join("/"),
+    kind: info.kind,
+  };
+};
+
+const hasLiveElements = async (filePath) => {
+  try {
+    const data = JSON.parse(await fs.readFile(filePath, "utf8"));
+    return Array.isArray(data.elements) && data.elements.some((element) => !element?.isDeleted);
+  } catch {
+    return true;
+  }
 };
 
 export const walkBoardFiles = async (root, options = {}) => {
@@ -67,16 +102,15 @@ export const walkBoardFiles = async (root, options = {}) => {
       if (!entry.isFile()) {
         continue;
       }
-      const boardName = toBoardName(childRelative);
-      if (!boardName || !validateBoardPath(boardName, { maxDepth }).ok) {
+      const boardFile = toBoardFile(childRelative);
+      if (!boardFile || !validateBoardPath(boardFile.name, { maxDepth }).ok) {
         continue;
       }
-      const extension = path.extname(entry.name);
       files.push({
         path: childPath,
         relativeFile: childRelative.split(path.sep).join("/"),
-        name: boardName,
-        kind: boardKindForExtension(extension),
+        name: boardFile.name,
+        kind: boardFile.kind,
       });
     }
   };
@@ -97,18 +131,27 @@ export const listBoards = async (root, options = {}) => {
       leaf: boardFolderAndLeaf(file.name).leaf,
       hasBoard: false,
       hasMermaid: false,
+      hasView: false,
       mermaidPending: false,
+      viewPending: false,
       modified: null,
+      _boardPath: null,
+      _boardHasLiveElements: true,
       _boardMtimeMs: 0,
       _mermaidMtimeMs: 0,
+      _viewMtimeMs: 0,
       _modifiedMs: 0,
     };
     if (file.kind === "board") {
       entry.hasBoard = true;
+      entry._boardPath = file.path;
       entry._boardMtimeMs = stat.mtimeMs;
     } else if (file.kind === "mermaid") {
       entry.hasMermaid = true;
       entry._mermaidMtimeMs = stat.mtimeMs;
+    } else if (file.kind === "view") {
+      entry.hasView = true;
+      entry._viewMtimeMs = stat.mtimeMs;
     }
     if (stat.mtimeMs >= entry._modifiedMs) {
       entry._modifiedMs = stat.mtimeMs;
@@ -116,11 +159,20 @@ export const listBoards = async (root, options = {}) => {
     }
     byName.set(file.name, entry);
   }
+  for (const entry of byName.values()) {
+    if (entry.hasBoard && (entry.hasMermaid || entry.hasView)) {
+      entry._boardHasLiveElements = await hasLiveElements(entry._boardPath);
+    }
+  }
   const boards = [...byName.values()]
     .map((entry) => {
-      entry.mermaidPending = entry.hasMermaid && (!entry.hasBoard || entry._mermaidMtimeMs > entry._boardMtimeMs);
+      entry.mermaidPending = entry.hasMermaid && (!entry.hasBoard || !entry._boardHasLiveElements || entry._mermaidMtimeMs > entry._boardMtimeMs);
+      entry.viewPending = entry.hasView && (!entry.hasBoard || !entry._boardHasLiveElements || entry._viewMtimeMs > entry._boardMtimeMs);
+      delete entry._boardPath;
+      delete entry._boardHasLiveElements;
       delete entry._boardMtimeMs;
       delete entry._mermaidMtimeMs;
+      delete entry._viewMtimeMs;
       delete entry._modifiedMs;
       return entry;
     })

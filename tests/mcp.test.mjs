@@ -16,6 +16,7 @@ const startServer = (boardsDir) => {
       XCLD_BOARDS_DIR: boardsDir,
       XCLD_PUBLIC_URL: "http://127.0.0.1:3131",
       XCLD_AUTO_EXPORT: "snapshot",
+      XCLD_MCP_CHECKPOINTS: path.join(boardsDir, ".xcld", "mcp-checkpoints", "excalidraw-mcp-checkpoints"),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -91,7 +92,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(listedTools.error, undefined, JSON.stringify(listedTools));
     assert.deepEqual(
       listedTools.result.tools.map((tool) => tool.name).sort(),
-      ["board_url", "diff", "list_boards", "read_board", "snapshot", "write_mermaid"],
+      ["board_url", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_mermaid"],
     );
 
     const write = await callTool(server, "write_mermaid", {
@@ -102,9 +103,18 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(existsSync(path.join(root, "p", "flow.mmd")), true);
     assert.match(write.content[0].text, /REPLACES the board/);
 
+    const checkpointDir = path.join(root, ".xcld", "mcp-checkpoints", "excalidraw-mcp-checkpoints");
+    await mkdir(checkpointDir, { recursive: true });
+    await writeFile(path.join(checkpointDir, "chat_cp.json"), await readFile(path.resolve("tests", "fixtures", "mcp-checkpoint-skeleton.json"), "utf8"), "utf8");
+    const open = await callTool(server, "open_in_canvas", { checkpointId: "chat_cp", board: "p/chat" });
+    assert.equal(open.isError, undefined);
+    assert.equal(existsSync(path.join(root, "p", "chat.view.json")), true);
+    assert.match(open.content[0].text, /converts/);
+
     await writeFile(path.join(root, "p", "flow.excalidraw"), await readFile(path.resolve("tests", "fixtures", "fixture-a.excalidraw"), "utf8"), "utf8");
     const boards = await callTool(server, "list_boards", { folder: "p" });
-    assert.equal(boards.structuredContent.boards[0].name, "p/flow");
+    assert.equal(boards.structuredContent.boards.some((board) => board.name === "p/flow"), true);
+    assert.equal(boards.structuredContent.boards.some((board) => board.name === "p/chat" && board.viewPending), true);
 
     const snapshot = await callTool(server, "snapshot", { board: "p/flow" });
     assert.equal(existsSync(snapshot.structuredContent.paths.board), true);

@@ -36,7 +36,10 @@ The build ends with `.env updated (XCLD_TAG=...)`; that's how Compose knows whic
 docker compose up -d --wait
 ```
 
-`--wait` returns once the workspace is healthy.
+`--wait` returns once the workspace is healthy. By default this starts the canvas **and** the
+Excalidraw MCP Apps chat widget (the build writes `COMPOSE_PROFILES=widget` to `.env` once).
+The widget loads React/Excalidraw from esm.sh when it renders (#9). To run the canvas only,
+with no outside requests, set `COMPOSE_PROFILES=` (empty) in `.env`.
 
 ### 3. Draw something
 
@@ -63,13 +66,18 @@ docker exec xcld-collab xcld snapshot sandbox/demo     # remember this version
 # ...edit the drawing in the browser...
 docker exec xcld-collab xcld diff sandbox/demo         # what changed since the snapshot
 docker exec xcld-collab xcld to-mermaid sandbox/demo   # the drawing as Mermaid again
+docker exec xcld-collab xcld open-in-canvas <checkpointId> sandbox/from-chat
 docker exec -i xcld-collab xcld mcp                    # optional: MCP tools over stdio
 ```
 
-That's the whole loop. Your agent runs those same commands.
+That's the whole default loop. Your agent runs those same commands; `xcld mcp` is the stdio
+tools server inside the canvas container and does not require the chat widget profile.
 
-The image also runs the upstream Excalidraw MCP Apps UI as a second Compose service at
-<http://127.0.0.1:3001/mcp> for hosts that render MCP Apps.
+When the `widget` profile is enabled, the image also runs the upstream Excalidraw MCP Apps UI
+as a second Compose service at <http://127.0.0.1:3001/mcp> for hosts that render MCP Apps.
+If a host cannot open the widget editor, the widget shows its checkpoint id; use
+`open-in-canvas` (or MCP `open_in_canvas`) with an explicit board path to move the drawing
+into the persistent canvas.
 
 ### Stop
 
@@ -95,6 +103,7 @@ create there is gitignored. Nothing leaves your machine: the canvas is served fr
 | `XCLD_MAX_DEPTH` | `0` | Nested board folder limit; `0` means unlimited |
 | `XCLD_AUTO_EXPORT` | `snapshot` | When Mermaid is written for you: `off`, `snapshot` (each `xcld snapshot` also writes a `.mmd`) or `save` (also keeps `boards/.exports/<path>.mmd` current). See the [decision tree](docs/reference.md#saving-and-exporting) |
 | `XCLD_PUBLIC_URL` | `http://127.0.0.1:${XCLD_PORT}` | URL returned by MCP `board_url`; Compose sets this for the canvas service |
+| `COMPOSE_PROFILES` | `widget` (seeded by the build) | `widget` starts the Excalidraw MCP Apps chat widget with the canvas; set it empty (`COMPOSE_PROFILES=`) for canvas only, with no outside requests. The build never overwrites an existing value |
 
 Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wait` again.
 

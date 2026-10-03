@@ -9,3 +9,4 @@ import "./ids.test.mjs";
 import "./mcp.test.mjs";
 import "./snapshot.test.mjs";
 import "./to-mermaid.test.mjs";
+import "./view-inbox.test.mjs";
