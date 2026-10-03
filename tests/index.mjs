@@ -7,6 +7,7 @@ import "./diff.test.mjs";
 import "./export.test.mjs";
 import "./ids.test.mjs";
 import "./mcp.test.mjs";
+import "./rules.test.mjs";
 import "./snapshot.test.mjs";
 import "./to-mermaid.test.mjs";
 import "./view-inbox.test.mjs";

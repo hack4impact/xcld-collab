@@ -64,6 +64,22 @@ When the user says review is complete:
 Never rewrite Mermaid merely to export the current board. `read_board` returns Mermaid, and
 the CLI `xcld to-mermaid` or automatic exports are the non-destructive export paths.
 
+## Design rules
+
+Boards can have local conventions in `design-rules.csv` (the nearest folder's file wins;
+`boards/examples/` ships an example). Every rule is a **local default** that the user can
+override in their own folder's file; follow it, but don't treat it as fixed.
+
+- `read_board` and `write_mermaid` include the effective **briefing**: how to draw (e.g.
+  proposals in light blue, layout direction), what edits mean, and what "done" means. Read it
+  before drawing.
+- `diff` tags matching changes `[rule → meaning]` and lists each instruction once in a legend.
+  Act on the instruction; changes with no tag are still feedback to interpret.
+- If `diff` or `read_board` starts with a **WARNING** block, a rule is invalid and was
+  skipped. Tell the user which one.
+- Call `check_board` before you call a board done. It lists open items, such as remaining
+  proposals or unresolved notes.
+
 ## Existing boards
 
 - Use `list_boards` when the board path is unknown.

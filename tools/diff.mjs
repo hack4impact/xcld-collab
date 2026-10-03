@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectRuleLegend, formatRuleWarnings, loadEffectiveRulesForBoard, ruleTagText, rulesForChange } from "./rules.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
 const STYLE_PROPS = ["strokeColor", "backgroundColor", "fillStyle", "strokeStyle", "strokeWidth", "roughness", "opacity"];
@@ -44,7 +46,7 @@ export const makeModel = (elements) => {
   for (const element of live) {
     if (NODE_TYPES.has(element.type)) {
       nodes.set(element.id, { id: element.id, element, label: nodeLabel(element), type: isSubgraphContainer(element) ? "subgraph" : element.type });
-    } else if (element.type === "arrow") {
+    } else if (["arrow", "line", "freedraw"].includes(element.type)) {
       const startId = element.startBinding?.elementId ?? element.start?.id ?? null;
       const endId = element.endBinding?.elementId ?? element.end?.id ?? null;
       edges.set(element.id, { id: element.id, element, startId, endId, label: edgeLabel(element) });
@@ -55,6 +57,7 @@ export const makeModel = (elements) => {
 
   const labelFor = (id) => nodes.get(id)?.label || shortId(id);
   const edgePhrase = (edge) => {
+    if (!edge.startId && !edge.endId) return `${edge.element.type} mark`;
     const middle = edge.label ? ` --${edge.label}--> ` : " --> ";
     return `${labelFor(edge.startId)}${middle}${labelFor(edge.endId)}`;
   };
@@ -135,31 +138,84 @@ export const diffElements = (oldElements, newElements, files = {}) => {
   return diff;
 };
 
-export const diffFiles = async (oldFile, newFile) => diffElements(await readScene(oldFile), await readScene(newFile), { old: oldFile, new: newFile });
+const liveElements = (elements) => elements.filter((element) => !element.isDeleted);
+
+const boardNameFromFile = (file, boardsDir) => {
+  const root = path.resolve(boardsDir);
+  const absolute = path.resolve(file);
+  const relative = path.relative(root, absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  if (relative.split(path.sep).some((segment) => segment.startsWith("."))) return null;
+  if (path.extname(relative) !== ".excalidraw") return null;
+  return relative.slice(0, -".excalidraw".length).split(path.sep).join("/");
+};
+
+const annotateRules = async (diff, oldElements, newElements, options = {}) => {
+  const boardsDir = path.resolve(options.boardsDir || process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
+  const board = options.board || boardNameFromFile(diff.files.new, boardsDir);
+  if (!board) return diff;
+  const loaded = await loadEffectiveRulesForBoard(board, boardsDir);
+  diff.ruleDiagnostics = loaded.diagnostics;
+  diff.rulesFile = loaded.effectiveFile;
+  const oldModel = makeModel(oldElements);
+  const newModel = makeModel(newElements);
+  const oldLive = liveElements(oldElements);
+  const newLive = liveElements(newElements);
+  const addRules = (item, changeType, before, after) => {
+    item.rules = rulesForChange(loaded.rules, { changeType, before, after, allElements: changeType === "removed" ? oldLive : newLive });
+    return item;
+  };
+  for (const item of diff.nodes.added) addRules(item, "added", null, newModel.byId.get(item.id));
+  for (const item of diff.nodes.removed) addRules(item, "removed", oldModel.byId.get(item.id), null);
+  for (const item of diff.nodes.relabeled) addRules(item, "relabeled", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  for (const item of diff.edges.added) addRules(item, "added", null, newModel.byId.get(item.id));
+  for (const item of diff.edges.removed) addRules(item, "removed", oldModel.byId.get(item.id), null);
+  for (const item of diff.edges.rewired) addRules(item, "rewired", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  for (const item of diff.edges.relabeled) addRules(item, "relabeled", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  for (const item of diff.notes.added) addRules(item, "added", null, newModel.byId.get(item.id));
+  for (const item of diff.notes.removed) addRules(item, "removed", oldModel.byId.get(item.id), null);
+  for (const item of diff.notes.changed) addRules(item, "relabeled", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  for (const item of diff.styles) addRules(item, "restyled", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  for (const item of diff.moves) addRules(item, "moved", oldModel.byId.get(item.id), newModel.byId.get(item.id));
+  return diff;
+};
+
+export const diffFiles = async (oldFile, newFile, options = {}) => {
+  const oldElements = await readScene(oldFile);
+  const newElements = await readScene(newFile);
+  const diff = diffElements(oldElements, newElements, { old: oldFile, new: newFile });
+  return annotateRules(diff, oldElements, newElements, options);
+};
 
 export const formatDiff = (diff) => {
   const lines = [`Semantic diff ${diff.files.old ?? "old"} -> ${diff.files.new ?? "new"}`];
   const section = (title, entries) => { if (entries.length) { lines.push(`${title}:`); for (const entry of entries) lines.push(`  ${entry}`); } };
   section("Nodes", [
-    ...diff.nodes.added.map((item) => `+ added ${item.type} "${item.label}" (${item.id})`),
-    ...diff.nodes.removed.map((item) => `- removed "${item.label}" (${item.id})`),
-    ...diff.nodes.relabeled.map((item) => `~ relabeled "${item.from}" -> "${item.to}" (${item.id})`),
+    ...diff.nodes.added.map((item) => `+ added ${item.type} "${item.label}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.nodes.removed.map((item) => `- removed "${item.label}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.nodes.relabeled.map((item) => `~ relabeled "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
   section("Edges", [
-    ...diff.edges.added.map((item) => `+ added ${item.edge} (${item.id})`),
-    ...diff.edges.removed.map((item) => `- removed ${item.edge} (${item.id})`),
-    ...diff.edges.rewired.map((item) => `~ rewired ${item.from} -> ${item.to} (${item.id})`),
-    ...diff.edges.relabeled.map((item) => `~ label ${item.edge}: "${item.from}" -> "${item.to}" (${item.id})`),
+    ...diff.edges.added.map((item) => `+ added ${item.edge} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.edges.removed.map((item) => `- removed ${item.edge} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.edges.rewired.map((item) => `~ rewired ${item.from} -> ${item.to} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.edges.relabeled.map((item) => `~ label ${item.edge}: "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
   section("Notes", [
-    ...diff.notes.added.map((item) => `+ added "${item.text}"${item.nearestNode ? ` near "${item.nearestNode.label}"` : ""} (${item.id})`),
-    ...diff.notes.removed.map((item) => `- removed "${item.text}" (${item.id})`),
-    ...diff.notes.changed.map((item) => `~ changed "${item.from}" -> "${item.to}" (${item.id})`),
+    ...diff.notes.added.map((item) => `+ added "${item.text}"${item.nearestNode ? ` near "${item.nearestNode.label}"` : ""} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.notes.removed.map((item) => `- removed "${item.text}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.notes.changed.map((item) => `~ changed "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
-  section("Style", diff.styles.map((item) => `~ ${item.kind} "${item.subject}" ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})`));
-  section("Moves", diff.moves.map((item) => `~ ${item.kind} "${item.subject}": ${item.from} -> ${item.to} (${item.id})`));
+  section("Style", diff.styles.map((item) => `~ ${item.kind} "${item.subject}" ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${ruleTagText(item.rules)}`));
+  section("Moves", diff.moves.map((item) => `~ ${item.kind} "${item.subject}": ${item.from} -> ${item.to} (${item.id})${ruleTagText(item.rules)}`));
   if (lines.length === 1) lines.push("No semantic changes detected.");
-  return lines.join("\n");
+  const legend = collectRuleLegend(diff);
+  if (legend.length) {
+    lines.push("Rule legend:");
+    for (const rule of legend) lines.push(`  [${rule.id} → ${rule.means}] ${rule.instruct}`);
+  }
+  const warning = formatRuleWarnings(diff.ruleDiagnostics);
+  return warning ? `${warning}\n\n${lines.join("\n")}` : lines.join("\n");
 };
 
 export const main = async (argv = process.argv.slice(2)) => {

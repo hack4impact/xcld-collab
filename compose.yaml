@@ -13,6 +13,7 @@
 #   XCLD_BOARDS=./boards            # boards folder, relative to this file
 #   XCLD_MAX_DEPTH=0                # nested folder limit; 0 is unlimited
 #   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
+#   XCLD_DESIGN_RULES=...           # optional default rules CSV path; folder design-rules.csv overrides it
 #   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
 #   COMPOSE_PROFILES=widget         # default (seeded by the build); set empty for canvas only
 name: xcld-collab
@@ -30,6 +31,7 @@ services:
       XCLD_WATCH_POLL_MS: "${XCLD_WATCH_POLL_MS:-1000}"
       XCLD_MAX_DEPTH: "${XCLD_MAX_DEPTH:-0}"
       XCLD_AUTO_EXPORT: "${XCLD_AUTO_EXPORT:-snapshot}"
+      XCLD_DESIGN_RULES: "${XCLD_DESIGN_RULES:-}"
       XCLD_PUBLIC_URL: "http://127.0.0.1:${XCLD_PORT:-3100}"
     restart: unless-stopped
 

@@ -1,0 +1,19 @@
+# Example-only design rules for boards/examples/ and below.
+# A design-rules.csv in a folder replaces the inherited rules for that folder and its children.
+# Copy this file to boards/design-rules.csv or your own folder, then edit the local defaults.
+kind,rule_id,on,match,means,instruct
+interpret,approve,restyled,was.strokeColor=#1971c2;strokeColor=#1e1e1e,approved,"Promote to agreed; keep it in the Mermaid source"
+interpret,reject,removed,was.strokeColor=#1971c2,rejected,"Human removed a proposal; don't re-add without asking"
+interpret,note,added,type=text;bound=false,note,"A description, question or requested change for the nearest node; ask if unclear"
+interpret,question,restyled,backgroundColor=#ffec99,question,"Answer this in a nearby note before proceeding"
+interpret,optional,*,strokeStyle=dashed|dotted,optional,"Optional or conditional step/path; keep it dashed in Mermaid (-.->)"
+interpret,blocked,*,type=arrow;endArrowhead=bar,blocked,"Flow is blocked here; explain why or remove"
+interpret,priority,*,strokeWidth=4,priority,"Hot path; keep it prominent (==>)"
+interpret,out-of-scope,restyled,backgroundColor=#e9ecef,out-of-scope,"Ignore for now; don't expand or connect"
+interpret,group,added,type=frame,group,"These belong together; use a subgraph in Mermaid"
+draw,proposed-style,,,proposed,"Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2"
+draw,direction,,,LR,"Lay flowcharts out left to right"
+check,open-proposals,,strokeColor=#1971c2,open proposal,"Not done while light-blue nodes remain"
+check,open-notes,,type=text;bound=false,open note,"Not done while free notes remain; resolve each by drawing a line/arrow across it or deleting it"
+export,export-mode,,,save,"Keep .exports/<path>.mmd current for this folder"
+snapshot,on-agent-write,,,on,"Snapshot before every agent write"

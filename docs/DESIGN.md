@@ -286,40 +286,54 @@ structured `%% xcld:` comments carry annotations through Mermaid.
 
 ## Annotation convention — free-form by default, local design rules
 
+**Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`
+enforcement waits for versions/merge, v2 relational/fuzzy predicates remain out of scope
+except `crosses=`, and deterministic linter vocabulary generation is tracked as issue #6.
+
 - **Default: free-form.** Every change is relayed in the semantic diff, and the model
   interprets it.
 - **Optional local conventions:** `design-rules.csv` files supply meaning and
   instructions. A file at a narrower scope overrides a broader one:
-  1. board: `boards/<path>.design-rules.csv`
-  2. workspace: `boards/.xcld/design-rules.csv`
-  3. user: `~/.xcld-collab/design-rules.csv`
+  1. default: `boards/design-rules.csv`, or the path in `XCLD_DESIGN_RULES`
+  2. folder: `boards/<folder>/design-rules.csv`
 
-  These files are user-local and are never baked into the image.
+  The nearest folder file replaces the inherited rules for that folder and below. Rules are
+  not merged row-by-row. The starter file is intentionally scoped to
+  `boards/examples/design-rules.csv`, so repository defaults remain a user choice.
 - **Relay:** each change in the diff that matches a rule is tagged with the rule's meaning and
   instruction. Unmatched changes are still relayed free-form, so nothing is filtered out.
+- **Agent briefing:** `xcld rules <board>` plus MCP `read_board`/`write_mermaid` include the
+  effective draw, interpret and check rules.
+- **Checks and policy:** `xcld check <board>` and MCP `check_board` list open items. `export`
+  rows override `XCLD_AUTO_EXPORT` per folder, and `snapshot,on-agent-write` snapshots before
+  MCP agent writes.
 
 ### Schema (agreed)
 
 ```csv
-rule_id,on,match,means,instruct
-red-note,added,type=text;strokeColor=#e03131,feedback,"Change request for the nearest node; propose a fix before editing"
-strike,removed,type=*,rejected,"Human removed this; do not re-add without asking"
-yellow-fill,restyled,backgroundColor=#ffec99,question,"Answer in a note next to the node"
-dashed-edge,added,type=arrow;strokeStyle=dashed,proposed,"Proposed connection; confirm before adding to the Mermaid source"
-blocked,*,type=arrow;endArrowhead=bar,blocked,"Flow is blocked here; explain why or remove"
-plain-line,added,type=line|freedraw;bound=false,emphasis,"Human is pointing at something; ask what if unclear"
+kind,rule_id,on,match,means,instruct
+interpret,approve,restyled,was.strokeColor=#1971c2;strokeColor=#1e1e1e,approved,"Promote to agreed; keep it in the Mermaid source"
+interpret,note,added,type=text;bound=false,note,"A description, question or requested change for the nearest node; ask if unclear"
+draw,proposed-style,,,proposed,"Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2"
+check,open-proposals,,strokeColor=#1971c2,open proposal,"Not done while light-blue nodes remain"
+export,export-mode,,,save,"Keep .exports/<path>.mmd current for this folder"
+snapshot,on-agent-write,,,on,"Snapshot before every agent write"
 ```
 
 - `on` is one of: `added`, `removed`, `relabeled`, `rewired`, `restyled`, `moved` or `*`.
 - `match` is a list of predicates separated by `;` (all must hold), evaluated on the element's
-  state after the change.
-- When several rules match, all are relayed, ordered by scope (board first) and then by row.
+  state after the change. Prefix with `was.` to read the before-state. `removed` rules match
+  against the before-state.
+- `protect` rows parse and warn "not enforced yet (deferred until versions/merge)" but do not
+  fail validation.
+- When several rules match, all are relayed in file row order.
 
 Relay example:
 
 ```
-+ added note "validate schema edge" near "Valid?"  [red-note → feedback]
-  instruct: Change request for the nearest node; propose a fix before editing
++ added "validate schema edge" near "Valid?"  [note → note]
+Rule legend:
+  [note → note] A description, question or requested change for the nearest node; ask if unclear
 ```
 
 ### Match vocabulary
@@ -328,11 +342,13 @@ The property names and values are Excalidraw's own (`packages/element/src/types.
 a rule always means exactly what the user sees in the style panel.
 
 **v1: property predicates.** Operators are `=`, `!=`, `|` (any of) and `*` (any value).
+`was.` transitions are implemented. `crosses=` is the only v1 geometric predicate because
+open notes are resolved by drawing a line/arrow/freedraw across them.
 
 | Property | Values | Notes |
 |---|---|---|
 | `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `image` | `line` = no arrowheads by default; `freedraw` = pen strokes |
-| `strokeColor`, `backgroundColor` | hex, e.g. `#e03131` | Exact match on the palette value |
+| `strokeColor`, `backgroundColor` | hex, e.g. `#e03131` | Exact match on the palette value, normalized to lowercase |
 | `strokeStyle` | `solid`, `dashed`, `dotted` | Lines, arrows and shape outlines |
 | `strokeWidth` | `1`, `2`, `4` | Thin, bold and extra bold in the UI |
 | `fillStyle` | `hachure`, `cross-hatch`, `solid`, `zigzag` | |
@@ -341,13 +357,14 @@ a rule always means exactly what the user sees in the style panel.
 | `opacity` | `0`–`100` | |
 | `bound` *(derived)* | `true`, `false` | Arrow/line bound at either end, or text inside a container |
 | `frame` *(derived)* | frame name | Element sits inside the named frame |
+| `crosses` *(geometric)* | `note`/`text`, element type, or element id | For line/arrow/freedraw segment intersection with target bounding boxes |
 
 **v2: relational and fuzzy predicates.** These need geometry or interpretation, not just a
 property lookup:
 
 - `near=<node>`, `inside=<shape>`: proximity or containment.
 - `points_to=<node>`: endpoint proximity for **unbound** arrows/lines.
-- `crosses=<node|edge>`: a strike-through line drawn over something, e.g. "delete this".
+- `crosses=<node|edge>` beyond the v1 `crosses=note`/basic target support: richer strike-through semantics.
 - `encircles=<nodes>`: a pen loop around a group, e.g. "these belong together".
 - `color=red`: color families instead of exact hex values.
 - `label~=<regex>`: text match.

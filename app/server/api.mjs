@@ -5,6 +5,7 @@ import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/board-path.mjs";
 import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
+import { effectiveExportMode } from "../../tools/rules.mjs";
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
@@ -117,9 +118,9 @@ export function createBoardApi({
   let watcher;
   let closed = false;
 
-  // XCLD_AUTO_EXPORT=save keeps boards/.exports/<path>.mmd current (~2 ms per 500 nodes).
-  const exportBoard = (name) => {
-    if (autoExport !== "save") {
+  // XCLD_AUTO_EXPORT=save, or a folder export rule, keeps boards/.exports/<path>.mmd current.
+  const exportBoard = async (name) => {
+    if (await effectiveExportMode(name, root, autoExport) !== "save") {
       return Promise.resolve();
     }
     const source = path.join(root, ...`${name}.excalidraw`.split("/"));

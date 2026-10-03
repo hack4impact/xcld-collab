@@ -102,6 +102,7 @@ create there is gitignored. Nothing leaves your machine: the canvas is served fr
 | `XCLD_WATCH_POLL_MS` | `1000` | How often the server checks for file changes |
 | `XCLD_MAX_DEPTH` | `0` | Nested board folder limit; `0` means unlimited |
 | `XCLD_AUTO_EXPORT` | `snapshot` | When Mermaid is written for you: `off`, `snapshot` (each `xcld snapshot` also writes a `.mmd`) or `save` (also keeps `boards/.exports/<path>.mmd` current). See the [decision tree](docs/reference.md#saving-and-exporting) |
+| `XCLD_DESIGN_RULES` | `<boards>/design-rules.csv` | Optional path to the default design rules CSV (inside Docker, use `/boards/...`). A folder's own `design-rules.csv` still replaces the inherited defaults for boards below it |
 | `XCLD_PUBLIC_URL` | `http://127.0.0.1:${XCLD_PORT}` | URL returned by MCP `board_url`; Compose sets this for the canvas service |
 | `COMPOSE_PROFILES` | `widget` (seeded by the build) | `widget` starts the Excalidraw MCP Apps chat widget with the canvas; set it empty (`COMPOSE_PROFILES=`) for canvas only, with no outside requests. The build never overwrites an existing value |
 
@@ -128,8 +129,6 @@ These are designed but **not built yet**. Don't rely on them.
   how the board saves. Planned: every save becomes a version in `boards/.history/`, tagged
   with who made it (your tab or a named agent), plus `xcld versions` and
   `xcld diff --since`.
-- **Design rules.** A local `design-rules.csv` that tells agents what your conventions mean,
-  e.g. "red text = change request", tagging each change in the diff.
 - **More diagram types:** sequence, class, ER, state.
 
 ## Development

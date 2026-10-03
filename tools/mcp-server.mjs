@@ -8,6 +8,7 @@ import { z } from "zod";
 import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
+import { checkBoardRules, effectiveRulesBriefing, effectiveSnapshotMode, formatCheckResult } from "./rules.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
@@ -20,6 +21,7 @@ const conventions = [
   "Conventions: snapshot before human review and diff after.",
   "Never rewrite a board's .mmd before diffing and acting on feedback: the browser import replaces the board.",
   "Draw proposed parts in light blue: classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2.",
+  "Read the board's design-rules briefing; folder design-rules.csv files can replace local defaults.",
   "Use Mermaid flowcharts only; subgraphs are supported (they convert to grouped, editable shapes).",
 ].join(" ");
 
@@ -72,6 +74,8 @@ const formatSnapshotResult = (result) => {
   };
 };
 
+const briefingFor = async (board) => (await effectiveRulesBriefing(board, boardsDir())).text;
+
 const registerTool = (server, name, config, handler) => {
   server.registerTool(name, config, async (args) => {
     try {
@@ -119,7 +123,8 @@ export const createXcldMcpServer = () => {
       const result = {};
       if (outputFormat === "mermaid" || outputFormat === "both") result.mermaid = await fileToMermaid(file);
       if (outputFormat === "json" || outputFormat === "both") result.json = JSON.parse(await readFile(file, "utf8"));
-      return okText(outputFormat === "json" ? JSON.stringify(result.json, null, 2) : outputFormat === "mermaid" ? result.mermaid : JSON.stringify(result, null, 2), result);
+      result.briefing = await briefingFor(board);
+      return okText(outputFormat === "json" ? JSON.stringify(result, null, 2) : outputFormat === "mermaid" ? `${result.mermaid}\n\n${result.briefing}` : JSON.stringify(result, null, 2), result);
     },
   );
 
@@ -137,12 +142,21 @@ export const createXcldMcpServer = () => {
       if (!validateBoardName(board)) {
         throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
       }
+      let preWriteSnapshot = null;
+      if (await effectiveSnapshotMode(board, boardsDir()) === "on") {
+        const existingBoard = boardPath(board);
+        if (existsSync(existingBoard)) {
+          preWriteSnapshot = formatSnapshotResult(await snapshotBoard(board, boardsDir()));
+        }
+      }
       const target = path.resolve(boardFilePath(boardsDir(), board, ".mmd", { maxDepth: maxDepth() }));
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, `${String(mermaid).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n?$/, "\n")}`, "utf8");
       const result = {
         path: target,
         url: boardUrl(board),
+        preWriteSnapshot,
+        briefing: await briefingFor(board),
         reminder: "Open or keep open the URL so the browser converts this inbox Mermaid and REPLACES the board. Before rewriting .mmd again, run diff and act on feedback.",
       };
       return okText(JSON.stringify(result, null, 2), result);
@@ -191,8 +205,22 @@ export const createXcldMcpServer = () => {
       } else {
         throw new Error('Usage: provide "board" OR both "from" and "to".');
       }
-      const diff = await diffFiles(oldFile, newFile);
+      const diff = await diffFiles(oldFile, newFile, { board, boardsDir: boardsDir() });
       return okText(outputFormat === "json" ? JSON.stringify(diff, null, 2) : formatDiff(diff), diff);
+    },
+  );
+
+  registerTool(
+    server,
+    "check_board",
+    {
+      description: `List open design-rule check items for a board. ${conventions}`,
+      inputSchema: { board: z.string().describe("Board path without extension.") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ board }) => {
+      const result = await checkBoardRules(board, boardsDir());
+      return okText(formatCheckResult(result), result);
     },
   );
 

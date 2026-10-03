@@ -57,6 +57,142 @@ XCLD_AUTO_EXPORT: do you want Mermaid written automatically?
 - **To change it**, put `XCLD_AUTO_EXPORT=save` (or `off`) in `.env` and run
   `docker compose up -d --wait`. Allowed values: `off`, `snapshot`, `save`, in any case.
 
+## Design rules
+
+Design rules are local conventions for a board folder. They add tags and instructions to the
+diff, brief agents before they draw, and define "done" checks. They do **not** filter changes:
+unmatched edits still appear in the semantic diff.
+
+### Files and cascade
+
+- Default file: `<boards>/design-rules.csv` (`/boards/design-rules.csv` in the container).
+- Override the default path with `XCLD_DESIGN_RULES` (for example in `.env` or the process
+  environment). In Docker Compose this path is interpreted inside the container, so use
+  `/boards/...` for files in the mounted boards volume. Do not commit private registry or
+  credential values into this file.
+- A `design-rules.csv` in a boards subfolder replaces the inherited rules for that folder and
+  everything below it. Nearest file wins; rules are not merged row-by-row.
+- The shipped starter file is `boards/examples/design-rules.csv`, so it applies only to
+  `boards/examples/`. Copy it to your own folder or to `boards/design-rules.csv` when you want
+  defaults for other boards.
+
+### CSV format
+
+Blank lines and lines starting with `#` are ignored. Quoted fields can contain commas, CRLF and
+LF are accepted, and a UTF-8 BOM is tolerated.
+
+```csv
+kind,rule_id,on,match,means,instruct
+interpret,approve,restyled,was.strokeColor=#1971c2;strokeColor=#1e1e1e,approved,"Promote to agreed; keep it in the Mermaid source"
+draw,proposed-style,,,proposed,"Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2"
+check,open-proposals,,strokeColor=#1971c2,open proposal,"Not done while light-blue nodes remain"
+export,export-mode,,,save,"Keep .exports/<path>.mmd current for this folder"
+snapshot,on-agent-write,,,on,"Snapshot before every agent write"
+```
+
+| kind | on | match | means | instruct |
+|---|---|---|---|---|
+| `interpret` | change type: `added`, `removed`, `relabeled`, `rewired`, `restyled`, `moved` or `*` | predicates; `was.` reads the before-state | tag in the diff | legend text |
+| `draw` | — | — | drawing value/style name | briefing text for agents |
+| `check` | — | what is still open | label | why it blocks done |
+| `export` | — | — | `off`, `snapshot` or `save` | note |
+| `snapshot` | — | — | `on` or `off` | note |
+| `protect` | — | predicates | label | parsed and reported as "not enforced yet"; enforcement waits for versions/merge |
+
+### Match language
+
+Predicates are joined with `;` (AND). Values can be OR-ed with `|`. Use `!=` for not-equal and
+`*` for any present value. `was.<prop>` checks the before-state, so
+`was.strokeColor=#1971c2;strokeColor=#1e1e1e` means light-blue changed to black, not merely
+"is black now". Removed-item rules evaluate against the before-state.
+
+| Property | Values |
+|---|---|
+| `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `image` |
+| `strokeColor`, `backgroundColor` | exact `#rrggbb` hex, normalized to lowercase |
+| `strokeStyle` | `solid`, `dashed`, `dotted` |
+| `strokeWidth` | `1`, `2`, `4` |
+| `fillStyle` | `hachure`, `cross-hatch`, `solid`, `zigzag` |
+| `startArrowhead`, `endArrowhead` | `none`, `arrow`, `bar`, `dot`, `circle`, `circle_outline`, `triangle`, `triangle_outline`, `diamond`, `diamond_outline`, crow's-foot variants |
+| `elbowed` | `true`, `false` |
+| `opacity` | `0` through `100` |
+| `bound` *(derived)* | `true`, `false`; text inside a container or a line/arrow bound at either end |
+| `frame` *(derived)* | frame label/id containing the element |
+| `crosses` | `note`/`text`, an element type, or an element id. A `line`, `arrow` or `freedraw` element matches when one of its segments intersects the target element's bounding box. `crosses=note` means any free text note. |
+
+Open-note checks treat a free text note as resolved when a line/arrow/freedraw crosses it, or
+when it is deleted.
+
+### Commands and output
+
+`xcld rules <board>` prints the effective briefing. Captured from this repo:
+
+```text
+> xcld rules examples/demo
+Design rules for examples/demo: local defaults only; any folder can replace them with its own design-rules.csv.
+Effective file: /boards/examples/design-rules.csv
+Draw:
+  - proposed-style: proposed — Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2 (...)
+  - direction: LR — Lay flowcharts out left to right (...)
+Interpret:
+  - approve on restyled when was.strokeColor=#1971c2; strokeColor=#1e1e1e: approved — Promote to agreed; keep it in the Mermaid source (...)
+Check:
+  - open-proposals when strokeColor=#1971c2: open proposal — Not done while light-blue nodes remain (...)
+```
+
+`xcld rules check [board]` validates rules and exits 1 on bad CSV, unknown kind, unknown
+property/value/operator, with file:line messages and close-match suggestions. `protect` rows
+are warnings, not failures:
+
+```text
+> xcld rules check examples/demo
+Design rules valid: 1 file(s), 0 warning(s).
+```
+
+`xcld check <board>` lists open items from `check` rows and exits 1 while any remain:
+
+```text
+> xcld check examples/demo
+Design check found 2 open items for examples/demo:
+  - open proposal: Versions (rectangle Versions) [open-proposals]
+  - open proposal: Merge (rectangle Merge) [open-proposals]
+```
+
+Diff output gets short tags on matching changes and a deduped legend at the end:
+
+```text
+> xcld diff before.excalidraw after.excalidraw
+Semantic diff C:\...\before.excalidraw -> C:\...\after.excalidraw
+Style:
+  ~ node "Cache" strokeColor: #1971c2 -> #1e1e1e (Cache)  [approve → approved]
+Rule legend:
+  [approve → approved] Promote to agreed; keep it in the Mermaid source
+```
+
+`--json` adds a `rules` array to each change:
+
+```json
+"rules": [
+  {
+    "id": "approve",
+    "means": "approved",
+    "instruct": "Promote to agreed; keep it in the Mermaid source",
+    "scope": "C:/.../design-rules.csv"
+  }
+]
+```
+
+If rules are invalid, `xcld diff` still prints the diff but begins with a warning block and skips
+the bad rows. MCP diff responses include the same text/JSON diagnostics.
+
+### MCP behavior
+
+The `read_board` and `write_mermaid` tools include the effective design-rules briefing. The
+`diff` tool includes rule tags, JSON `rules`, legends and invalid-rule warnings. The
+`check_board` tool returns the same open-item data as `xcld check`. A `snapshot,on-agent-write`
+rule with `means=on` snapshots an existing board before MCP `write_mermaid` writes a new inbox
+Mermaid file; browser saves and CLI writes are not agent writes for this rule.
+
 ## Commands
 
 ### `xcld snapshot <board>`
@@ -113,7 +249,23 @@ Mermaid, it's the Mermaid node ID (`Fix`, `Req`), so agents can map it straight 
 
 `--json` prints the same data as an object: `files`, `nodes`
 (`added`/`removed`/`relabeled`), `edges` (`added`/`removed`/`rewired`/`relabeled`),
-`notes` (`added`/`removed`/`changed`), `styles`, `moves`.
+`notes` (`added`/`removed`/`changed`), `styles`, `moves`. Each change also has `rules: []`
+or matching rule objects when a design rule applies.
+
+### `xcld rules <board>`
+
+Prints the effective design-rules briefing for the board: draw conventions, interpret tags and
+check rules, with the file each rule came from.
+
+### `xcld rules check [board]`
+
+Validates either the files that can apply to a board, or every discovered rules file when no
+board is supplied. Exits 0 when valid and 1 on errors.
+
+### `xcld check <board>`
+
+Runs `check` rules against the current board. Exits 0 when no items are open and 1 when open
+items remain, so scripts can gate hand-offs on it.
 
 ### `xcld list [folder] [--json]`
 
@@ -247,17 +399,18 @@ returned as MCP tool errors (`isError: true`) with the CLI's friendly messages.
 
 Every tool description repeats the working conventions: snapshot before human review, diff
 after, never rewrite a board's `.mmd` before diffing and acting on feedback because that
-re-import replaces the board, use light blue for proposed parts
-(`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), and use flowcharts only
-(subgraphs are fine).
+re-import replaces the board, read the board's design-rules briefing, use light blue for
+proposed parts (`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), and use
+flowcharts only (subgraphs are fine).
 
 | Tool | Inputs | Output |
 |---|---|---|
 | `list_boards` | optional `folder` | Same JSON shape as `xcld list --json`: `{ boards, folders }` |
-| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Mermaid text, Excalidraw JSON, or both |
-| `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, and returns the file path, browser URL and replacement reminder |
+| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Mermaid text, Excalidraw JSON, or both, plus the effective design-rules briefing |
+| `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, returns the file path, browser URL, replacement reminder and design-rules briefing; snapshots first when `snapshot,on-agent-write` is on |
 | `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
-| `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff` |
+| `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings |
+| `check_board` | `board` | Same open-item result as `xcld check` |
 | `board_url` | `board` | `XCLD_PUBLIC_URL/?board=<path>`, defaulting to `http://127.0.0.1:3100/?board=<path>` |
 | `open_in_canvas` | `checkpointId`, required `board`, optional `overwrite` = `false` | Writes `boards/<path>.view.json` from an Excalidraw MCP checkpoint and returns the canvas URL |
 

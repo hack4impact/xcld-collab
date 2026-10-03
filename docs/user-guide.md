@@ -84,17 +84,29 @@ and an agent can later read or diff.
 ## Conventions
 
 These conventions are suggestions. The diff reports every change regardless, and the
-agent interprets it. Agree on them once and tell your agent (prompt below).
+agent interprets it. The example defaults live in
+[`boards/examples/design-rules.csv`](../boards/examples/design-rules.csv); copy that file to
+your own board folder and edit it when a project uses different meanings. A folder's
+`design-rules.csv` replaces inherited rules for that folder and below.
 
-| You want to say… | Do this in the canvas | The agent sees in `xcld diff` |
+| You want to say… | Do this in the canvas | The agent sees in `xcld diff` with the starter rules |
 |---|---|---|
 | "This is proposed, not agreed" (agent side) | Light-blue shape: stroke `#1971c2`, fill `#a5d8ff` | Shows up as colored nodes |
-| **Approve** | Change the stroke to black and the fill to transparent | `Style: ~ node "Cache" strokeColor: #1971c2 -> #1e1e1e` |
-| **Reject** | Delete the shape | `Nodes: - removed "Cache"` |
-| **Comment / ask** | Free text next to the shape | `Notes: + added "why not Redis?" near "Cache"` |
-| **Request a change** | Red free text next to the shape | Same as a comment; say "red = must fix" in your prompt |
+| **Approve** | Change the stroke to black and the fill to transparent | `Style: ~ node "Cache" strokeColor: #1971c2 -> #1e1e1e [approve → approved]` |
+| **Reject** | Delete the proposed shape | `Nodes: - removed "Cache" [reject → rejected]` |
+| **Comment / ask** | Free text next to the shape | `Notes: + added "why not Redis?" near "Cache" [note → note]` |
+| **Question** | Yellow fill | `[question → question]` |
+| **Optional / conditional** | Dashed or dotted arrow/outline | `[optional → optional]` |
+| **Blocked** | Arrowhead ending in a bar | `[blocked → blocked]` |
+| **Priority / hot path** | Extra-bold outline | `[priority → priority]` |
+| **Out of scope** | Gray fill | `[out-of-scope → out-of-scope]` |
+| **Belongs together** | Frame around boxes | `[group → group]` |
 | **Rename** | Double-click the shape and edit its text | `Nodes: ~ relabeled "Cache" -> "Redis cache"` |
 | **Reconnect** | Drag an arrow's end onto a different shape | `Edges: ~ rewired API --> Cache -> API --> DB` |
+
+Use `xcld rules <board>` to brief an agent on the effective local conventions, and
+`xcld check <board>` to list open check items such as unapproved light-blue proposals or
+free notes that have not been crossed out/deleted.
 
 **Canvas tips that keep the diff clean:**
 
@@ -124,8 +136,9 @@ We're using xcld-collab for diagrams. Boards live in ./boards; tools run with
 project, such as `boards/myproject/flow.mmd` and `?board=myproject/flow`.
 Conventions: draw anything new or unapproved in light blue with
 `classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`.
-When I change a node's stroke to black, that means approved. A deleted node is rejected.
-Free text near a node is a comment; red text is a change request.
+Run `xcld rules myproject/flow` before drawing or interpreting feedback. When I change a
+proposal's stroke to black, that means approved. A deleted proposal is rejected. Free text
+near a node is a note; a line crossing the note means it is resolved.
 Never rewrite a .mmd until you've diffed and acted on my feedback.
 ```
 
@@ -176,5 +189,5 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 - Some Mermaid shapes. A cylinder `[(DB)]` and other special shapes arrive as plain
   rectangles. Rectangles, diamonds `{}` and circles `(())` are kept.
 - Diagram direction. `to-mermaid` always writes `flowchart TD`.
-- Version history, merge on re-import and design rules: see
+- Version history and merge on re-import: see
   [Coming soon](../README.md#coming-soon).

@@ -5,6 +5,7 @@ import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
+import { checkBoardRules, effectiveRulesBriefing, formatCheckResult, formatRulesCheckDiagnostics, validateApplicableRules } from "./rules.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
@@ -17,6 +18,9 @@ Usage:
   xcld diff <a.excalidraw> <b.excalidraw> [--json]
   xcld to-mermaid <board|file>
   xcld snapshot <board>
+  xcld check <board>
+  xcld rules <board>
+  xcld rules check [board]
   xcld list [folder] [--json]
   xcld open-in-canvas <checkpointId> <board> [--overwrite]
   xcld mcp
@@ -88,6 +92,30 @@ const run = async (argv) => {
     console.log([result.board, result.mermaid].filter(Boolean).join("\n"));
     return;
   }
+  if (command === "check") {
+    if (args.length !== 1) throw new Error("Usage: xcld check <board>");
+    const result = await checkBoardRules(args[0], boardsDir());
+    console.log(formatCheckResult(result));
+    if (result.open.length || result.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+    return;
+  }
+  if (command === "rules") {
+    if (args[0] === "check") {
+      const names = args.slice(1);
+      if (names.length > 1) throw new Error("Usage: xcld rules check [board]");
+      const result = await validateApplicableRules(names[0], boardsDir());
+      const output = formatRulesCheckDiagnostics(result.diagnostics);
+      if (output) console.log(output);
+      const errorCount = result.diagnostics.filter((item) => item.severity === "error").length;
+      const warningCount = result.diagnostics.filter((item) => item.severity === "warning").length;
+      console.log(errorCount ? `Design rules invalid: ${errorCount} error(s), ${warningCount} warning(s).` : `Design rules valid: ${result.files.length} file(s), ${warningCount} warning(s).`);
+      if (errorCount) process.exitCode = 1;
+      return;
+    }
+    if (args.length !== 1) throw new Error("Usage: xcld rules <board> OR xcld rules check [board]");
+    console.log((await effectiveRulesBriefing(args[0], boardsDir())).text);
+    return;
+  }
   if (command === "list") {
     const jsonMode = args.includes("--json");
     const names = args.filter((arg) => arg !== "--json");
@@ -131,7 +159,7 @@ const run = async (argv) => {
     } else {
       throw new Error("Usage: xcld diff <board> [--json] OR xcld diff <a.excalidraw> <b.excalidraw> [--json]");
     }
-    const diff = await diffFiles(oldFile, newFile);
+    const diff = await diffFiles(oldFile, newFile, { board: names.length === 1 ? names[0] : undefined, boardsDir: boardsDir() });
     console.log(jsonMode ? JSON.stringify(diff, null, 2) : formatDiff(diff));
     return;
   }

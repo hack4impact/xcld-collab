@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 import { autoExportFromEnv, writeMermaidFromBoard } from "./export.mjs";
+import { effectiveExportMode } from "./rules.mjs";
 
 export const validateBoardName = (name) => validateBoardPath(name, { maxDepth: maxDepthFromEnv() }).ok;
 
@@ -45,8 +46,9 @@ export const snapshotBoard = async (
   const target = path.join(snapshotDir, `${leaf}.${timestamp}.excalidraw`);
   await mkdir(snapshotDir, { recursive: true });
   await copyFile(source, target);
-  // Returns the snapshot path(s): the board copy, plus its Mermaid unless XCLD_AUTO_EXPORT=off.
-  const mermaid = autoExport === "off"
+  const effectiveAutoExport = await effectiveExportMode(name, root, autoExport);
+  // Returns the snapshot path(s): the board copy, plus its Mermaid unless auto-export is off.
+  const mermaid = effectiveAutoExport === "off"
     ? null
     : await writeMermaidFromBoard(target, path.join(snapshotDir, `${leaf}.${timestamp}.mmd`));
   return { board: target, mermaid };

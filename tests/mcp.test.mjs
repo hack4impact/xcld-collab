@@ -78,6 +78,12 @@ const callTool = async (server, name, args = {}) => {
 test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !existsSync(bundlePath) && "Run cd app; npm install; npm run build before MCP tests." }, async () => {
   const root = path.resolve(".test-run", `mcp-${Date.now()}-${process.pid}`);
   await mkdir(path.join(root, "p"), { recursive: true });
+  await writeFile(path.join(root, "p", "design-rules.csv"), [
+    "kind,rule_id,on,match,means,instruct",
+    "draw,direction,,,LR,Use left-to-right flowcharts",
+    "check,open-notes,,type=text;bound=false,open note,Resolve notes",
+    "snapshot,on-agent-write,,,on,Snapshot before every agent write",
+  ].join("\n"), "utf8");
   const server = startServer(root);
   try {
     const init = await server.send("initialize", {
@@ -92,7 +98,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(listedTools.error, undefined, JSON.stringify(listedTools));
     assert.deepEqual(
       listedTools.result.tools.map((tool) => tool.name).sort(),
-      ["board_url", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_mermaid"],
+      ["board_url", "check_board", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_mermaid"],
     );
 
     const write = await callTool(server, "write_mermaid", {
@@ -102,6 +108,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(write.isError, undefined);
     assert.equal(existsSync(path.join(root, "p", "flow.mmd")), true);
     assert.match(write.content[0].text, /REPLACES the board/);
+    assert.match(write.structuredContent.briefing, /Design rules/);
 
     const checkpointDir = path.join(root, ".xcld", "mcp-checkpoints", "excalidraw-mcp-checkpoints");
     await mkdir(checkpointDir, { recursive: true });
@@ -112,6 +119,12 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.match(open.content[0].text, /converts/);
 
     await writeFile(path.join(root, "p", "flow.excalidraw"), await readFile(path.resolve("tests", "fixtures", "fixture-a.excalidraw"), "utf8"), "utf8");
+    const writeAgain = await callTool(server, "write_mermaid", {
+      board: "p/flow",
+      mermaid: "flowchart TD\n  A[Again] --> B[Done]\n",
+    });
+    assert.equal(existsSync(writeAgain.structuredContent.preWriteSnapshot.paths.board), true, "snapshot rule should snapshot before MCP agent writes");
+
     const boards = await callTool(server, "list_boards", { folder: "p" });
     assert.equal(boards.structuredContent.boards.some((board) => board.name === "p/flow"), true);
     assert.equal(boards.structuredContent.boards.some((board) => board.name === "p/chat" && board.viewPending), true);
@@ -126,6 +139,10 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
 
     const read = await callTool(server, "read_board", { board: "p/flow", format: "mermaid" });
     assert.match(read.content[0].text, /^flowchart TD/);
+    assert.match(read.content[0].text, /Design rules/);
+
+    const check = await callTool(server, "check_board", { board: "p/flow" });
+    assert.match(check.content[0].text, /open note/);
 
     const invalid = await callTool(server, "board_url", { board: "../bad" });
     assert.equal(invalid.isError, true);
