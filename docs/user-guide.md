@@ -15,6 +15,9 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
   from the tab or close it.
 - **Mermaid goes in through the inbox.** An agent writes `boards/<path>.mmd`, and the open
   tab converts it into the board. A board opened for the first time converts too.
+- **A board URL does not seed a diagram.** Opening `?board=<path>` without first writing
+  Mermaid creates and saves an empty board. The agent must write the Mermaid inbox before
+  it gives you the URL.
 - **Feedback comes out through `xcld diff`.** It compares the board with a snapshot and lists
   what changed, by meaning rather than by pixel.
 
@@ -35,6 +38,29 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
 > on that board are lost until [merge on re-import](../README.md#coming-soon) ships. Make
 > sure the agent has run `xcld diff` and acted on your feedback *before* it rewrites the
 > Mermaid. To keep a copy, `xcld snapshot` first.
+
+## The loop with MCP tools
+
+The `xcld-probe` MCP tools expose the same workflow without shell commands. For a new board,
+the order matters:
+
+1. The agent calls `write_mermaid` with the board path and a flat `flowchart TD`.
+2. The agent calls `board_url` and gives you the returned localhost URL.
+3. You open or keep open that URL. The browser consumes the Mermaid inbox, replaces the
+   canvas with editable Excalidraw elements and autosaves the `.excalidraw` board.
+4. The agent calls `read_board` to verify conversion, then `snapshot` before handing the
+   board to you for review.
+5. You edit the board in the localhost Excalidraw canvas and tell the agent when you are done.
+6. The agent calls `diff` before changing anything, acts on every reported edit, and
+   snapshots the next review baseline.
+
+Calling `board_url` first is not creation: visiting that URL can create a saved but empty
+board. If that happens, keep the tab open and call `write_mermaid`; the tab will consume the
+inbox and replace the blank canvas. Reload once if the watcher misses the update.
+
+Use `excalidraw-probe` when you only need a transient diagram inside chat. Use `xcld-probe`
+when the diagram must persist as a named board that a human can edit in the localhost canvas
+and an agent can later read or diff.
 
 ## Conventions
 
@@ -65,7 +91,9 @@ agent interprets it. Agree on them once and tell your agent (prompt below).
 
 ## Prompts for your agent
 
-Note for initial release: skills/instructions will be included with excalidraw-mcp spike.
+Agents that support repository skills should use
+[the xcld-collab skill](../.github/skills/xcld-collab/SKILL.md). The prompts below are for
+clients that do not load repository skills.
 
 Paste these into agent terminal (Copilot, Codex, Claude Code, OpenCode, etc.) from the `xcld-collab` folder.
 

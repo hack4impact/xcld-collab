@@ -78,6 +78,22 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // The MCP widget renders in a sandboxed iframe (VS Code, Claude Desktop) and fetches
+    // Excalidraw fonts from here cross-origin. Only these public, read-only static assets
+    // get CORS (incl. Chromium's Private Network Access preflight); boards and the API never do.
+    if ((req.url ?? "").startsWith("/excalidraw-assets/")) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      if (req.method === "OPTIONS") {
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD");
+        if (req.headers["access-control-request-private-network"] === "true") {
+          res.setHeader("Access-Control-Allow-Private-Network", "true");
+        }
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+    }
+
     if (await api.handle(req, res)) {
       return;
     }

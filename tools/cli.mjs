@@ -17,6 +17,7 @@ Usage:
   xcld to-mermaid <board|file>
   xcld snapshot <board>
   xcld list [folder] [--json]
+  xcld mcp
   xcld help
 `;
 const boardPath = (name) => {
@@ -114,6 +115,16 @@ const run = async (argv) => {
     }
     const diff = await diffFiles(oldFile, newFile);
     console.log(jsonMode ? JSON.stringify(diff, null, 2) : formatDiff(diff));
+    return;
+  }
+  if (command === "mcp") {
+    if (args.length !== 0) throw new Error("Usage: xcld mcp");
+    const bundle = new URL("./mcp.bundle.mjs", import.meta.url);
+    if (!existsSync(bundle)) {
+      throw new Error("MCP bundle not found. Run \"cd app; npm install; npm run build\" first, then retry \"xcld mcp\".");
+    }
+    const { startStdioServer } = await import(bundle.href);
+    await startStdioServer();
     return;
   }
   throw new Error(`Unknown command: ${command}`);

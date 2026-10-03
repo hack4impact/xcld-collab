@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "copy-assets": "node ../tools/copy-assets.mjs",
+    "build:mcp": "node scripts/build-mcp.mjs",
     "dev": "npm run copy-assets && vite --host 127.0.0.1",
-    "build": "npm run copy-assets && tsc --noEmit && vite build",
+    "build": "npm run copy-assets && npm run build:mcp && tsc --noEmit && vite build",
     "start": "node server/index.mjs"
   },
   "dependencies": {
@@ -28,7 +29,10 @@
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.3.4",
+    "@modelcontextprotocol/sdk": "1.25.2",
+    "esbuild": "^0.25.10",
     "typescript": "^5.9.3",
-    "vite": "^5.4.20"
+    "vite": "^5.4.20",
+    "zod": "^4.0.0"
   }
 }

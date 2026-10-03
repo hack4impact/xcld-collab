@@ -201,6 +201,168 @@ levels.
 - `GET /api/boards` returns `{ boards, folders }` with board paths, folder/leaf names, board
   and Mermaid presence, Mermaid pending state and last modified time.
 
+## MCP
+
+There are two MCP entry points in the image:
+
+1. **`xcld mcp`** is the primary agent tools server. It speaks MCP over stdio, so clients
+   launch it with `docker exec -i xcld-collab xcld mcp`. It adds no port and uses the same
+   board volume as the canvas.
+2. **`excalidraw-mcp`** is the MCP Apps UI service. Compose serves it at
+   `http://127.0.0.1:3001/mcp` for hosts that render MCP Apps widgets, such as VS Code and
+   Claude Desktop. Its `export_to_excalidraw` upload flow and Excalidraw Plus menu link are
+   patched out at build time.
+
+### `xcld mcp` tools
+
+All board paths are validated with the same rules as `xcld` board paths. Tool errors are
+returned as MCP tool errors (`isError: true`) with the CLI's friendly messages.
+
+Every tool description repeats the working conventions: snapshot before human review, diff
+after, never rewrite a board's `.mmd` before diffing and acting on feedback because that
+re-import replaces the board, use light blue for proposed parts
+(`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), and use flowcharts only
+(subgraphs are fine).
+
+| Tool | Inputs | Output |
+|---|---|---|
+| `list_boards` | optional `folder` | Same JSON shape as `xcld list --json`: `{ boards, folders }` |
+| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Mermaid text, Excalidraw JSON, or both |
+| `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, and returns the file path, browser URL and replacement reminder |
+| `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
+| `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff` |
+| `board_url` | `board` | `XCLD_PUBLIC_URL/?board=<path>`, defaulting to `http://127.0.0.1:3100/?board=<path>` |
+
+Host development:
+
+```powershell
+cd app
+npm install
+npm run build      # creates gitignored tools/mcp.bundle.mjs
+cd ..
+$env:XCLD_BOARDS_DIR='boards'
+node tools/cli.mjs mcp
+```
+
+### Client configuration snippets
+
+Use the container name you actually started. For parallel smoke tests in this repo, set
+`XCLD_CONTAINER=xcld-w3` and use `xcld-w3` below.
+
+**GitHub Copilot CLI** — documentation format verified from GitHub Docs; not connected
+through Copilot CLI on this machine. Protocol was tested separately with the MCP server.
+
+`%USERPROFILE%\.copilot\mcp-config.json` or a trusted repo `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "xcld": {
+      "type": "local",
+      "command": "docker",
+      "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Or add it from a terminal:
+
+```powershell
+copilot mcp add xcld -- docker exec -i xcld-collab xcld mcp
+```
+
+**Claude Code** — documentation format verified from Anthropic docs; `claude` was not
+installed here.
+
+```powershell
+claude mcp add --transport stdio xcld -- docker exec -i xcld-collab xcld mcp
+```
+
+Project `.mcp.json` equivalent:
+
+```json
+{
+  "mcpServers": {
+    "xcld": {
+      "command": "docker",
+      "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"]
+    }
+  }
+}
+```
+
+**Codex CLI** — documentation-only here; `codex` was not installed.
+
+`%USERPROFILE%\.codex\config.toml`:
+
+```toml
+[mcp_servers.xcld]
+command = "docker"
+args = ["exec", "-i", "xcld-collab", "xcld", "mcp"]
+enabled = true
+```
+
+**OpenCode** — documentation format verified from OpenCode docs; `opencode` was not
+installed here.
+
+`opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "xcld": {
+        "type": "local",
+        "command": ["docker", "exec", "-i", "xcld-collab", "xcld", "mcp"]
+      }
+    }
+  }
+}
+```
+
+**VS Code** — documentation format verified from VS Code docs; `code` was installed, but
+the widget was not rendered in a real chat session on this machine.
+
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "xcld": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"]
+    },
+    "xcld-excalidraw-ui": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp"
+    }
+  }
+}
+```
+
+### Excalidraw MCP Apps UI service
+
+Compose starts a second service named `mcp` from the same image:
+
+```text
+http://127.0.0.1:3001/mcp
+```
+
+It is upstream `excalidraw-mcp` at the pinned SHA in `pins.json`, patched during the Docker
+build. Checkpoints use `TMPDIR=/boards/.xcld/mcp-checkpoints`, so user edits survive service
+restarts and the dot-folder stays hidden from the board browser and `xcld list`.
+
+**Network status:** the widget currently loads React, React DOM, Excalidraw and morphdom from
+`https://esm.sh` through upstream Vite externals and the MCP Apps CSP. This is intentionally
+left as an open item for the part 3c network spike. Do **not** claim the widget is zero-egress
+yet. The switch points are the excalidraw-mcp build patch for `vite.config.ts`
+(`rollupOptions.external` / `output.paths`) and `src/server.ts` (`resourceDomains` /
+`connectDomains`).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -209,6 +371,7 @@ levels.
 | `Bind for 127.0.0.1:3100 failed: port is already allocated` | Something else is using 3100 | Put `XCLD_PORT=3200` in `.env`, run `docker compose up -d --wait`, then use `http://127.0.0.1:3200` |
 | `No snapshots found for <board>` | `diff <board>` needs a "before" picture | `xcld snapshot <board>`, edit, then `diff` |
 | `Board not found: <board>` | The board file doesn't exist yet | Open `http://127.0.0.1:3100/?board=<board>` (it converts `<board>.mmd` if present), or check the path |
+| The board opens but the canvas is empty | The URL was opened before Mermaid was written, so the browser created and saved an empty board | Call MCP `write_mermaid` or write `boards/<board>.mmd` while the tab stays open. The browser replaces the blank canvas; reload once if it misses the update |
 | The agent wrote `<board>.mmd` but nothing appeared | Conversion runs in the browser | Open (or keep open) a tab on `?board=<board>` |
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |

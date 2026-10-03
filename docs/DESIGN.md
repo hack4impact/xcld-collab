@@ -12,7 +12,9 @@ edit the same diagram, and every change can be read back as a precise, semantic 
 - One container that teams and students run locally, the same on Windows, macOS and Linux.
 - Mermaid flowchart → Excalidraw → human/agent edits → semantic diff → Mermaid flowchart.
 - Works from Copilot CLI (terminal), VS Code, and a plain browser.
-- No runtime egress. Nothing is uploaded to excalidraw.com, and no assets load from a CDN.
+- No runtime egress for the canvas and `xcld` tools. Nothing is uploaded to excalidraw.com.
+  **Exception:** the optional `excalidraw-mcp` widget still loads React/Excalidraw from
+  `esm.sh`; resolving that is the part 3c network spike.
 
 **Out of scope for v1:** sequence, class, ER and state diagrams (next), multi-user
 collaboration, and hosted deployment.
@@ -24,9 +26,10 @@ host                                     container (127.0.0.1 only)
 ─────────────────────────────            ───────────────────────────────────────
 default browser ── http :3100 ─────────▶ canvas app (Excalidraw @ pinned SHA,
   (renders, converts Mermaid,              self-hosted assets) + board API + SSE
-   human annotates)                      excalidraw-mcp @ pinned SHA, HTTP :3001
-Copilot CLI / VS Code ── MCP :3001 ────▶   (export-to-excalidraw.com patched out)
-agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapshot
+   human annotates)                      xcld MCP tools over stdio
+Copilot/Claude/Codex/OpenCode ─────────▶   (docker exec -i ... xcld mcp)
+VS Code / MCP Apps hosts ── http :3001 ▶ excalidraw-mcp @ pinned SHA
+agent shell ── reads/writes files ─┐       (export-to-excalidraw.com patched out)
                                    └──── ./boards  (bind mount, source of truth)
 ```
 
@@ -87,10 +90,13 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
   - `app`: our canvas, built against the vendor tarballs. npm `overrides` force
     Excalidraw's own `@excalidraw/*` and `mermaid-to-excalidraw` dependencies to the
     source builds.
-  - `runtime`: Node 22 slim with built artifacts only: the bundled SPA, the server and the
-    tools, which use only Node built-ins. No `node_modules` ship in it. It runs as non-root,
-    has no git and no registry config, includes a healthcheck, and puts the `xcld` CLI on the
-    PATH.
+  - `excalidraw-mcp`: fetches the pinned MCP Apps server, installs `pnpm@10.11.0` with npm
+    through `with-registry`, applies versioned patches with `git apply --check`, installs
+    with `pnpm install --frozen-lockfile`, and runs the upstream build.
+  - `runtime`: Node 22 slim with built artifacts only: the bundled SPA, the server, the
+    bundled `xcld mcp` stdio server, the tools, and the built `excalidraw-mcp` dist. No
+    `node_modules` ship in it. It runs as non-root, has no git and no registry config,
+    includes a healthcheck, and puts the `xcld` CLI on the PATH.
   - **Measured:** dropping the unused `node_modules` (265 MB, mostly `mermaid` and
     `@excalidraw`, already bundled into the 23 MB `dist`) cut the image from 719 MB.
 - **Registry**, first match wins: `-Registry`, then `$XCLD_NPM_REGISTRY`, then the user's
@@ -125,7 +131,9 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
 - **Running:** `compose.yaml` (lead decision, 2026-10-02) replaced the per-OS start
   scripts. The build scripts compute the tag and write `XCLD_IMAGE`/`XCLD_TAG` to a
   gitignored `.env`, plus `XCLD_UID`/`XCLD_GID` on Linux. `docker compose up -d --wait`
-  reads them. Phase A's MCP server becomes a second service.
+  reads them. It starts the canvas and the optional `excalidraw-mcp` MCP Apps service.
+  `container_name` is overridable (`XCLD_CONTAINER`, `XCLD_MCP_CONTAINER`) so parallel smoke
+  projects do not collide with the default `xcld-collab` container.
 - **User docs:** `README.md` (getting started, coming soon), `docs/user-guide.md`
   (conventions, loop, prompts) and `docs/reference.md` (CLI, mapping, troubleshooting).
   Their example output is captured from real runs.
@@ -147,10 +155,15 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
     not start with a `#!` line. Vite bundles its config with esbuild, which rejects a shebang
     that isn't at the start of the bundle (found in the first build with auto-export).
 
-- **Phase B (now):** canvas + board API + `xcld` tools (`diff`, `to-mermaid`, `snapshot`,
-  merge). No MCP in the image.
-- **Phase A (next):** add `excalidraw-mcp` at its pinned SHA. Its widget's CDN use must be
-  resolved first; see "Data boundary".
+- **Phase B (built):** canvas + board API + `xcld` tools (`diff`, `to-mermaid`, `snapshot`,
+  list) and auto-export.
+- **Part 3a (built):** `xcld mcp`, the primary tools server for Copilot CLI, Claude Code,
+  Codex and OpenCode. It is bundled at build time with esbuild and runs over stdio, usually
+  as `docker exec -i xcld-collab xcld mcp`.
+- **Part 3b (built):** `excalidraw-mcp` at its pinned SHA as a second HTTP service for MCP
+  Apps hosts. Its upload/export flow is patched out; checkpoints persist under the boards
+  volume through `TMPDIR=/boards/.xcld/mcp-checkpoints`.
+- **Part 3c (not built):** decide the widget network boundary collaboratively.
 
 ## Data boundary
 
@@ -171,11 +184,17 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
 - **MCP widget CDN (verified, `excalidraw-mcp@157aa23`).** The widget leaves React and
   Excalidraw 0.18.0 out of its bundle and loads them from `https://esm.sh` at runtime
   (`vite.config.ts` externals; CSP `resourceDomains` in `server.ts:650`).
-  - **Decision (lead, 2026-10-02):** option 1. A build-time patch points the import map
-    at `http://127.0.0.1:3100/vendor/...`, served by our container, and limits the CSP to
-    that origin. The widget and the canvas then share one Excalidraw build at the pinned SHA.
-  - Test the VS Code widget sandbox in phase A. If it blocks localhost loads, fall back to
-    option 2 and inline everything into the widget's single HTML file.
+  - **Decision (lead, 2026-10-02):** leave this as upstream for parts 3a/3b. Part 3c will
+    decide between serving those dependencies from our container and inlining them into the
+    widget. The exact switch points are a new patch under `patches/excalidraw-mcp/` that
+    changes `vite.config.ts` (`rollupOptions.external` / `output.paths`) and `src/server.ts`
+    (`resourceDomains` / `connectDomains`).
+  - Test the VS Code and Claude Desktop widget sandboxes in part 3c. If they block localhost
+    loads, inline everything into the widget's single HTML file.
+- **DNS rebinding:** ports are bound to `127.0.0.1` on the host. The MCP Apps service binds
+  `0.0.0.0` inside the container so Docker port publishing can reach it. No cheap
+  `createMcpExpressApp` allowed-hosts option was verified in this pass, so host-header
+  enforcement is an open hardening item for the network spike.
 - Publishing gate: the lead approves every PR that goes from the internal clone to the
   public GitHub repo.
 

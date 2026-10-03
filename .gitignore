@@ -1,6 +1,7 @@
 node_modules/
 dist/
 app/vendor/
+tools/mcp.bundle.mjs
 boards/*
 !boards/examples/
 *.log

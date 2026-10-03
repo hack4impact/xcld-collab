@@ -6,6 +6,9 @@
 #
 # Optional overrides in .env (or your shell):
 #   XCLD_PORT=3100                  # host port, always bound to 127.0.0.1
+#   XCLD_MCP_PORT=3001              # host port for the excalidraw-mcp UI service
+#   XCLD_CONTAINER=xcld-collab      # canvas container name; override for parallel smokes
+#   XCLD_MCP_CONTAINER=xcld-mcp     # MCP UI service container name
 #   XCLD_BOARDS=./boards            # boards folder, relative to this file
 #   XCLD_MAX_DEPTH=0                # nested folder limit; 0 is unlimited
 #   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
@@ -15,7 +18,7 @@ name: xcld-collab
 services:
   canvas:
     image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
-    container_name: xcld-collab
+    container_name: ${XCLD_CONTAINER:-xcld-collab}
     ports:
       - "127.0.0.1:${XCLD_PORT:-3100}:3100"
     volumes:
@@ -25,4 +28,27 @@ services:
       XCLD_WATCH_POLL_MS: "${XCLD_WATCH_POLL_MS:-1000}"
       XCLD_MAX_DEPTH: "${XCLD_MAX_DEPTH:-0}"
       XCLD_AUTO_EXPORT: "${XCLD_AUTO_EXPORT:-snapshot}"
+      XCLD_PUBLIC_URL: "http://127.0.0.1:${XCLD_PORT:-3100}"
+    restart: unless-stopped
+
+  mcp:
+    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
+    container_name: ${XCLD_MCP_CONTAINER:-xcld-mcp}
+    entrypoint: ["node", "/opt/xcld-collab/excalidraw-mcp/dist/index.js"]
+    ports:
+      - "127.0.0.1:${XCLD_MCP_PORT:-3001}:3001"
+    volumes:
+      - "${XCLD_BOARDS:-./boards}:/boards"
+    user: "${XCLD_UID:-1000}:${XCLD_GID:-1000}"
+    environment:
+      PORT: "3001"
+      TMPDIR: "/boards/.xcld/mcp-checkpoints"
+      # Fonts for the widget come from the canvas container (CORS-enabled /excalidraw-assets/).
+      XCLD_ASSET_ORIGIN: "http://127.0.0.1:${XCLD_PORT:-3100}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "const net=require('node:net');const s=net.connect(3001,'127.0.0.1',()=>process.exit(0));s.on('error',()=>process.exit(1));s.setTimeout(2000,()=>process.exit(1));"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped

@@ -63,9 +63,13 @@ docker exec xcld-collab xcld snapshot sandbox/demo     # remember this version
 # ...edit the drawing in the browser...
 docker exec xcld-collab xcld diff sandbox/demo         # what changed since the snapshot
 docker exec xcld-collab xcld to-mermaid sandbox/demo   # the drawing as Mermaid again
+docker exec -i xcld-collab xcld mcp                    # optional: MCP tools over stdio
 ```
 
 That's the whole loop. Your agent runs those same commands.
+
+The image also runs the upstream Excalidraw MCP Apps UI as a second Compose service at
+<http://127.0.0.1:3001/mcp> for hosts that render MCP Apps.
 
 ### Stop
 
@@ -83,10 +87,14 @@ create there is gitignored. Nothing leaves your machine: the canvas is served fr
 | Setting | Default | What it does |
 |---|---|---|
 | `XCLD_PORT` | `3100` | Port on `127.0.0.1` |
+| `XCLD_MCP_PORT` | `3001` | Host port for the Excalidraw MCP Apps UI service at `/mcp` |
+| `XCLD_CONTAINER` | `xcld-collab` | Canvas container name. Override when running multiple Compose projects side by side |
+| `XCLD_MCP_CONTAINER` | `xcld-mcp` | MCP UI service container name |
 | `XCLD_BOARDS` | `./boards` | Boards folder. Relative paths are relative to `compose.yaml`, so use an absolute path for a folder in another repo |
 | `XCLD_WATCH_POLL_MS` | `1000` | How often the server checks for file changes |
 | `XCLD_MAX_DEPTH` | `0` | Nested board folder limit; `0` means unlimited |
 | `XCLD_AUTO_EXPORT` | `snapshot` | When Mermaid is written for you: `off`, `snapshot` (each `xcld snapshot` also writes a `.mmd`) or `save` (also keeps `boards/.exports/<path>.mmd` current). See the [decision tree](docs/reference.md#saving-and-exporting) |
+| `XCLD_PUBLIC_URL` | `http://127.0.0.1:${XCLD_PORT}` | URL returned by MCP `board_url`; Compose sets this for the canvas service |
 
 Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wait` again.
 
@@ -96,6 +104,8 @@ Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wai
   work with agents.
 - **[Reference](docs/reference.md):** every `xcld` command, the Mermaid mapping, and
   troubleshooting.
+- **[Agent skill](.github/skills/xcld-collab/SKILL.md):** the safe MCP workflow for
+  creating, reviewing and revising boards.
 - **[Design](docs/DESIGN.md):** how it works and why, for contributors.
 
 ## Coming soon
@@ -111,7 +121,6 @@ These are designed but **not built yet**. Don't rely on them.
   `xcld diff --since`.
 - **Design rules.** A local `design-rules.csv` that tells agents what your conventions mean,
   e.g. "red text = change request", tagging each change in the diff.
-- **VS Code / MCP.** The board inside VS Code chat through the Excalidraw MCP server.
 - **More diagram types:** sequence, class, ER, state.
 
 ## Development

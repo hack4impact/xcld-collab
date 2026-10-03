@@ -3,8 +3,7 @@
 # xcld-collab — phase B image: local Excalidraw canvas + board API + CLI tools.
 #
 # Build with build.ps1 / build.sh. They resolve the upstream SHAs (pins.json or
-# latest), compute the tag <ours7>-<exc7>-<m2e7>-0000000 (the MCP slot is
-# zero-filled until phase A), and pass everything below as
+# latest), compute the tag <ours7>-<exc7>-<m2e7>-<mcp7>, and pass everything below as
 # build args. A plain `docker build .` fails fast because the SHAs are required.
 #
 # Registry: public npm by default. Pass --build-arg NPM_CONFIG_REGISTRY=<url> to
@@ -76,6 +75,30 @@ RUN yarn build \
  && ls -l /out
 
 # ----------------------------------------------------------------------------
+# excalidraw-mcp: MCP Apps UI server at the pinned SHA, patched to remove export
+# to excalidraw.com. It keeps the upstream esm.sh widget loading for now; the 3c
+# network spike decides whether to serve those dependencies locally or inline.
+# ----------------------------------------------------------------------------
+FROM builder-base AS excalidraw-mcp
+ARG MCP_REPO=https://github.com/excalidraw/excalidraw-mcp.git
+ARG MCP_SHA
+ARG NPM_CONFIG_REGISTRY=""
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    with-registry npm install -g pnpm@10.11.0 --force --no-audit --no-fund \
+ && pnpm --version
+RUN fetch-at-sha "$MCP_REPO" "$MCP_SHA" /src/excalidraw-mcp
+WORKDIR /src/excalidraw-mcp
+COPY patches/excalidraw-mcp/ /patches/excalidraw-mcp/
+RUN for p in /patches/excalidraw-mcp/*.patch; do \
+      git apply --check "$p"; \
+      git apply "$p"; \
+    done
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
+    with-registry pnpm install --frozen-lockfile
+RUN pnpm run build
+
+# ----------------------------------------------------------------------------
 # vendor: just the tarballs. Export locally for app development with
 #   build.ps1 -Target vendor   (writes app/vendor/*.tgz)
 # ----------------------------------------------------------------------------
@@ -115,6 +138,7 @@ FROM ${BASE_IMAGE} AS runtime
 ARG OURS_SHA
 ARG EXCALIDRAW_SHA
 ARG M2E_SHA
+ARG MCP_SHA
 ARG BUILD_TAG
 LABEL org.opencontainers.image.title="xcld-collab" \
       org.opencontainers.image.description="Shared Excalidraw workspace for humans and agents (Mermaid round trip, semantic diffs)" \
@@ -123,7 +147,8 @@ LABEL org.opencontainers.image.title="xcld-collab" \
       org.opencontainers.image.revision="${OURS_SHA}" \
       org.opencontainers.image.version="${BUILD_TAG}" \
       io.xcld-collab.excalidraw.sha="${EXCALIDRAW_SHA}" \
-      io.xcld-collab.mermaid-to-excalidraw.sha="${M2E_SHA}"
+      io.xcld-collab.mermaid-to-excalidraw.sha="${M2E_SHA}" \
+      io.xcld-collab.excalidraw-mcp.sha="${MCP_SHA}"
 ENV NODE_ENV=production \
     XCLD_HOST=0.0.0.0 \
     XCLD_PORT=3100 \
@@ -136,9 +161,10 @@ COPY --from=app --chown=node:node /src/xcld-collab/app/server ./app/server
 COPY --from=app --chown=node:node /src/xcld-collab/app/package.json ./app/package.json
 COPY --from=app --chown=node:node /src/xcld-collab/tools ./tools
 COPY --from=app --chown=node:node /src/xcld-collab/resolved-deps.json ./resolved-deps.json
+COPY --from=excalidraw-mcp --chown=node:node /src/excalidraw-mcp/dist ./excalidraw-mcp/dist
 COPY --chown=node:node LICENSE NOTICE ./
-RUN printf '{\n  "tag": "%s",\n  "xcld-collab": "%s",\n  "excalidraw": "%s",\n  "mermaid-to-excalidraw": "%s"\n}\n' \
-      "$BUILD_TAG" "$OURS_SHA" "$EXCALIDRAW_SHA" "$M2E_SHA" > manifest.json \
+RUN printf '{\n  "tag": "%s",\n  "xcld-collab": "%s",\n  "excalidraw": "%s",\n  "mermaid-to-excalidraw": "%s",\n  "excalidraw-mcp": "%s"\n}\n' \
+      "$BUILD_TAG" "$OURS_SHA" "$EXCALIDRAW_SHA" "$M2E_SHA" "$MCP_SHA" > manifest.json \
  && printf '#!/bin/sh\nexec node /opt/xcld-collab/tools/cli.mjs "$@"\n' > /usr/local/bin/xcld \
  && chmod 0755 /usr/local/bin/xcld \
  && mkdir -p /boards \

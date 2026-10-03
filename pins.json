@@ -12,8 +12,8 @@
       "repo": "https://github.com/excalidraw/excalidraw-mcp.git",
       "ref": "main",
       "sha": "157aa23ceb1976008aadc89eb05e3444060f09d6",
-      "enabled": false,
-      "$comment": "Phase A. Disabled components are pinned but not built; their tag slot is 0000000."
+      "enabled": true,
+      "$comment": "MCP UI service. The widget still loads React/Excalidraw from esm.sh until the 3c network spike resolves local serving vs inline bundling."
     },
     "mermaid-to-excalidraw": {
       "repo": "https://github.com/excalidraw/mermaid-to-excalidraw.git",

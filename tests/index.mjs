@@ -6,5 +6,6 @@ import "./deleted-events.test.mjs";
 import "./diff.test.mjs";
 import "./export.test.mjs";
 import "./ids.test.mjs";
+import "./mcp.test.mjs";
 import "./snapshot.test.mjs";
 import "./to-mermaid.test.mjs";
