@@ -1,0 +1,19 @@
+xcld-collab
+Copyright (c) 2026 Hack4Impact. Licensed under the MIT License (see LICENSE).
+
+The container image built from this repository includes software built from
+source at the commits recorded in /opt/xcld-collab/manifest.json and the image
+labels. Each component retains its own license:
+
+- Excalidraw (https://github.com/excalidraw/excalidraw)
+  MIT License. Copyright (c) 2020 Excalidraw.
+
+- mermaid-to-excalidraw (https://github.com/excalidraw/mermaid-to-excalidraw)
+  MIT License. Copyright (c) 2023 Excalidraw.
+
+- excalidraw-mcp (https://github.com/excalidraw/excalidraw-mcp)
+  Licensed MIT per its package.json; the repository has no LICENSE file.
+  Included from phase A onward.
+
+Third-party npm dependencies resolved at build time are listed in
+/opt/xcld-collab/resolved-deps.json inside the image, each under its own license.

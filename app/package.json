@@ -1,0 +1,34 @@
+{
+  "name": "xcld-collab-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "copy-assets": "node ../tools/copy-assets.mjs",
+    "dev": "npm run copy-assets && vite --host 127.0.0.1",
+    "build": "npm run copy-assets && tsc --noEmit && vite build",
+    "start": "node server/index.mjs"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "file:vendor/excalidraw.tgz",
+    "@excalidraw/mermaid-to-excalidraw": "file:vendor/mermaid-to-excalidraw.tgz",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "overrides": {
+    "@excalidraw/common": "file:vendor/common.tgz",
+    "@excalidraw/element": "file:vendor/element.tgz",
+    "@excalidraw/math": "file:vendor/math.tgz",
+    "@excalidraw/fractional-indexing": "file:vendor/fractional-indexing.tgz",
+    "@excalidraw/laser-pointer": "file:vendor/laser-pointer.tgz",
+    "@excalidraw/mermaid-to-excalidraw": "file:vendor/mermaid-to-excalidraw.tgz"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.6",
+    "@types/react": "^18.3.24",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.20"
+  }
+}

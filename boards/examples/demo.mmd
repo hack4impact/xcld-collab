@@ -1,0 +1,15 @@
+flowchart TD
+  Agent["Agent writes boards/name.mmd"] -->|inbox| Convert["Open browser tab converts it"]
+  Convert --> Board["boards/name.excalidraw"]
+  You["You draw and annotate"] -->|autosaves in about 1s| Board
+  Board -->|xcld snapshot| Snapshot[".snapshots: name.time.excalidraw + .mmd"]
+  Snapshot -->|xcld diff| Diff["Agent reads what you changed"]
+  Diff -->|acts on feedback| Agent
+  Board -->|xcld to-mermaid| Docs["Mermaid for docs and PRs"]
+  Board -.->|XCLD_AUTO_EXPORT=save| Export[".exports/name.mmd, always current"]
+  Versions["Next: a version on every save"]
+  Merge["Next: merge on re-import keeps your notes"]
+  Board -.-> Versions
+  Agent -.-> Merge
+  classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2
+  class Versions,Merge proposed

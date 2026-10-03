@@ -1,0 +1,28 @@
+# Run the workspace. Build first with build.ps1 / build.sh: they compute the
+# image tag from the exact source commits and write it to .env as XCLD_TAG.
+#
+#   docker compose up -d --wait     # start; returns once the healthcheck passes
+#   docker compose down             # stop; boards stay on disk
+#
+# Optional overrides in .env (or your shell):
+#   XCLD_PORT=3100                  # host port, always bound to 127.0.0.1
+#   XCLD_BOARDS=./boards            # boards folder, relative to this file
+#   XCLD_MAX_DEPTH=0                # nested folder limit; 0 is unlimited
+#   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
+#   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
+name: xcld-collab
+
+services:
+  canvas:
+    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
+    container_name: xcld-collab
+    ports:
+      - "127.0.0.1:${XCLD_PORT:-3100}:3100"
+    volumes:
+      - "${XCLD_BOARDS:-./boards}:/boards"
+    user: "${XCLD_UID:-1000}:${XCLD_GID:-1000}"
+    environment:
+      XCLD_WATCH_POLL_MS: "${XCLD_WATCH_POLL_MS:-1000}"
+      XCLD_MAX_DEPTH: "${XCLD_MAX_DEPTH:-0}"
+      XCLD_AUTO_EXPORT: "${XCLD_AUTO_EXPORT:-snapshot}"
+    restart: unless-stopped

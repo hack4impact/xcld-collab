@@ -1,0 +1,11 @@
+node_modules/
+dist/
+app/vendor/
+boards/*
+!boards/examples/
+*.log
+.env
+.npmrc.local
+.test-run/
+.smoke/
+app/public/excalidraw-assets/

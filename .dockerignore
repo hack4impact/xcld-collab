@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/dist
+app/vendor
+boards
+docs
+*.log
+.env
+.npmrc.local
+build.ps1
+build.sh
+pins.json
+compose.yaml

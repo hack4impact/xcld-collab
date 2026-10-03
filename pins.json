@@ -1,0 +1,25 @@
+{
+  "$comment": "Known-good upstream inputs. build --pinned (default) uses these; build --latest resolves branch HEADs and can rewrite this file with -UpdatePins / --update-pins.",
+  "baseImage": "node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c",
+  "components": {
+    "excalidraw": {
+      "repo": "https://github.com/excalidraw/excalidraw.git",
+      "ref": "master",
+      "sha": "ed10ac7dca7e40f3f4a31269b4bfba980d0db41e",
+      "enabled": true
+    },
+    "excalidraw-mcp": {
+      "repo": "https://github.com/excalidraw/excalidraw-mcp.git",
+      "ref": "main",
+      "sha": "157aa23ceb1976008aadc89eb05e3444060f09d6",
+      "enabled": false,
+      "$comment": "Phase A. Disabled components are pinned but not built; their tag slot is 0000000."
+    },
+    "mermaid-to-excalidraw": {
+      "repo": "https://github.com/excalidraw/mermaid-to-excalidraw.git",
+      "ref": "master",
+      "sha": "7849b487be67cf2d439c713c847839d2494d59b6",
+      "enabled": true
+    }
+  }
+}
