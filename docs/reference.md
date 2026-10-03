@@ -161,7 +161,7 @@ Prints usage.
 | `A{text}` | diamond | `A{"text"}` |
 | `A((text))` | ellipse | `A(("text"))` |
 | Other shapes, e.g. `A[(db)]` | rectangle | `A["db"]` (shape lost) |
-| `subgraph … end` | **one picture, not editable** (converter falls back; the top bar warns) | `%% Unsupported element …: type=image` |
+| `subgraph … end` | editable container rectangle; child nodes/arrows share `subgraph_group_<id>` | `subgraph <id>["title"] … end` |
 | `A --> B` | arrow attached at both ends | `A --> B` |
 | `A -->|label| B` | arrow with label | `A -->|"label"| B` |
 | `A --- B` | line, no arrowheads | `A --- B` |
@@ -210,7 +210,7 @@ levels.
 | `No snapshots found for <board>` | `diff <board>` needs a "before" picture | `xcld snapshot <board>`, edit, then `diff` |
 | `Board not found: <board>` | The board file doesn't exist yet | Open `http://127.0.0.1:3100/?board=<board>` (it converts `<board>.mmd` if present), or check the path |
 | The agent wrote `<board>.mmd` but nothing appeared | Conversion runs in the browser | Open (or keep open) a tab on `?board=<board>` |
-| The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes. Subgraphs are the known cause; the exact error is in the browser console (F12) | Remove `subgraph` blocks (fold the group into labels) and have the agent rewrite the `.mmd` |
+| The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
 | I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |

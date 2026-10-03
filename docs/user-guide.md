@@ -123,10 +123,9 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 ## What doesn't work yet
 
 - Diagram types other than flowcharts (sequence, class, ER, state).
-- **Subgraphs.** A flowchart with `subgraph … end` comes in as one uneditable picture, and the
-  top bar warns you. This is verified at the pinned mermaid-to-excalidraw. Until it's fixed,
-  ask agents for flat flowcharts and put the group in the label instead, e.g.
-  `API["Run: server"]`.
+- **Subgraphs are supported for flowcharts.** They convert to an editable container rectangle
+  plus grouped child nodes/arrows, and `to-mermaid` writes them back as `subgraph … end`.
+  Nested or heavily styled subgraphs should still be checked with `xcld diff`.
 - Some Mermaid shapes. A cylinder `[(DB)]` and other special shapes arrive as plain
   rectangles. Rectangles, diamonds `{}` and circles `(())` are kept.
 - Diagram direction. `to-mermaid` always writes `flowchart TD`.

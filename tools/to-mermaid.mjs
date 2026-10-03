@@ -10,6 +10,8 @@ const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 const textOf = (element) => element?.originalText ?? element?.text;
 const escapeLabel = (value) => clean(value).replace(/\\/g, "\\\\").replace(/"/g, "#quot;");
 const noneHead = (value) => value === undefined || value === null || value === "none";
+const subgraphGroupId = (id) => `subgraph_group_${id}`;
+const isSubgraphContainer = (element) => Array.isArray(element?.groupIds) && element.groupIds.includes(subgraphGroupId(element.id));
 
 export const mermaidIdMapper = () => {
   const used = new Set();
@@ -83,9 +85,19 @@ export const sceneToMermaid = (data) => {
   const labelForContainer = (id, fallback = id) => clean(textByContainer.get(id)?.map((item) => textOf(item)).filter(Boolean).join(" ") || fallback);
 
   for (const element of elements) {
-    if (NODE_TYPES.has(element.type)) nodes.push({ id: element.id, mermaidId: toMermaidId(element.id), element, label: labelForContainer(element.id, element.id), type: element.type });
+    if (NODE_TYPES.has(element.type)) nodes.push({ id: element.id, mermaidId: toMermaidId(element.id), element, label: labelForContainer(element.id, element.id), type: element.type, isSubgraph: isSubgraphContainer(element) });
   }
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const subgraphs = nodes.filter((node) => node.isSubgraph);
+  const subgraphByGroupId = new Map(subgraphs.map((node) => [subgraphGroupId(node.id), node]));
+  const subgraphForNode = (node) => {
+    if (!node || node.isSubgraph || !Array.isArray(node.element.groupIds)) return null;
+    for (const groupId of node.element.groupIds) {
+      const subgraph = subgraphByGroupId.get(groupId);
+      if (subgraph) return subgraph;
+    }
+    return null;
+  };
 
   for (const element of elements) {
     if (element.type === "arrow") {
@@ -130,8 +142,29 @@ export const sceneToMermaid = (data) => {
   };
 
   const lines = ["flowchart TD"];
-  for (const node of nodes) lines.push(`  ${shape(node)}`);
-  for (const edge of edges) lines.push(`  ${edge.start.mermaidId} ${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`);
+  const edgesBySubgraph = new Map();
+  const topLevelEdges = [];
+  for (const edge of edges) {
+    const startSubgraph = subgraphForNode(edge.start);
+    const endSubgraph = subgraphForNode(edge.end);
+    if (startSubgraph && startSubgraph === endSubgraph) {
+      const bucket = edgesBySubgraph.get(startSubgraph.id) ?? [];
+      bucket.push(edge);
+      edgesBySubgraph.set(startSubgraph.id, bucket);
+    } else {
+      topLevelEdges.push(edge);
+    }
+  }
+
+  for (const node of nodes.filter((node) => !node.isSubgraph && !subgraphForNode(node))) lines.push(`  ${shape(node)}`);
+  for (const subgraph of subgraphs) {
+    const members = nodes.filter((node) => !node.isSubgraph && subgraphForNode(node) === subgraph);
+    lines.push(`  subgraph ${subgraph.mermaidId}["${escapeLabel(subgraph.label || subgraph.id)}"]`);
+    for (const node of members) lines.push(`    ${shape(node)}`);
+    for (const edge of edgesBySubgraph.get(subgraph.id) ?? []) lines.push(`    ${edge.start.mermaidId} ${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`);
+    lines.push("  end");
+  }
+  for (const edge of topLevelEdges) lines.push(`  ${edge.start.mermaidId} ${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`);
   // Colors carry meaning (e.g. light blue = proposed), so non-default ones are kept as Mermaid styles.
   const color = (value) => (typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value.toLowerCase() : null);
   for (const node of nodes) {

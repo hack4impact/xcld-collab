@@ -332,8 +332,8 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       themeVariables: { fontSize: "20px" },
     });
     const skeleton = Array.isArray(parsed) ? parsed : parsed.elements;
-    // When mermaid-to-excalidraw can't parse a diagram into shapes (e.g. flowchart
-    // subgraphs at the pinned SHA), it falls back to one image whose data is in `files`.
+    // When mermaid-to-excalidraw can't parse a diagram into shapes, it falls back to one
+    // image whose data is in `files`.
     const parsedFiles = (Array.isArray(parsed) ? {} : parsed.files ?? {}) as BinaryFiles;
     const isImageFallback = skeleton.length > 0 && skeleton.every((element) => element.type === "image");
     const stableSkeleton = disambiguateDuplicateElementIds(skeleton);
@@ -354,7 +354,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     if (isImageFallback) {
       setStatus({
         level: "warn",
-        text: "Mermaid came in as a picture, not editable shapes (unsupported syntax such as subgraphs; see the browser console).",
+        text: "Mermaid came in as a picture, not editable shapes (unsupported syntax; see the browser console).",
       });
     }
     return true;

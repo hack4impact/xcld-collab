@@ -1,0 +1,2 @@
+Run manually from the repo root after installing app dependencies and Playwright in scratch: `Push-Location app; npm install --legacy-peer-deps; Pop-Location; New-Item -Force -ItemType Directory .scratch\playwright; Push-Location .scratch\playwright; npm install playwright@1.56.1; Pop-Location; node tests\browser\run-mermaid-conversion.mjs`.
+When running those installs inside a container, pass the host-configured registry at runtime, for example `docker run -e NPM_CONFIG_REGISTRY="$(npm config get registry)" ...`; do not write the registry URL into repo files.

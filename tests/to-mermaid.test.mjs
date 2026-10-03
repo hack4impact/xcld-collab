@@ -32,6 +32,18 @@ test("to-mermaid keeps non-default node colors as Mermaid styles", async () => {
   assert.doesNotMatch(output, /style DB\b/);
 });
 
+// subgraph-converted.excalidraw is real browser output from the pinned converter
+// plus the local mermaid-to-excalidraw subgraph patch.
+test("to-mermaid emits real converted subgraph containers as subgraph blocks", async () => {
+  const output = await fileToMermaid(path.resolve("tests", "fixtures", "subgraph-converted.excalidraw"));
+  assert.match(output, /^  subgraph G\["Group"\]$/m);
+  assert.match(output, /^    A\["One"\]$/m);
+  assert.match(output, /^    B\["Two"\]$/m);
+  assert.match(output, /^    A --> B$/m);
+  assert.match(output, /^  end$/m);
+  assert.doesNotMatch(output, /^  G\["Group"\]$/m);
+});
+
 test("to-mermaid maps supported arrow styles", async () => {
   const output = await fileToMermaid(path.resolve("tests", "fixtures", "arrow-styles.excalidraw"));
   assert.match(output, /A --> B/);

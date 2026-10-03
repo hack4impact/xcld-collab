@@ -60,6 +60,12 @@ ARG M2E_SHA
 ARG NPM_CONFIG_REGISTRY=""
 RUN fetch-at-sha "$M2E_REPO" "$M2E_SHA" /src/mermaid-to-excalidraw
 WORKDIR /src/mermaid-to-excalidraw
+COPY patches/mermaid-to-excalidraw/ /tmp/mermaid-to-excalidraw-patches/
+RUN for patch in /tmp/mermaid-to-excalidraw-patches/*.patch; do \
+      [ -e "$patch" ] || continue; \
+      git apply --check "$patch"; \
+      git apply "$patch"; \
+    done
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=cache,id=xcld-m2e-yarn,target=/usr/local/share/.cache/yarn,sharing=locked \
     with-registry --rewrite yarn.lock -- yarn install --frozen-lockfile --network-timeout 600000

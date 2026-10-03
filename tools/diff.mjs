@@ -10,6 +10,8 @@ const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 const textOf = (element) => element?.originalText ?? element?.text;
 const shortId = (id) => String(id ?? "").slice(0, 10);
 const center = (element) => ({ x: Number(element.x ?? 0) + Number(element.width ?? 0) / 2, y: Number(element.y ?? 0) + Number(element.height ?? 0) / 2 });
+const subgraphGroupId = (id) => `subgraph_group_${id}`;
+const isSubgraphContainer = (element) => Array.isArray(element?.groupIds) && element.groupIds.includes(subgraphGroupId(element.id));
 
 export const readScene = async (file) => {
   const text = await readFile(file, "utf8");
@@ -41,7 +43,7 @@ export const makeModel = (elements) => {
 
   for (const element of live) {
     if (NODE_TYPES.has(element.type)) {
-      nodes.set(element.id, { id: element.id, element, label: nodeLabel(element), type: element.type });
+      nodes.set(element.id, { id: element.id, element, label: nodeLabel(element), type: isSubgraphContainer(element) ? "subgraph" : element.type });
     } else if (element.type === "arrow") {
       const startId = element.startBinding?.elementId ?? element.start?.id ?? null;
       const endId = element.endBinding?.elementId ?? element.end?.id ?? null;

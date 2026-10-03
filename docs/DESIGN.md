@@ -79,7 +79,9 @@ agent shell ── reads/writes files ─┐     tools: diff, to-mermaid, snapsh
     Corepack's yarn download returned 404 through the internal proxy (measured on the first
     build), so corepack isn't used.
   - `excalidraw`: `yarn build:packages`, with each package packed to `/out/<pkg>.tgz`.
-  - `mermaid-to-excalidraw`: built and packed the same way.
+  - `mermaid-to-excalidraw`: fetched at the pinned SHA, then every
+    `patches/mermaid-to-excalidraw/*.patch` is checked with `git apply --check` and applied
+    before install/build. The build fails if any patch is stale.
   - `vendor`: the tarballs only. `build -Target vendor` exports them to `app/vendor/` for
     local app development.
   - `app`: our canvas, built against the vendor tarballs. npm `overrides` force
@@ -196,6 +198,12 @@ direction. The design question is what we do about that loss.
 - `mermaid-to-excalidraw@7849b48` uses the Mermaid node ID as the element ID
   (`converter/types/flowchart.ts:184`). It also keeps subgraphs, `classDef`/`style`
   colors and dashed/thick edge styles.
+- **Subgraph patch (verified 2026-10-02):** Mermaid 11 renders subgraph SVG groups with the
+  render ID prefixed (`<renderId>-G`) while `diagram.db.getSubGraphs()` returns the raw ID
+  (`G`). Upstream `parser/flowchart.ts` queried only `[id='G']`, threw `SubGraph element not
+  found`, and `parseMermaid.ts` fell back to `graphImage`. The local patch falls back to the
+  `-<id>` suffix on Mermaid cluster elements, so subgraphs convert to editable container
+  rectangles with `subgraph_group_<id>` group IDs.
 - **But** Excalidraw's `convertToExcalidrawElements` swaps in random IDs by default
   (`packages/element/src/transform.ts:591`). We must call it with
   `{ regenerateIds: false }`, or every conversion breaks ID stability.

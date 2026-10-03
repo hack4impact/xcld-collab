@@ -9,3 +9,4 @@ boards/*
 .test-run/
 .smoke/
 app/public/excalidraw-assets/
+.scratch/

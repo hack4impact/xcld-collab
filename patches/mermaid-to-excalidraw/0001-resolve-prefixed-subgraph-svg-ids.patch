@@ -1,0 +1,36 @@
+From 486a7246a0688fa152e36800026afd56a5d97e88 Mon Sep 17 00:00:00 2001
+From: Copilot <223556219+Copilot@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 18:55:27 -0700
+Subject: [PATCH] Resolve prefixed Mermaid subgraph SVG ids
+
+---
+ src/parser/flowchart.ts | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/parser/flowchart.ts b/src/parser/flowchart.ts
+index 08d900b..11617c0 100644
+--- a/src/parser/flowchart.ts
++++ b/src/parser/flowchart.ts
+@@ -199,9 +199,16 @@ const parseSubGraph = (
+   });
+ 
+   // Get position
+-  const el: SVGSVGElement | null = containerEl.querySelector(
+-    `[id='${data.id}']`
+-  );
++  const el: SVGGraphicsElement | null =
++    containerEl.querySelector(
++      `[id='${data.id}']`
++    ) ||
++    Array.from(
++      containerEl.querySelectorAll<SVGGraphicsElement>(
++        "g.cluster[id], [id].cluster"
++      )
++    ).find((element) => element.id.endsWith(`-${data.id}`)) ||
++    null;
+   if (!el) {
+     throw new Error("SubGraph element not found");
+   }
+-- 
+2.55.0.windows.5
+
