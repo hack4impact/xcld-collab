@@ -1,0 +1,31 @@
+flowchart LR
+  EXC["Upstream: excalidraw @ed10ac7"]
+  M2E["Upstream: mermaid-to-excalidraw @7849b48"]
+  MCP["Upstream: excalidraw-mcp (phase A)"]
+  PINS["Build: pins.json or --latest"]
+  DOCKER["Build: Dockerfile builds exact SHAs from source"]
+  TAG["Build: image tag ours-exc-m2e-mcp, saved to .env"]
+  SERVER["Run: server - board API, live sync, file poll"]
+  SPA["Run: canvas app - Excalidraw + Mermaid converter"]
+  CLI["Run: xcld - snapshot, diff, to-mermaid, list"]
+  BOARDS["./boards - .excalidraw, .mmd inbox, .snapshots"]
+  YOU["You: browser at 127.0.0.1:3100"]
+  AGENT["Agent: terminal"]
+  DOCS["Docs: README, user-guide, reference, DESIGN"]
+  NEXT["Next: versions, merge on re-import, design rules, VS Code MCP"]
+  EXC --> DOCKER
+  M2E --> DOCKER
+  MCP -.-> DOCKER
+  PINS --> DOCKER
+  DOCKER --> TAG
+  TAG -->|docker compose up| SERVER
+  SERVER --> SPA
+  SERVER -->|reads and writes| BOARDS
+  BOARDS -->|file changes| SERVER
+  CLI -->|reads| BOARDS
+  YOU -->|draws and annotates| SPA
+  AGENT -->|writes .mmd| BOARDS
+  AGENT -->|docker exec| CLI
+  DOCS --- YOU
+  classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2
+  class MCP,NEXT proposed
