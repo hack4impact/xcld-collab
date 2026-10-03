@@ -504,8 +504,9 @@ installed here.
 }
 ```
 
-**VS Code** — documentation format verified from VS Code docs; `code` was installed, but
-the widget was not rendered in a real chat session on this machine.
+**VS Code**: verified in a real VS Code chat (2026-10-02/03). The widget renders, and the `xcld`
+tools work. The repo ships this file as `.vscode/mcp.json`, so opening the repo in VS Code
+offers both servers. To use them in every window, add the same entries to your user `mcp.json`.
 
 `.vscode/mcp.json`:
 
@@ -517,7 +518,7 @@ the widget was not rendered in a real chat session on this machine.
       "command": "docker",
       "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"]
     },
-    "xcld-excalidraw-ui": {
+    "excalidraw": {
       "type": "http",
       "url": "http://127.0.0.1:3001/mcp"
     }

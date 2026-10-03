@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "xcld": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"]
+    },
+    "excalidraw": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp"
+    }
+  }
+}

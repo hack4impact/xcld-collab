@@ -70,6 +70,10 @@ docker exec xcld-collab xcld open-in-canvas <checkpointId> sandbox/from-chat
 docker exec -i xcld-collab xcld mcp                    # optional: MCP tools over stdio
 ```
 
+Opening this repo in VS Code offers both MCP servers from `.vscode/mcp.json`: `xcld` (tools)
+and `excalidraw` (the chat widget). For Copilot CLI, Claude Code, Codex and OpenCode, see the
+[client configs in the reference](docs/reference.md).
+
 That's the whole default loop. Your agent runs those same commands; `xcld mcp` is the stdio
 tools server inside the canvas container and does not require the chat widget profile.
 
