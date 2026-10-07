@@ -387,6 +387,52 @@ deletion by omission). It checks that repeated runs and shuffled input arrays gi
 results, that merging A then B equals B then A, and that every change is either in the result
 or reported as overwritten. `node tests/merge-bench.mjs` measures D5.
 
+### Server-side Mermaid apply
+
+Versions and merge (Wave 2) applies a Mermaid write to the board on the server, so it
+doesn't need an open tab. **Status:** the parser and the apply step are built and tested
+(`xcld mermaid-apply --dry-run` previews them). Nothing calls them on a write yet: the tab
+still converts `.mmd`, until the versions write API runs them.
+
+- **Parse with Mermaid itself.** `tools/mermaid-parse.mjs` runs the same Mermaid version as
+  the tab's converter. Mermaid needs a DOM even to load (DOMPurify), so it runs in a
+  **worker thread** that installs jsdom's `window`/`document` as globals in its own isolate;
+  the server's own globals stay untouched. The worker is `tools/mermaid-parse.bundle.mjs`, one
+  esbuild file with jsdom, Mermaid and the converter's label/style helpers, built by
+  `npm run build`. The runtime image still ships no `node_modules`.
+- **Warm-up.** `warmUp()` starts the worker in the background, once, and `status()` reports
+  `cold | warming | ready | failed` with timings. Parses requested during warm-up wait for it.
+  Importing Mermaid from `node_modules` took over 40 s; the bundle loads in about a second
+  (container numbers are in the PR that added it). A missing bundle reports `failed`
+  instead of crashing.
+- **Apply.** `tools/mermaid-apply.mjs` `applyMermaid({ master, parsed, hashOfSource, now,
+  previous })` is pure: it returns the new elements, a list of ops, and `needsTabLayout`.
+  - Identity: a node id is the element id (the tab converts with `regenerateIds: false`);
+    ids that `to-mermaid` rewrote map back to the original shape. An edge matches an arrow
+    already bound start → end, then the converter's id (`A_B`, `A_B_2`, ...).
+  - Existing shapes keep their position and size. Labels change in the shape's own bound
+    text, which re-wraps; the shape grows taller only if the text no longer fits.
+    `classDef`/`class`/`style` colors, shape type, edge style and subgraph membership
+    follow the Mermaid. A style that the Mermaid doesn't mention is left alone, unless
+    `previous` (the Mermaid the board came from) shows that Mermaid had set it.
+  - **Only Mermaid-origin elements are ever deleted**: those carrying
+    `customData.xcldMermaidHash`. Human notes, human arrows and human shapes never are; an
+    arrow left pointing at a deleted shape is kept, unbound. With `previous`, only ids that
+    Mermaid had can be deleted.
+  - New shapes go next to a connected neighbour, in the flowchart's direction. They avoid
+    every live element's bounding box, and the placement is deterministic. New edges are
+    straight bound arrows; a parallel edge bows around the first one. New subgraphs wrap
+    their members, and existing ones grow to hold new members.
+  - Changed and new elements get the new Mermaid hash and a version bump; untouched ones
+    keep theirs, so a merge sees only real changes.
+- **Still needs a tab:** a board with no Mermaid-origin shapes (new, or an image fallback)
+  and non-flowchart diagrams return `needsTabLayout: true`. Placement is local, not a full
+  re-layout, so straight arrows can cross shapes. Text widths are estimated (Node has no
+  font metrics); Excalidraw centers bound text, so that only affects wrapping.
+- **Conventions are tested against the real converter.** `tests/fixtures/mermaid-apply-*.excalidraw`
+  are tab conversions captured in headless Chromium (`tests/browser`, `--app`). The tests
+  compare every field that decides rendering, except position and size.
+
 ## Annotation convention — free-form by default, local design rules
 
 **Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`

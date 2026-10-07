@@ -191,8 +191,10 @@ ENV NODE_ENV=production \
     XCLD_PORT=3100 \
     XCLD_BOARDS_DIR=/boards
 WORKDIR /opt/xcld-collab
-# The canvas is a pre-bundled SPA and the server/tools use only Node built-ins,
-# so no node_modules ship in the runtime image.
+# The canvas is a pre-bundled SPA and the server/tools use only Node built-ins plus
+# esbuild bundles built in the app stage (tools/mcp.bundle.mjs, and
+# tools/mermaid-parse.bundle.mjs with jsdom + Mermaid for server-side parsing), so no
+# node_modules ship in the runtime image.
 COPY --from=app --chown=node:node /src/xcld-collab/app/dist ./app/dist
 COPY --from=app --chown=node:node /src/xcld-collab/app/server ./app/server
 COPY --from=app --chown=node:node /src/xcld-collab/app/package.json ./app/package.json

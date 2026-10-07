@@ -2,6 +2,7 @@ node_modules/
 dist/
 app/vendor/
 tools/mcp.bundle.mjs
+tools/mermaid-parse.bundle.mjs
 boards/*
 !boards/examples/
 *.log

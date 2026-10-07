@@ -70,6 +70,7 @@ export const main = async (argv = process.argv.slice(2)) => {
   const fixtureIndex = argv.indexOf("--fixture");
   const fixtureCase = fixtureIndex >= 0 ? argv[fixtureIndex + 1] : null;
   const skipBuild = argv.includes("--skip-build");
+  const appMode = argv.includes("--app");
   const buildOnly = argv.includes("--build-only");
 
   if (!skipBuild) await buildBundle();
@@ -100,7 +101,7 @@ export const main = async (argv = process.argv.slice(2)) => {
   try {
     await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load" });
     const result = fixtureCase
-      ? await page.evaluate((name) => globalThis.MermaidHarness.convertedScene(name), fixtureCase)
+      ? await page.evaluate(([name, app]) => (app ? globalThis.MermaidHarness.appScene(name) : globalThis.MermaidHarness.convertedScene(name)), [fixtureCase, appMode])
       : await page.evaluate(() => globalThis.MermaidHarness.runAll());
     const output = fixtureCase ? result : { result, consoleMessages, pageErrors };
     const json = JSON.stringify(output, null, 2);

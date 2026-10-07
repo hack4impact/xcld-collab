@@ -357,6 +357,23 @@ such as `cameraUpdate`, writes `boards/<board>.view.json`, and prints the canvas
 }
 ```
 
+### `xcld mermaid-apply --dry-run <board|file> <file.mmd> [--json]`
+
+Preview only: prints what the server-side Mermaid apply would change on the board, without a
+browser and without writing anything (see [Design](DESIGN.md#server-side-mermaid-apply)). It
+parses with Mermaid's own parser, so the first call in a process takes a second or two.
+
+```text
+> xcld mermaid-apply --dry-run sandbox/flow next.mmd
+relabel node A: "Start" -> "Start here"
+add node E (ellipse) after D at 183,504
+add edge D_E: D -> E
+3 changes (dry run, nothing written).
+```
+
+A board with no shapes from Mermaid yet prints `Needs a tab: …`: the open tab still lays out
+a brand-new diagram. Writes through this path arrive with versions and merge.
+
 ### `xcld help`
 
 Prints usage.
@@ -494,7 +511,7 @@ Host development:
 ```powershell
 cd app
 npm ci
-npm run build      # creates gitignored tools/mcp.bundle.mjs
+npm run build      # creates gitignored tools/mcp.bundle.mjs and tools/mermaid-parse.bundle.mjs
 cd ..
 $env:XCLD_BOARDS_DIR='boards'
 node tools/cli.mjs mcp

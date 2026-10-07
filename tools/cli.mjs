@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
+import { mermaidSourceHash } from "./mermaid-hash.mjs";
 import { checkBoardRules, effectiveRulesBriefing, formatCheckResult, formatRulesCheckDiagnostics, validateApplicableRules } from "./rules.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
@@ -23,6 +24,7 @@ Usage:
   xcld rules check [board]
   xcld list [folder] [--json]
   xcld open-in-canvas <checkpointId> <board> [--overwrite]
+  xcld mermaid-apply --dry-run <board|file> <file.mmd> [--json]
   xcld mcp
   xcld help
 `;
@@ -41,6 +43,23 @@ const latestSnapshot = async (name) => {
   const files = existsSync(dir) ? snapshotsFor(name, await readdir(dir)) : [];
   if (!files.length) throw new Error(`No snapshots found for ${name}. Run "xcld snapshot ${name}" first, then edit, then diff.`);
   return path.join(dir, files.at(-1));
+};
+
+const quoteLabel = (value) => JSON.stringify(String(value ?? ""));
+const formatApplyOp = (op) => {
+  if (op.op === "relabel") return op.to ? `relabel ${op.kind} ${op.id}: ${quoteLabel(op.from)} -> ${quoteLabel(op.to)}` : `remove ${op.kind} label ${op.id}: ${quoteLabel(op.from)}`;
+  if (op.op === "restyle") return `restyle ${op.kind} ${op.id}: ${Object.entries(op.changes).map(([key, change]) => `${key} ${change.from ?? "none"} -> ${change.to ?? "none"}`).join(", ")}`;
+  if (op.op === "add-node") return `add node ${op.id} (${op.shape}) ${op.anchor ? `${op.placement} ${op.anchor}` : "beside the drawing"} at ${Math.round(op.x)},${Math.round(op.y)}`;
+  if (op.op === "add-edge") return `add edge ${op.id}: ${op.start} -> ${op.end}${op.label ? ` ${quoteLabel(op.label)}` : ""}`;
+  if (op.op === "add-subgraph") return `add subgraph ${op.id}: ${op.members.join(", ")}`;
+  if (op.op === "delete") return `delete ${op.kind} ${op.id}`;
+  if (op.op === "unbind") return `unbind ${op.end} of ${op.id} from deleted ${op.from}`;
+  if (op.op === "reshape") return `reshape ${op.id}: ${op.from} -> ${op.to}`;
+  if (op.op === "regroup") return `regroup ${op.id}: [${op.from.join(", ")}] -> [${op.to.join(", ")}]`;
+  if (op.op === "reconnect") return `reconnect ${op.id}: ${op.start} -> ${op.end}`;
+  if (op.op === "resize") return `resize ${op.id}: ${Math.round(op.from.width)}x${Math.round(op.from.height)} -> ${Math.round(op.to.width)}x${Math.round(op.to.height)}`;
+  if (op.op === "skip") return `skip ${op.kind} ${op.start} -> ${op.end}: ${op.reason}`;
+  return JSON.stringify(op);
 };
 
 const formatLocalTime = (iso) => {
@@ -171,6 +190,35 @@ const run = async (argv) => {
     }
     const { startStdioServer } = await import(bundle.href);
     await startStdioServer();
+    return;
+  }
+  if (command === "mermaid-apply") {
+    const dryRun = args.includes("--dry-run");
+    const jsonMode = args.includes("--json");
+    const names = args.filter((arg) => arg !== "--dry-run" && arg !== "--json");
+    if (names.length !== 2 || !dryRun) throw new Error("Usage: xcld mermaid-apply --dry-run <board|file> <file.mmd> [--json] (preview only: nothing is written)");
+    const target = existsSync(names[0]) ? path.resolve(names[0]) : boardPath(names[0]);
+    const master = existsSync(target) ? JSON.parse(await readFile(target, "utf8")) : null;
+    const source = await readFile(names[1], "utf8");
+    const { closeParser, parseFlowchart } = await import("./mermaid-parse.mjs");
+    const { applyMermaid } = await import("./mermaid-apply.mjs");
+    try {
+      const parsed = await parseFlowchart(source);
+      if (!parsed.ok && parsed.error) {
+        throw new Error(`Mermaid parse error${parsed.error.line ? ` on line ${parsed.error.line}` : ""}: ${parsed.error.message}`);
+      }
+      const result = applyMermaid({ master, parsed, hashOfSource: mermaidSourceHash(source) });
+      if (jsonMode) {
+        console.log(JSON.stringify({ needsTabLayout: result.needsTabLayout, reason: result.reason ?? null, ops: result.ops }, null, 2));
+      } else {
+        for (const op of result.ops) console.log(formatApplyOp(op));
+        console.log(result.needsTabLayout
+          ? `Needs a tab: ${result.reason}. Open the board so the canvas lays out the diagram.`
+          : `${result.ops.length} change${result.ops.length === 1 ? "" : "s"} (dry run, nothing written).`);
+      }
+    } finally {
+      await closeParser();
+    }
     return;
   }
   throw new Error(`Unknown command: ${command}`);

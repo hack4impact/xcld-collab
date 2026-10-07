@@ -6,14 +6,16 @@
   "scripts": {
     "copy-assets": "node ../tools/copy-assets.mjs",
     "build:mcp": "node scripts/build-mcp.mjs",
+    "build:mermaid": "node scripts/build-mermaid.mjs",
     "dev": "npm run copy-assets && vite --host 127.0.0.1",
-    "build": "npm run copy-assets && npm run build:mcp && tsc --noEmit && vite build",
+    "build": "npm run copy-assets && npm run build:mcp && npm run build:mermaid && tsc --noEmit && vite build",
     "start": "node server/index.mjs",
     "lockfile:public": "node scripts/public-lockfile.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "file:vendor/excalidraw.tgz",
     "@excalidraw/mermaid-to-excalidraw": "file:vendor/mermaid-to-excalidraw.tgz",
+    "jsdom": "25.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

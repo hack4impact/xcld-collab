@@ -3,12 +3,27 @@ import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { MERMAID_CONFIG } from "@excalidraw/mermaid-to-excalidraw/dist/constants.js";
 import { parseMermaidFlowChartDiagram } from "@excalidraw/mermaid-to-excalidraw/dist/parser/flowchart.js";
+// The runner bundles a copy of this file from app/.scratch/, so these paths are relative to there.
+import { disambiguateDuplicateElementIds } from "../src/ids.mjs";
+import { mermaidSourceHash, stampMermaidHash } from "../../tools/mermaid-hash.mjs";
 
 const CONFIG = {
   startOnLoad: false,
   flowchart: { curve: "linear" },
   themeVariables: { fontSize: "20px" },
 };
+
+const APPLY_BASE = `flowchart TD
+  A["Start"] --> B{"Valid?"}
+  B -->|yes| C(["Done"])
+  B -->|no| D["Fix
+input"]
+  D --> B
+  subgraph G["Review"]
+    C
+  end
+  classDef hot fill:#ffc9c9,stroke:#e03131,color:#c92a2a
+  class D hot`;
 
 const DEFINITIONS = {
   flat: `flowchart LR
@@ -17,6 +32,14 @@ const DEFINITIONS = {
   subgraph G[Group]
     A[One] --> B[Two]
   end`,
+  // Server-side Mermaid apply (tests/mermaid-apply.test.mjs): a base board, then the same
+  // diagram with a new node, a parallel edge and new edge styles.
+  "apply-base": APPLY_BASE,
+  "apply-next": `${APPLY_BASE}
+  D --> E(("Retry"))
+  A -.-> C
+  A ==> E
+  A --> B`,
 };
 
 const capturedConsoleErrors = [];
@@ -99,6 +122,24 @@ export const convertedScene = async (name = "subgraph") => {
     elements: convertToExcalidrawElements(skeleton, { regenerateIds: false }),
     appState: { viewBackgroundColor: "#ffffff" },
     files,
+  };
+};
+
+// The tab's own conversion (convertMermaidInbox in app/src/App.tsx): disambiguated ids,
+// regenerateIds: false, and the Mermaid source hash stamped on every element.
+export const appScene = async (name) => {
+  const definition = DEFINITIONS[name];
+  if (!definition) throw new Error(`Unknown harness case: ${name}`);
+  const parsed = await parseMermaidToExcalidraw(definition, CONFIG);
+  const skeleton = Array.isArray(parsed) ? parsed : parsed.elements;
+  return {
+    type: "excalidraw",
+    version: 2,
+    source: "tests/browser/run-mermaid-conversion.mjs --app",
+    mermaid: definition,
+    elements: stampMermaidHash(convertToExcalidrawElements(disambiguateDuplicateElementIds(skeleton), { regenerateIds: false }), mermaidSourceHash(definition)),
+    appState: { viewBackgroundColor: "#ffffff" },
+    files: {},
   };
 };
 
