@@ -17,12 +17,15 @@ const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve
 const maxDepth = () => maxDepthFromEnv();
 const publicUrl = () => (process.env.XCLD_PUBLIC_URL || "http://127.0.0.1:3100").replace(/\/+$/g, "");
 
+const LABEL_NEWLINE_RULE = 'To break a label across lines, put a real newline inside the quoted label (in the JSON argument: A["PUT /api/board\\napi.mjs:362"]); never <br/> or <br>, which the canvas shows as literal text.';
+
 const conventions = [
   "Conventions: snapshot before human review and diff after.",
   "Never rewrite a board's .mmd before diffing and acting on feedback: the browser import replaces the board.",
   "Draw proposed parts in light blue: classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2.",
   "Read the board's design-rules briefing; folder design-rules.csv files can replace local defaults.",
   "Use Mermaid flowcharts only; subgraphs are supported (they convert to grouped, editable shapes).",
+  LABEL_NEWLINE_RULE,
 ].join(" ");
 
 const content = (text) => [{ type: "text", text }];
@@ -135,7 +138,7 @@ export const createXcldMcpServer = () => {
       description: `Write the board inbox boards/<path>.mmd, creating folders. An open browser tab converts it and REPLACES the board. ${conventions}`,
       inputSchema: {
         board: z.string().describe("Board path without extension."),
-        mermaid: z.string().describe("Mermaid flowchart source. Use flowchart TD; subgraphs are supported."),
+        mermaid: z.string().describe("Mermaid flowchart source. Use flowchart TD; subgraphs are supported. Break labels with a real newline inside the quotes, never <br/>."),
       },
     },
     async ({ board, mermaid }) => {
@@ -214,7 +217,7 @@ export const createXcldMcpServer = () => {
     server,
     "check_board",
     {
-      description: `List open design-rule check items for a board. ${conventions}`,
+      description: `List open design-rule check items for a board, and warn about labels that contain a literal <br>. ${conventions}`,
       inputSchema: { board: z.string().describe("Board path without extension.") },
       annotations: { readOnlyHint: true },
     },

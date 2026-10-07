@@ -45,6 +45,10 @@ widget says the host cannot open the editor:
 - Use flowcharts only. `subgraph … end` converts to editable shapes and round-trips through
   `read_board`; keep nesting shallow.
 - Give nodes stable, meaningful IDs.
+- To break a label across lines, put a **real newline inside the quoted label**
+  (`\n` in the JSON string you pass to `write_mermaid`). Never use `<br/>` or `<br>`: the
+  converter copies the tag into the label, and the canvas shows it as text. `check_board`
+  warns about any label that still contains one.
 - Draw proposed or unapproved parts in light blue:
   `classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`.
 
@@ -79,7 +83,7 @@ override in their own folder's file; follow it, but don't treat it as fixed.
 - If `diff` or `read_board` starts with a **WARNING** block, a rule is invalid and was
   skipped. Tell the user which one.
 - Call `check_board` before you call a board done. It lists open items, such as remaining
-  proposals or unresolved notes.
+  proposals or unresolved notes, and warns about labels with a literal `<br>`.
 
 ## Existing boards
 

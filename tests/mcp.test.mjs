@@ -100,6 +100,10 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
       listedTools.result.tools.map((tool) => tool.name).sort(),
       ["board_url", "check_board", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_mermaid"],
     );
+    for (const tool of listedTools.result.tools) {
+      assert.match(tool.description, /real newline inside the quoted label/, `${tool.name} should carry the label newline convention`);
+      assert.match(tool.description, /never <br\/>/);
+    }
 
     const write = await callTool(server, "write_mermaid", {
       board: "p/flow",

@@ -497,13 +497,32 @@ export const checkBoardRules = async (board, boardsDir = process.env.XCLD_BOARDS
       open.push({ rule: rule.id, means: rule.means, instruct: rule.instruct, scope: slash(rule.file), id: element.id, type: element.type, label: elementLabel(element) || short(element.id) });
     }
   }
-  return { board, file, open, diagnostics: loaded.diagnostics, rulesFile: loaded.effectiveLabel };
+  return { board, file, open, labelWarnings: literalBreakLabels(elements), diagnostics: loaded.diagnostics, rulesFile: loaded.effectiveLabel };
+};
+
+// mermaid-to-excalidraw copies <br>/<br/> into the label verbatim; only a real newline inside
+// the quoted Mermaid label becomes a line break. originalText is the label before wrapping.
+export const literalBreakLabels = (elements) => (elements ?? [])
+  .filter((element) => element && !element.isDeleted && element.type === "text" && /<br/i.test(String(element.originalText ?? "")))
+  .map((element) => {
+    const container = element.containerId ? elements.find((item) => item.id === element.containerId) : null;
+    return { id: element.id, label: clean(element.originalText), container: container ? { id: container.id, type: container.type } : null };
+  });
+
+export const formatLabelWarnings = (labelWarnings) => {
+  if (!labelWarnings?.length) return "";
+  return [
+    "WARNING: literal <br> in label text; the canvas shows the tag, not a line break. In Mermaid, put a real newline inside the quoted label instead of <br/>:",
+    ...labelWarnings.map((item) => `  - "${item.label}" (text ${item.id}${item.container ? ` in ${item.container.type} ${item.container.id}` : ""})`),
+  ].join("\n");
 };
 
 export const formatCheckResult = (result) => {
   const lines = [];
   const warningText = formatRuleWarnings(result.diagnostics);
   if (warningText) lines.push(warningText, "");
+  const labelText = formatLabelWarnings(result.labelWarnings);
+  if (labelText) lines.push(labelText, "");
   if (!result.open.length) {
     lines.push(`Design check passed for ${result.board}: no open items.`);
   } else {

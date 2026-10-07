@@ -204,6 +204,35 @@ test("xcld check reports open proposals and notes, then passes after resolution"
   }
 });
 
+test("xcld check warns about literal <br> in label originalText without failing", async () => {
+  const root = await tempRoot("rules-br");
+  try {
+    const [rect, label] = box("api", "PUT /api/board<br>api.mjs:362");
+    const elements = [
+      rect,
+      // Wrapped text may differ from originalText; the warning reads originalText.
+      { ...label, text: "PUT /api/board\napi.mjs:362" },
+      note("n", "two\nlines are fine", { x: 400, y: 400 }),
+      note("upper", "Mixed<BR/>case", { x: 600, y: 600 }),
+      { ...note("wrapped", "no tag here", { x: 800, y: 800 }), text: "<br> only in wrapped text" },
+      { ...note("gone", "deleted<br>note", { x: 900, y: 900 }), isDeleted: true },
+    ];
+    await writeFile(path.join(root, "flow.excalidraw"), scene(elements), "utf8");
+    const result = await checkBoardRules("flow", root);
+    assert.deepEqual(result.labelWarnings.map((item) => item.id), ["api_label", "upper"]);
+    assert.deepEqual(result.labelWarnings[0].container, { id: "api", type: "rectangle" });
+    const cli = await runCli(["check", "flow"], root);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^WARNING: literal <br> in label text/);
+    assert.match(cli.stdout, /- "PUT \/api\/board<br>api\.mjs:362" \(text api_label in rectangle api\)/);
+    assert.match(cli.stdout, /- "Mixed<BR\/>case" \(text upper\)/);
+    assert.doesNotMatch(cli.stdout, /wrapped|deleted/);
+    assert.match(cli.stdout, /Design check passed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("export rules override XCLD_AUTO_EXPORT for snapshots and server saves", async () => {
   const root = await tempRoot("rules-export");
   try {

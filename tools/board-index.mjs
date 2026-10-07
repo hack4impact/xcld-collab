@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
+import { mermaidSourceHash, recordedMermaidHashes } from "./mermaid-hash.mjs";
 
 export const VIEW_INBOX_SUFFIX = ".view.json";
 
@@ -57,13 +58,32 @@ const toBoardFile = (relativeFile) => {
   };
 };
 
-const hasLiveElements = async (filePath) => {
+const readBoardSummary = async (filePath) => {
   try {
     const data = JSON.parse(await fs.readFile(filePath, "utf8"));
-    return Array.isArray(data.elements) && data.elements.some((element) => !element?.isDeleted);
+    return {
+      live: Array.isArray(data.elements) && data.elements.some((element) => !element?.isDeleted),
+      mermaidHashes: recordedMermaidHashes(data.elements),
+    };
   } catch {
-    return true;
+    return { live: true, mermaidHashes: new Set() };
   }
+};
+
+const readMermaidHash = async (filePath) => {
+  try {
+    return mermaidSourceHash(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+// Boards converted before the hash stamp existed fall back to comparing mtimes.
+const isMermaidPending = (entry) => {
+  if (!entry.hasMermaid) return false;
+  if (!entry.hasBoard || !entry._boardHasLiveElements) return true;
+  if (entry._boardMermaidHashes.size && entry._mermaidHash) return !entry._boardMermaidHashes.has(entry._mermaidHash);
+  return entry._mermaidMtimeMs > entry._boardMtimeMs;
 };
 
 export const walkBoardFiles = async (root, options = {}) => {
@@ -137,6 +157,9 @@ export const listBoards = async (root, options = {}) => {
       modified: null,
       _boardPath: null,
       _boardHasLiveElements: true,
+      _boardMermaidHashes: new Set(),
+      _mermaidPath: null,
+      _mermaidHash: null,
       _boardMtimeMs: 0,
       _mermaidMtimeMs: 0,
       _viewMtimeMs: 0,
@@ -148,6 +171,7 @@ export const listBoards = async (root, options = {}) => {
       entry._boardMtimeMs = stat.mtimeMs;
     } else if (file.kind === "mermaid") {
       entry.hasMermaid = true;
+      entry._mermaidPath = file.path;
       entry._mermaidMtimeMs = stat.mtimeMs;
     } else if (file.kind === "view") {
       entry.hasView = true;
@@ -161,15 +185,23 @@ export const listBoards = async (root, options = {}) => {
   }
   for (const entry of byName.values()) {
     if (entry.hasBoard && (entry.hasMermaid || entry.hasView)) {
-      entry._boardHasLiveElements = await hasLiveElements(entry._boardPath);
+      const summary = await readBoardSummary(entry._boardPath);
+      entry._boardHasLiveElements = summary.live;
+      entry._boardMermaidHashes = summary.mermaidHashes;
+    }
+    if (entry.hasMermaid && entry._boardMermaidHashes.size) {
+      entry._mermaidHash = await readMermaidHash(entry._mermaidPath);
     }
   }
   const boards = [...byName.values()]
     .map((entry) => {
-      entry.mermaidPending = entry.hasMermaid && (!entry.hasBoard || !entry._boardHasLiveElements || entry._mermaidMtimeMs > entry._boardMtimeMs);
+      entry.mermaidPending = isMermaidPending(entry);
       entry.viewPending = entry.hasView && (!entry.hasBoard || !entry._boardHasLiveElements || entry._viewMtimeMs > entry._boardMtimeMs);
       delete entry._boardPath;
       delete entry._boardHasLiveElements;
+      delete entry._boardMermaidHashes;
+      delete entry._mermaidPath;
+      delete entry._mermaidHash;
       delete entry._boardMtimeMs;
       delete entry._mermaidMtimeMs;
       delete entry._viewMtimeMs;

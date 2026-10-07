@@ -160,6 +160,17 @@ Design check found 2 open items for examples/demo:
   - open proposal: Merge (rectangle Merge) [open-proposals]
 ```
 
+It also warns, without failing, when a label's text contains a literal `<br>` (Mermaid
+`<br/>` that was copied into the label instead of a line break):
+
+```text
+> xcld check sandbox/labels
+WARNING: literal <br> in label text; the canvas shows the tag, not a line break. In Mermaid, put a real newline inside the quoted label instead of <br/>:
+  - "GET /api<br>board" (text docCHOfcYpyge4CeOm6p- in rectangle get)
+
+Design check passed for sandbox/labels: no open items.
+```
+
 Diff output gets short tags on matching changes and a deduped legend at the end:
 
 ```text
@@ -268,7 +279,8 @@ board is supplied. Exits 0 when valid and 1 on errors.
 ### `xcld check <board>`
 
 Runs `check` rules against the current board. Exits 0 when no items are open and 1 when open
-items remain, so scripts can gate hand-offs on it.
+items remain, so scripts can gate hand-offs on it. Labels containing a literal `<br>` get a
+`WARNING` block but don't change the exit code.
 
 ### `xcld list [folder] [--json]`
 
@@ -352,6 +364,17 @@ Prints usage.
 | — | freehand, image, etc. | `%% Unsupported element …` |
 
 - Node IDs survive the round trip. Labels use what you typed, not the canvas's line wrapping.
+- **Line breaks in labels:** put a real newline inside the quoted label (through MCP
+  `write_mermaid`, that's `\n` inside the JSON string). The canvas shows two lines:
+
+  ```text
+  flowchart TD
+    api["PUT /api/board
+  api.mjs:362"]
+  ```
+
+  `<br/>` and `<br>` are **not** converted: the canvas shows the tag as text, and
+  `xcld check` / MCP `check_board` warn about it. `to-mermaid` joins the lines with a space.
 - `to-mermaid` always writes `flowchart TD`, because the board stores positions, not a direction.
 - Other arrowheads, such as circle, bar or triangle, are written as the nearest equivalent
   and noted in a `%%` comment.
@@ -362,7 +385,7 @@ Prints usage.
 |---|---|
 | `boards/<path>.excalidraw` | The board. Standard Excalidraw JSON that excalidraw.com can open too |
 | `boards/examples/` | Example boards, **tracked in git**. Copy them before editing, e.g. into `boards/sandbox/`. Everything else in `boards/` is gitignored, and board edits never make the image tag `-dirty` |
-| `boards/<path>.mmd` | Mermaid inbox. An open tab on `<path>` converts it and **replaces** the board |
+| `boards/<path>.mmd` | Mermaid inbox. An open tab on `<path>` converts it and **replaces** the board. The converted elements record a hash of this Mermaid (`customData.xcldMermaidHash`), so `xcld list` and the board browser show `mermaid pending` / "Mermaid waiting to convert" exactly when the `.mmd` content differs from what the board was converted from, or the board is missing or empty. That survives a fresh clone or checkout; boards converted before the hash existed fall back to "the `.mmd` is newer than the board" |
 | `boards/<path>.view.json` | View inbox from `open_in_canvas`. An open tab on `<path>` converts it into the board; `xcld list` shows `view pending` until a non-empty board save is newer |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.excalidraw` | Snapshots from `xcld snapshot`; flat boards still use `boards/.snapshots/<name>.<timestamp>.excalidraw` |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.mmd` | The snapshot's Mermaid twin. Written unless `XCLD_AUTO_EXPORT=off` |
@@ -433,8 +456,9 @@ returned as MCP tool errors (`isError: true`) with the CLI's friendly messages.
 Every tool description repeats the working conventions: snapshot before human review, diff
 after, never rewrite a board's `.mmd` before diffing and acting on feedback because that
 re-import replaces the board, read the board's design-rules briefing, use light blue for
-proposed parts (`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), and use
-flowcharts only (subgraphs are fine).
+proposed parts (`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), use
+flowcharts only (subgraphs are fine), and break labels with a real newline inside the quoted
+label, never `<br/>`.
 
 | Tool | Inputs | Output |
 |---|---|---|
@@ -443,7 +467,7 @@ flowcharts only (subgraphs are fine).
 | `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, returns the file path, browser URL, replacement reminder and design-rules briefing; snapshots first when `snapshot,on-agent-write` is on |
 | `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
 | `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings |
-| `check_board` | `board` | Same open-item result as `xcld check` |
+| `check_board` | `board` | Same open-item result and `<br>` label warnings as `xcld check` |
 | `board_url` | `board` | `XCLD_PUBLIC_URL/?board=<path>`, defaulting to `http://127.0.0.1:3100/?board=<path>` |
 | `open_in_canvas` | `checkpointId`, required `board`, optional `overwrite` = `false` | Writes `boards/<path>.view.json` from an Excalidraw MCP checkpoint and returns the canvas URL |
 

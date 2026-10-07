@@ -15,6 +15,7 @@ import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBoardPath } from "../../tools/board-path.mjs";
+import { mermaidSourceHash, stampMermaidHash } from "../../tools/mermaid-hash.mjs";
 import { disambiguateDuplicateElementIds } from "./ids.mjs";
 import { reconcileElements } from "./reconcile.mjs";
 
@@ -513,9 +514,9 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     const parsedFiles = (Array.isArray(parsed) ? {} : parsed.files ?? {}) as BinaryFiles;
     const isImageFallback = skeleton.length > 0 && skeleton.every((element) => element.type === "image");
     const stableSkeleton = disambiguateDuplicateElementIds(skeleton);
-    const elements = convertToExcalidrawElements(stableSkeleton, {
+    const elements = stampMermaidHash(convertToExcalidrawElements(stableSkeleton, {
       regenerateIds: false,
-    }) as ExcalidrawElement[];
+    }), mermaidSourceHash(definition)) as ExcalidrawElement[];
     const scene: SceneFile = {
       type: "excalidraw",
       version: 2,

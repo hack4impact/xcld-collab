@@ -84,6 +84,14 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   - `.view.json` files are indexed as the board name (for example `x.view.json` appears as
     `x`), publish SSE `kind: "view"`, and stay `viewPending` until a non-empty
     `.excalidraw` save is newer.
+  - **`mermaidPending` compares content, not mtimes.** A fresh clone or checkout sets mtimes
+    in arbitrary order, so "the `.mmd` is newer" was wrong for checked-in boards. When a tab
+    converts `x.mmd`, it stamps every converted element with
+    `customData.xcldMermaidHash` (`tools/mermaid-hash.mjs`, shared by the canvas and the
+    index; BOM, CRLF and trailing whitespace are normalized). Excalidraw keeps element
+    `customData` through restore, edits and saves (**verified 2026-10-06** in a browser:
+    convert, reload, edit, save). Pending = no board, no live elements, or no live element
+    carries the hash of the current `.mmd`. Boards with no stamp keep the mtime rule.
   - Board paths can now be nested, e.g. `boards/myproject/demo.excalidraw` and
     `?board=myproject/demo`. The poller walks recursively, skips dot-folders such as
     `.snapshots`, skips `node_modules`, and never follows symlinks. Folder depth is unlimited
@@ -278,6 +286,11 @@ direction. The design question is what we do about that loss.
   `{ regenerateIds: false }`, or every conversion breaks ID stability.
 - Edge IDs are `${start}_${end}` (`flowchart.ts:281`). Two parallel edges between the same
   nodes collide, so we need a suffix for disambiguation.
+- **Label line breaks (verified 2026-10-06 in a browser):** a real newline inside a quoted
+  label becomes a real line break in the element's `originalText`; `<br/>` is copied
+  literally (`originalText` was `GET /api<br>board`). The agent docs and MCP tool
+  descriptions say "newline, never `<br/>`", and `xcld check` / `check_board` warn on any
+  `originalText` containing `<br`.
 
 ### Reverse: Excalidraw → Mermaid
 
