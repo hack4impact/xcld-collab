@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { test } from "node:test";
 import path from "node:path";
@@ -152,6 +152,72 @@ test("polling publishes external board changes without fs.watch", async () => {
     assert.equal(boardEvents, 1, `expected exactly one board event, got ${boardEvents}`);
     assert.match(events.join(""), /"name":"nested\/poll-me"/);
   } finally {
+    stream?.destroy();
+    api.close();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(boardsDir, { recursive: true, force: true });
+  }
+});
+
+// Editors and agents on the host often truncate and write in pieces. A poll that lands
+// mid-write must not publish the partial board; only the finished file is announced.
+test("polling waits for a slow non-atomic writer before publishing", async () => {
+  const boardsDir = path.join(scratchRoot, `slow-${Date.now()}-${process.pid}`);
+  await mkdir(boardsDir, { recursive: true });
+  const boardPath = path.join(boardsDir, "slow.excalidraw");
+  await writeFile(boardPath, excalidraw(null), "utf8");
+  const api = createBoardApi({ boardsDir, pollMs: 100, useFsWatch: false });
+  const server = createServer((req, res) => {
+    void api.handle(req, res);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const host = `127.0.0.1:${port}`;
+  let stream;
+  let handle;
+  try {
+    const arrivals = [];
+    stream = await new Promise((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: "/api/events", headers: { Host: host } }, (res) => {
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          const count = chunk.split("event: board").length - 1;
+          for (let i = 0; i < count; i += 1) {
+            arrivals.push(Date.now());
+          }
+        });
+        resolve(req);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(arrivals.length, 0, "existing boards must not fire on startup");
+
+    const full = excalidraw("slow-writer");
+    const half = Math.floor(full.length / 2);
+    handle = await open(boardPath, "w");
+    await handle.write(full.slice(0, half));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.equal(arrivals.length, 0, "a half-written board must not be published");
+
+    const finalWriteAt = Date.now();
+    await handle.write(full.slice(half));
+    await handle.close();
+    handle = undefined;
+    const deadline = Date.now() + 3000;
+    while (arrivals.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(arrivals.length, 1, `expected exactly one board event, got ${arrivals.length}`);
+    assert.ok(arrivals[0] >= finalWriteAt, "board event must follow the final write");
+
+    const response = await fetch(`http://${host}/api/board/slow`, { headers: { Host: host } });
+    assert.deepEqual(JSON.parse(await response.text()).elements, [{ id: "slow-writer" }]);
+  } finally {
+    await handle?.close();
     stream?.destroy();
     api.close();
     server.closeAllConnections?.();

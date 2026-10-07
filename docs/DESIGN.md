@@ -72,6 +72,9 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     `XCLD_WATCH_POLL_MS` ms (default 1000; 0 disables).
   - Both sources share one signature map, so each change is published once. Both behaviors
     are covered by `tests/api.test.mjs`, and the host-edit SSE event was verified end to end.
+  - A change is published only once the file has settled: same signature after a short
+    re-check (`min(XCLD_WATCH_POLL_MS, 100)` ms) and, for JSON files, content that parses, so
+    a non-atomic (truncate-then-write) host write is never announced half-written.
   - **Lead decision (2026-10-02):** if a known `.excalidraw` file disappears, the server
     waits 300 ms and re-checks before publishing one SSE `board` event with `kind:
     "deleted"`. That debounce lets editor-style delete+recreate writes settle. The open

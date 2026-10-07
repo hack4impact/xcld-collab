@@ -48,7 +48,7 @@ XCLD_AUTO_EXPORT: do you want Mermaid written automatically?
 ```
 
 - **"Every save"** covers both your browser edits and agents editing the `.excalidraw`
-  file on disk (picked up within `XCLD_WATCH_POLL_MS`).
+  file on disk (picked up within `XCLD_WATCH_POLL_MS` plus a ~100 ms settle check).
 - **The inbox is never written.** No mode writes `boards/<path>.mmd`, because writing it
   would replace the board. Exports live in dot-folders, which the board browser and
   `xcld list` ignore.

@@ -153,6 +153,7 @@ export function createBoardApi({
   useFsWatch = true,
   autoExport = autoExportFromEnv(),
   deleteDebounceMs = 300,
+  settleMs = Math.min(Number.isFinite(pollMs) && pollMs > 0 ? pollMs : 100, 100),
 }) {
   const root = path.resolve(boardsDir);
   mkdirSync(root, { recursive: true });
@@ -198,7 +199,24 @@ export function createBoardApi({
   // host-side agents write. A cheap mtime+size poll covers that case; signatures
   // dedupe the two so each change is published once.
   const signatures = new Map();
+  // Signatures whose JSON content didn't parse (a writer caught mid-write); skipped until
+  // the file changes again so a broken file isn't re-read every poll.
+  const unparsed = new Map();
   const pendingDeletes = new Map();
+  const settleWaits = new Set();
+  const settleDelay = () => new Promise((resolve) => {
+    if (closed) {
+      resolve();
+      return;
+    }
+    const wait = { resolve };
+    wait.timer = setTimeout(() => {
+      settleWaits.delete(wait);
+      resolve();
+    }, settleMs);
+    wait.timer.unref?.();
+    settleWaits.add(wait);
+  });
   let warnedSlowPoll = false;
   const nameFromRelativeFile = (relativeFile) => {
     const normalized = String(relativeFile).replace(/\\/g, "/").split("/").filter(Boolean).join("/");
@@ -219,6 +237,7 @@ export function createBoardApi({
     }
   };
   const scheduleDeleteIfKnown = (item) => {
+    unparsed.delete(item.relativeFile);
     if (item.kind !== "board" || !signatures.has(item.relativeFile) || pendingDeletes.has(item.relativeFile)) {
       if (item.kind !== "board") {
         signatures.delete(item.relativeFile);
@@ -253,28 +272,74 @@ export function createBoardApi({
     timer.unref?.();
     pendingDeletes.set(item.relativeFile, timer);
   };
-  const publishIfChanged = async (relativeFile) => {
+  const fileSignature = async (filePath) => {
+    const stat = await fs.lstat(filePath);
+    return stat.isFile() ? `${stat.mtimeMs}:${stat.size}` : null;
+  };
+  // Returns a candidate when the file's signature differs from the last published one.
+  const observeChange = async (relativeFile) => {
     const item = nameFromRelativeFile(relativeFile);
     if (!item) {
-      return;
+      return null;
     }
+    const filePath = path.join(root, ...item.relativeFile.split("/"));
     let signature;
     try {
-      const stat = await fs.lstat(path.join(root, ...item.relativeFile.split("/")));
-      if (!stat.isFile()) {
-        scheduleDeleteIfKnown(item);
-        return;
-      }
-      signature = `${stat.mtimeMs}:${stat.size}`;
+      signature = await fileSignature(filePath);
     } catch {
+      signature = null;
+    }
+    if (signature === null) {
       scheduleDeleteIfKnown(item);
-      return;
+      return null;
     }
     cancelPendingDelete(item.relativeFile);
-    if (signatures.get(item.relativeFile) === signature) {
+    if (signatures.get(item.relativeFile) === signature || unparsed.get(item.relativeFile) === signature) {
+      return null;
+    }
+    return { item, filePath, signature };
+  };
+  // Editors and agents often write non-atomically (truncate, then write), so a check can
+  // land mid-write. Publish only once the signature holds across a settle delay and, for
+  // JSON files, the content parses. A file still changing is re-settled a few times, then
+  // left to a later observation.
+  const publishIfSettled = async ({ item, filePath, signature: observed }) => {
+    const isJson = item.kind !== "mermaid";
+    let signature = observed;
+    let content;
+    for (let attempt = 1; ; attempt += 1) {
+      await settleDelay();
+      if (closed) {
+        return;
+      }
+      let current;
+      try {
+        content = isJson ? await fs.readFile(filePath, "utf8") : undefined;
+        current = await fileSignature(filePath);
+      } catch {
+        return;
+      }
+      if (current === signature) {
+        break;
+      }
+      if (current === null || attempt >= 5) {
+        return;
+      }
+      signature = current;
+    }
+    if (isJson) {
+      try {
+        JSON.parse(content);
+      } catch {
+        unparsed.set(item.relativeFile, signature);
+        return;
+      }
+    }
+    if (closed || signatures.get(item.relativeFile) === signature) {
       return;
     }
     signatures.set(item.relativeFile, signature);
+    unparsed.delete(item.relativeFile);
     publish({
       name: item.name,
       kind: item.kind,
@@ -282,6 +347,12 @@ export function createBoardApi({
     });
     if (item.kind === "board") {
       await exportBoard(item.name);
+    }
+  };
+  const publishIfChanged = async (relativeFile) => {
+    const candidate = await observeChange(relativeFile);
+    if (candidate) {
+      await publishIfSettled(candidate);
     }
   };
 
@@ -318,8 +389,12 @@ export function createBoardApi({
     try {
       const { files } = await walkBoardFiles(root, { maxDepth });
       const names = new Set(files.map((file) => file.relativeFile));
+      const candidates = [];
       for (const file of files) {
-        await publishIfChanged(file.relativeFile);
+        const candidate = await observeChange(file.relativeFile);
+        if (candidate) {
+          candidates.push(candidate);
+        }
       }
       for (const known of [...signatures.keys()]) {
         if (!names.has(known)) {
@@ -331,11 +406,18 @@ export function createBoardApi({
           }
         }
       }
+      for (const known of [...unparsed.keys()]) {
+        if (!names.has(known)) {
+          unparsed.delete(known);
+        }
+      }
       const elapsed = performance.now() - start;
       if (elapsed > 250 && !warnedSlowPoll) {
         warnedSlowPoll = true;
         console.warn(`Board poll scan took ${Math.round(elapsed)} ms; consider XCLD_WATCH_POLL_MS or XCLD_MAX_DEPTH.`);
       }
+      // Changed files settle together, so a batch costs one settle delay, not one per file.
+      await Promise.all(candidates.map(publishIfSettled));
     } catch {
       // Boards dir temporarily unavailable; try again next tick.
     } finally {
@@ -513,6 +595,11 @@ export function createBoardApi({
       clearTimeout(timer);
     }
     pendingDeletes.clear();
+    for (const wait of settleWaits) {
+      clearTimeout(wait.timer);
+      wait.resolve();
+    }
+    settleWaits.clear();
     for (const client of clients) {
       client.end();
     }
