@@ -8,6 +8,7 @@ import "./export.test.mjs";
 import "./ids.test.mjs";
 import "./lockfile.test.mjs";
 import "./mcp.test.mjs";
+import "./merge.test.mjs";
 import "./mermaid-pending.test.mjs";
 import "./reconcile.test.mjs";
 import "./rules-vocab.test.mjs";

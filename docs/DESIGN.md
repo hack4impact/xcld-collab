@@ -352,6 +352,41 @@ Options:
 **Decision (lead, 2026-10-02): B + C in v1.** Re-import merges by stable ID, and
 structured `%% xcld:` comments carry annotations through Mermaid.
 
+## Merge rules
+
+**Status (2026-10-06):** the merge module `tools/merge.mjs` is built and tested; the server
+doesn't call it yet. The branch store, per-board queue and commit pipeline come next, then
+the write API, the tab and the concurrency test. Today the board is still turn-taking with the
+stale-save guard.
+
+Every writer (tab, MCP, CLI, a direct file write) produces a branch: its full scene plus the
+master version it started from (the base) and when it was written. One merge runs at a time
+per board: `mergeBoard({ base, master, branch, branchWrittenAt, branchAuthor, masterMeta })`
+returns the new master plus `meta`, `applied`, `overwritten` and `unbound`. It is pure: no
+I/O, no clock, the same inputs give the same output, and it runs in Node and in the browser.
+
+| Rule | Behavior |
+|---|---|
+| Identity | The Excalidraw element id. Mermaid node ids survive conversion, so they match. |
+| Changed | Compared by content against the base, ignoring `version`, `versionNonce`, `updated` and arrow back-references in `boundElements`. Agents that don't bump versions are fine. A tombstone (`isDeleted`) and an absent element both mean deleted. |
+| Units | A container and its bound text are one unit (an arrow and its label too), found through `containerId` on any side. Groups (`groupIds`) and frames are **not** units: grouped elements merge one by one, so editing two shapes of one subgraph on two sides doesn't conflict. |
+| One side changed a unit | That side's version is taken. Master still equal to the base is a fast-forward. |
+| Both sides changed a unit | **The later write takes the whole unit.** Master's time for a unit is the latest `writtenAt` in `masterMeta` of its elements (the write that last set each one); the branch's is `branchWrittenAt`. A stale queued write therefore loses to a newer edit of the same unit (D8). Equal times: the greater author key wins, then the greater content, so the result never depends on which side was merged first. The loser's elements are returned in `overwritten`. |
+| Deletion vs edit | Same rule: a later edit brings the whole unit back; a later deletion removes it. |
+| Arrows | An arrow whose bound target is gone after the merge is kept with that end unbound, and reported in `unbound`. Deleting a shape unbinds its arrows, and that unbinding counts as part of the deletion, so if a later write keeps the shape, its arrows stay bound. A binding to an element the writer's own board doesn't have counts as unbound. |
+| Back-references | The `boundElements` arrow entries of each element are rebuilt from the merged arrows: entries for arrows that no longer bind are dropped, entries either side listed for arrows that still bind are kept. |
+| Versions | A merged element that differs from master's copy gets a `version` above every known copy, with a deterministic `versionNonce`. An element with master's exact content stays master's object. |
+| Z-order | With a fractional `index` on every element, elements sort by it (ties by id). Otherwise master's order holds (the branch's on a fast-forward), and elements only the branch has follow their nearest preceding branch neighbor. |
+| Tombstones | Not written to master; `meta` keeps the time and author of a deletion. |
+| `files`, `appState` | Image files: the union of both sides by file id. `appState`: per key, a branch change since the base wins. |
+| Write times | `meta` maps every element id to `{ writtenAt, author }` of the write that last set it. The commit step stores it and passes it back as `masterMeta` on the next merge. |
+
+The D3 property test (`tests/merge.test.mjs`) runs 60 seeded pairs of edit scripts, one
+tab-like (version bumps, tombstones, unbinding on delete) and one agent-like (no bumps,
+deletion by omission). It checks that repeated runs and shuffled input arrays give identical
+results, that merging A then B equals B then A, and that every change is either in the result
+or reported as overwritten. `node tests/merge-bench.mjs` measures D5.
+
 ## Annotation convention — free-form by default, local design rules
 
 **Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`
