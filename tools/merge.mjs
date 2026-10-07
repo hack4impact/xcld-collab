@@ -110,8 +110,8 @@ const sameFields = (left, right, skip) => {
 
 const refsOf = (element, withArrowRefs) => (Array.isArray(element.boundElements) ? element.boundElements.filter((entry) => withArrowRefs || !isArrowEntry(entry)) : []);
 
-// The same test as comparing contentKey()s.
-const sameContent = (left, right, { withArrowRefs = false } = {}) => {
+// The same test as comparing contentKey()s. Exported for the tab (app/src/tab-merge.mjs).
+export const sameContent = (left, right, { withArrowRefs = false } = {}) => {
   const leftLive = isLive(left);
   if (!leftLive || !isLive(right)) {
     return leftLive === isLive(right);

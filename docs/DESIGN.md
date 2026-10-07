@@ -59,18 +59,48 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 
     The board's commit queue serializes saves. `PUT` without either header is unguarded (the
     last write wins) for scripts.
-  - On a merged answer, the tab shows the merged board. It re-applies edits made since the save
-    was sent (`app/src/reconcile.mjs`, against the scene it sent) and says "Board changed
-    elsewhere; the server merged your edits". Slice 5 adds the banner listing applied and
-    overwritten changes.
-  - On 409 (an unknown base), the tab fetches the board and re-applies its unsaved edits per
-    element id against the base it last loaded or saved. A side that changed an element since
-    the base wins; if both did, the higher Excalidraw `version` wins and a tie goes to the tab.
-    Then it saves again, up to 3 retries. A reload that arrives while the tab has unsaved edits
-    merges the same way.
-  - Not Excalidraw's `reconcileElements`: it has no base, so an agent edit that doesn't bump
-    `version` loses to the tab's untouched copy, and an element left out of the file comes
-    back. Agents writing JSON rarely bump versions.  - **verified (2026-10-02):** `fs.watch` (inotify) gets **no events for host-side writes**
+  - **The tab's side (slice 5, `app/src/App.tsx`, `identity.mjs`, `tab-merge.mjs`,
+    `merge-banner.mjs`):**
+    - **Identity.** Every save sends `X-Xcld-Author-Name` and `X-Xcld-Tab`, so the author key
+      is `human:<name>#<tabId>`. The name is a rename remembered in `localStorage` (shared by
+      the browser's tabs, kept in sync by the `storage` event), else `XCLD_AUTHOR_NAME` from
+      `GET /api/config` (the first load waits for it), else `anonymous`. The tab id is random,
+      in `sessionStorage`, so it survives reloads of that tab. "Duplicate tab" copies
+      `sessionStorage`, so a new tab announces its id on a `BroadcastChannel` and takes a fresh
+      one if a live tab answers that it holds it. No random names and no server-checked unique
+      names: those are for future shared servers.
+    - **Save before reload** (lead, 2026-10-06; no blocking server hook). On a `board` event, or
+      a `merged` event from another author whose version isn't the tab's base, the tab (in its
+      one-at-a-time queue) saves its unsaved edits first, with the base they started from; the
+      server merges and answers with master, which the tab shows. With nothing unsaved it just
+      loads master. Saves send `X-Xcld-Edit-Age` (ms since the last edit), so the save's write
+      time is the human's last edit, not the debounced save's arrival.
+    - **After a merged answer, master is the new base.** Each save keeps an exact copy of what
+      it sent (Excalidraw edits elements in place). Edits made while the save was in flight are
+      merged onto master with `tools/merge.mjs` (base: the sent copy), master winning any unit
+      both changed. So an edit of this tab that lost is never sent again (its only route back to
+      master), and losers stay in history only. An in-flight edit replaced that way is listed
+      on the banner ("replaced while saving"); it was never a write, so it isn't in history.
+    - **Restore isn't an edit.** The canvas shows elements through Excalidraw's restore, which
+      fills in defaults (an agent's minimal JSON gains a seed, colors, an index). A save sends
+      every element the tab hasn't touched since the server sent it (same version stamp)
+      exactly as the server wrote it, and after a merged answer a unit the merge left as sent
+      keeps the tab's own copy. Otherwise a fill-in would read as this tab's edit and could beat
+      a concurrent agent edit of a shape the human never touched.
+    - **The banner** (non-modal, `role="status"`, its buttons don't take focus) folds every
+      merge since it was dismissed into one line, "Merged from <who>: n added, n changed · n
+      overwritten edits (k of yours)", plus details per unit with the winner and loser. It
+      reads the `merged` SSE events of other authors (including writes that lost every change:
+      `applied` empty, master unchanged, no reload) and this tab's own save answers.
+    - **Ctrl+S / Cmd+S** (a capture-phase listener, so Excalidraw's "Save to…" download never
+      opens) saves now, then `POST /api/board/<path>/checkpoint` closes the tab's open history
+      entry; "Saved checkpoint", or "No changes since the last checkpoint".
+  - **Offline fallback, 409 only** (the server doesn't know the base, e.g. it expired): the tab
+    fetches the board and merges its unsaved edits onto it with `tools/merge.mjs` against the
+    base it last loaded, the tab winning a unit both changed, then saves on the new base (up to
+    3 retries). The client-side re-apply that slice 3 ran before every reload
+    (`app/src/reconcile.mjs`) is retired: the server merges.
+  - **verified (2026-10-02):** `fs.watch` (inotify) gets **no events for host-side writes**
     through a Docker Desktop bind mount from Windows. Writes made inside the container do
     fire.
   - So the server also polls the mtime and size of each board file every
@@ -371,8 +401,8 @@ structured `%% xcld:` comments carry annotations through Mermaid.
 **Status (2026-10-07):** the merge module `tools/merge.mjs`, the server's commit pipeline and
 the write API are built: tab saves, `POST /api/branch` (MCP `write_board`, `xcld write`),
 Mermaid writes (`POST /api/mermaid`: MCP `write_mermaid`, `xcld write-mermaid`, slice 4b) and
-direct file writes all merge. The tab's banner and identity overlay (slice 5) and the
-concurrency test come next.
+direct file writes all merge, and the tab saves before it reloads, with its author overlay and the
+merged banner (slice 5). The concurrency test comes next.
 
 Every writer (tab, MCP, CLI, a direct file write) produces a branch: its full scene plus the
 master version it started from (the base) and when it was written. One merge runs at a time
@@ -508,9 +538,9 @@ limit of 500 edges (`maxEdges`, the same in the tab) applies.
 
 **Status (2026-10-07):** built (`app/server/versions.mjs`) and wired into the server, with the
 write API (`POST /api/branch`), tab saves that merge, identities, MCP/CLI writes through
-the server, history v2 (change-only entries), and Mermaid writes through the same pipeline
-(slice 4b, `POST /api/mermaid`). Still to come: the tab's side (slice 5:
-author overlay, banner, save before reload) and the 50-seed concurrency test.
+the server, history v2 (change-only entries), Mermaid writes through the same pipeline
+(slice 4b, `POST /api/mermaid`), and the tab's side (slice 5: author overlay, banner, save before
+reload, Ctrl+S checkpoints). Still to come: the 50-seed concurrency test.
 
 **Where it lives** (lead, 2026-10-07: one setting). The user-facing setting is the cache
 folder, `XCLD_CACHE_DIR`, a host path (default `~/.excalidraw`) that compose bind-mounts at
@@ -617,7 +647,8 @@ Equal write times go to the greater key.
 The pipeline, per write:
 
 1. **Ingest (Hook 0).** Check the board path, author key, kind, element ids and files. Stamp
-   `receivedAt` (and `writtenAt`, if the writer didn't send one). Store new images, then write
+   `receivedAt` (and `writtenAt`, if the writer didn't send one; a tab's `X-Xcld-Edit-Age` makes it
+   `receivedAt` minus that age, capped at 10 min). Store new images, then write
    the branch file atomically, with an fsync. From here the write is never dropped.
 2. **Per-board FIFO queue.** One commit runs per board at a time, in submit order. Different
    boards commit in parallel.
@@ -659,6 +690,9 @@ The pipeline, per write:
   - An unknown base: 409.
   - `If-None-Match: *` starts from an empty board.
   - No header: unguarded.
+  - `X-Xcld-Edit-Age` (ms since the tab's last edit): the branch's `writtenAt`, see Ingest.
+- **`POST /api/board/<path>/checkpoint`** (Ctrl+S): `checkpoint(board, { author })` for the caller's
+  author key (from its identity headers; none: any author). Answers `{ ok, closed, entry, version }`.
 - `GET /api/config` exposes `XCLD_AUTHOR_NAME`, which the build seeds from
   `git config user.name` (or the OS user) and never overwrites.
 
@@ -668,7 +702,7 @@ The pipeline, per write:
   - another human commits (`author`);
   - an agent, CLI or external write merges (`agent-merge`);
   - 3 minutes pass with no commit (`idle`, a timer that `close()` cancels);
-  - `checkpoint(board)` is called (`checkpoint`, for Ctrl+S);
+  - Ctrl+S in the tab (`POST .../checkpoint`, `checkpoint`); it closes only the caller's own entry;
   - the board file is deleted (`deleted`).
 - Agent, CLI and external writes never coalesce: each is its own entry, closed at once
   (`agent-write`, or `init`).
@@ -733,8 +767,9 @@ The pipeline, per write:
 - `readVersion(board, version)` → `{ version, text, scene }` (pins the version);
   `readMaster(board)` → the same for the current master; `readMermaid(board)` (from memory once the board is loaded) →
   `{ source, hash, author, writtenAt, appliedAt, branchId, version }` or null.
-- Also: `readState(board)` (now with `depth`), `checkpoint(board, { pin? })` (a `pin` label
-  makes the current version a full checkpoint and labels its meta), `adoptExternal(board)`,
+- Also: `readState(board)` (now with `depth`), `checkpoint(board, { pin?, author? })` (a `pin`
+  label makes the current version a full checkpoint and labels its meta; with `author`, only that
+  author's open entry is closed), `adoptExternal(board)`,
   `status()`, `timings()`, `whenIdle()`.
 - A `status: "unchanged"` result can carry `overwritten` (every change lost); its `post`
   still sends the `merged` event.

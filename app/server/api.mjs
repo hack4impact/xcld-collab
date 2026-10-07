@@ -607,6 +607,27 @@ export function createBoardApi({
       const boardPrefix = "/api/board/";
       if (rawPathname.startsWith(boardPrefix)) {
         const rawName = rawPathname.slice(boardPrefix.length);
+        const checkpointSuffix = "/checkpoint";
+        // POST /api/board/<path>/checkpoint (Ctrl+S in the tab): closes the caller's open history
+        // entry. Only POST takes the suffix, so a board named `<path>/checkpoint` stays reachable.
+        if (req.method === "POST" && rawName.endsWith(checkpointSuffix)) {
+          const name = decodeURIComponent(rawName.slice(0, -checkpointSuffix.length));
+          const filePath = filePathFor(root, name, ".excalidraw");
+          const identified = req.headers["x-xcld-author-name"] !== undefined || req.headers["x-xcld-tab"] !== undefined;
+          const author = identified ? tabAuthor(req.headers) : null;
+          if (identified && !author) {
+            sendError(res, 400, "invalid-author");
+            return true;
+          }
+          const current = await versions.cachedMaster(name) ?? await readCurrent(filePath);
+          if (current.hash === null) {
+            sendError(res, 404, "board-not-found", { name });
+            return true;
+          }
+          const result = await versions.checkpoint(name, { author });
+          sendJson(res, 200, { ok: true, closed: result.closed, entry: result.closed ? result.entry : null, version: result.version });
+          return true;
+        }
         const name = decodeURIComponent(rawName);
         const filePath = filePathFor(root, name, ".excalidraw");
 
@@ -665,6 +686,12 @@ export function createBoardApi({
             files: parsed.files,
             template: parsed,
           };
+          // X-Xcld-Edit-Age: ms since the tab's last edit, so its write time is when the human
+          // edited, not when the (debounced) save arrived.
+          const editAge = Number(headerValue(req.headers["x-xcld-edit-age"]));
+          if (Number.isFinite(editAge) && editAge > 0) {
+            input.writtenAgoMs = editAge;
+          }
           if (ifMatch?.includes("*")) {
             Object.assign(input, { base: null, legacy: { ifMatch: "*" } });
           } else if (ifMatch) {

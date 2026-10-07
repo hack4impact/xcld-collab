@@ -13,6 +13,8 @@ import { mergeBoard } from "../../tools/merge.mjs";
 export const IDLE_CLOSE_MS = 3 * 60 * 1000;
 export const BASE_TTL_MS = 24 * 60 * 60 * 1000;
 export const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 10_000];
+// A tab says how long ago its last edit was (`writtenAgoMs`); older claims are capped.
+export const MAX_WRITTEN_AGO_MS = 10 * 60 * 1000;
 const GC_INTERVAL_MS = 10 * 60 * 1000;
 const STATE_SCHEMA = 1;
 // State `records`: 2 = images live in the file store, not in records.
@@ -870,7 +872,9 @@ export function createVersionStore({
       return { error: "invalid-base" };
     }
     const receivedAt = now();
-    const writtenAt = typeof input.writtenAt === "number" && Number.isFinite(input.writtenAt) ? input.writtenAt : receivedAt;
+    // `writtenAgoMs` (a tab: time since its last edit) needs no clock shared with the writer.
+    const ago = typeof input.writtenAgoMs === "number" && Number.isFinite(input.writtenAgoMs) && input.writtenAgoMs > 0 ? Math.min(input.writtenAgoMs, MAX_WRITTEN_AGO_MS) : 0;
+    const writtenAt = typeof input.writtenAt === "number" && Number.isFinite(input.writtenAt) ? input.writtenAt : receivedAt - ago;
     const base = input.base ?? null;
     watch.add("validate", performance.now() - started);
     const branch = {
@@ -1482,7 +1486,7 @@ export function createVersionStore({
   };
 
   /**
-   * Submit a writer's branch: `{ author, displayName?, base, writtenAt?, kind?: "json" |
+   * Submit a writer's branch: `{ author, displayName?, base, writtenAt? | writtenAgoMs?, kind?: "json" |
    * "mermaid", elements, appState?, files?, template?, ops?, mermaid?: { source, hash } }`.
    * Resolves after the commit with `{ status, version, applied, overwritten, unbound,
    * fastForward, scene, branchId, post, timings? }`; status is "committed", "unchanged",
@@ -1600,10 +1604,12 @@ export function createVersionStore({
 
   // Ctrl+S: closes the open entry. `pin` (a label) also makes the current version's entry a full
   // checkpoint, so a pinned version never depends on deltas (snapshots as pinned versions).
-  const checkpoint = (name, { pin = null } = {}) => enqueue(name, async () => {
+  // With `author`, only that author's open entry is closed (a tab closes its own turn).
+  const checkpoint = (name, { pin = null, author = null } = {}) => enqueue(name, async () => {
     const board = await loadBoard(name);
-    const entry = board.open?.entry ?? null;
-    const closedEntry = await closeOpenEntry(board, "checkpoint");
+    const own = !author || board.open?.author === author;
+    const entry = own ? board.open?.entry ?? null : null;
+    const closedEntry = own ? await closeOpenEntry(board, "checkpoint") : false;
     const pinned = pin && board.version ? await pinHead(board, String(pin)) : null;
     if (closedEntry || pinned) {
       await writeState(board);

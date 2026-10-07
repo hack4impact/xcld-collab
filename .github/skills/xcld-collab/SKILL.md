@@ -102,7 +102,8 @@ you write. Parallel Mermaid writes are merged too.
 4. Read the result. `overwritten` lists units you and someone else both changed: the later
    write won. If it says someone else's edit won, tell the user rather than redoing it.
    `queued` means the merge took longer than 5 s; the write is safe. Read the board again
-   before writing on top of it.
+   before writing on top of it. The user's canvas shows each of your writes on a banner under
+   your MCP client name, with anything overwritten either way.
 5. For your next write, use the returned `version` as `base`. If a write is refused with an
    unknown base, call `read_board` again.
 

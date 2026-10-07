@@ -121,8 +121,9 @@ free notes that have not been crossed out/deleted.
 - **Move an arrow's end rather than redrawing it.** Deleting an arrow and drawing a new one shows
   up as removed + added, not rewired.
 - **Notes attach to the nearest shape.** Put a note right next to the thing it's about.
-- **Don't use Ctrl+S or "Save to…".** That downloads a copy. The board already saves itself
-  (see [Coming soon: versions](../README.md#coming-soon)).
+- **Ctrl+S (Cmd+S) saves a checkpoint.** The board saves itself anyway; Ctrl+S marks a restore
+  point in version history (see [below](#editing-at-the-same-time-as-agents)). Excalidraw's
+  menu "Save to…" still downloads a copy.
 
 ## Prompts for your agent
 
@@ -187,10 +188,34 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   by the server: different shapes never clash, and when you both changed the same shape (or
   its label), the later change wins and the other one stays in version history. Agents should
   write with `write_board` (or `xcld write`), which reports what was overwritten. The canvas
-  doesn't show a banner for merges yet; it shows "Board changed elsewhere; the server merged
-  your edits" in the status line. To look at the history, copy it out with
-  `docker exec xcld-collab xcld history export <board> --full` (every version as a file in
-  `~/.excalidraw/exports/<board>/`).
+  shows it in a banner; see [Editing at the same time as agents](#editing-at-the-same-time-as-agents).
+
+## Editing at the same time as agents
+
+- **"Author: <name>"** at the bottom of the canvas is who your edits are saved as. It starts
+  as `XCLD_AUTHOR_NAME` (the build sets it from `git config user.name`). Click it to rename;
+  Enter keeps the name, Esc cancels, and an empty name goes back to the default. This browser
+  remembers it, and all its tabs use it. Each tab also has a hidden tab id (kept across
+  reloads of that tab), so two of your tabs are two writers with the same name.
+- **Your edits are saved before anything else is shown.** When an agent or another tab writes,
+  your tab saves what you haven't saved yet, the server merges it, and the tab shows the
+  merged board. You can keep dragging or typing meanwhile.
+- **The banner** above your name lists what merged and from whom, e.g. "Merged from
+  copilot-cli (agent): 1 added, 1 changed · 1 overwritten edit (1 of yours)". It doesn't take
+  focus. **details** lists each change with its time; **×** dismisses it.
+- **Overwritten** means you and someone else changed the same shape (or its label) since you
+  last had the same board, and the whole shape went to the later edit. "Your edit was
+  overwritten by …" means theirs is on the board; "your newer edit overwrote …'s" means yours
+  is. The losing version is kept in **version history only**: the canvas never puts it back by
+  itself, and your tab never sends it again. To see it, copy the history out with
+  `docker exec xcld-collab xcld history export <board>` (each entry's `.meta.json` lists the
+  `overwritten` units with the losing elements), or `--full` for every version as a board.
+- **"An edit you made while saving was replaced"** is rare: you changed a shape in the split
+  second while a save was on its way, and the merge changed that same shape. The merged shape
+  wins; that edit is not in history, so redo it if you still want it.
+- **Ctrl+S** (Cmd+S) saves now and closes your current turn in version history: the status
+  says "Saved checkpoint", or "No changes since the last checkpoint". Without Ctrl+S a turn
+  closes by itself after 3 minutes without edits, or when someone else writes.
 
 ## What doesn't work yet
 

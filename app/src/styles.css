@@ -101,6 +101,94 @@ a {
 .canvas-wrap {
   flex: 1 1 auto;
   min-height: 0;
+  position: relative;
+}
+
+.author-overlay,
+.merge-banner {
+  font-size: 13px;
+  left: 50%;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+.author-overlay {
+  bottom: 12px;
+}
+
+.author-overlay button,
+.author-overlay form {
+  align-items: center;
+  background: rgb(255 255 255 / 92%);
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+  color: #334155;
+  display: flex;
+  font: inherit;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 12px;
+}
+
+.author-overlay button {
+  cursor: pointer;
+}
+
+.author-overlay input {
+  border: 1px solid #94a3b8;
+  border-radius: 6px;
+  font: inherit;
+  padding: 2px 6px;
+  width: 16em;
+}
+
+.merge-banner {
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  border-radius: 10px;
+  bottom: 52px;
+  box-shadow: 0 2px 6px rgb(15 23 42 / 12%);
+  color: #1e3a8a;
+  max-width: min(760px, 90%);
+  padding: 6px 10px;
+}
+
+.merge-banner-line {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.merge-banner-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merge-banner button {
+  background: none;
+  border: 0;
+  color: #1d4ed8;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  padding: 0 2px;
+  text-decoration: underline;
+}
+
+.merge-banner .merge-banner-close {
+  font-size: 16px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.merge-banner-details {
+  margin: 6px 0 2px;
+  max-height: 30vh;
+  overflow: auto;
+  padding-left: 18px;
 }
 
 .empty-state {

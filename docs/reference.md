@@ -542,7 +542,10 @@ levels.
 
   `hash` and the `ETag` are the new version. The canvas identifies itself with
   `X-Xcld-Author-Name` (percent-encoded UTF-8) and `X-Xcld-Tab` (`[A-Za-z0-9_-]`); without
-  them a save is authored `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`.
+  them a save is authored `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`. It also sends
+  `X-Xcld-Edit-Age` (ms since its last edit, capped at 10 min): the save's write time, which
+  decides who wins an [overwritten](DESIGN.md#merge-rules) unit, is then the time of that
+  edit rather than the time the debounced save arrived.
 
   ```text
   > curl -si -X PUT -H "Content-Type: application/json" -H 'If-Match: "6ca666afdf75…"' -H "X-Xcld-Author-Name: Ada%20Lovelace" -H "X-Xcld-Tab: tab1" --data-binary @board.json http://127.0.0.1:3100/api/board/sandbox/guard
@@ -554,8 +557,24 @@ levels.
   {"error":"unknown-base","currentHash":"7e05b8e2f8ded474f2e6358733db7b896e6d931548f074dbb41e6cb1f9e72a20"}
   ```
 
+- `POST /api/board/<path>/checkpoint` (Ctrl+S in the canvas) closes the caller's open history
+  entry, so its turn becomes one restore point now instead of after 3 minutes idle. Send the
+  same `X-Xcld-Author-Name` and `X-Xcld-Tab` as the saves: only that author's open entry is
+  closed (without them, any open entry is). The answer is `{ ok, closed, entry, version }`;
+  `closed: false` means nothing changed since the last checkpoint. 404 if the board doesn't
+  exist. Only `POST` takes the `/checkpoint` suffix, so a board named `<path>/checkpoint` still
+  works with `GET` and `PUT`.
+
+  ```text
+  > curl -si -X POST -H "X-Xcld-Author-Name: Ada%20Lovelace" -H "X-Xcld-Tab: tab1" http://127.0.0.1:3100/api/board/sandbox/guard/checkpoint
+  HTTP/1.1 200 OK
+  {"ok":true,"closed":true,"entry":"20261007T220328.449Z-human_Ada_Lovelace_tab1","version":"660b905aec1d…"}
+  > curl -s -X POST -H "X-Xcld-Author-Name: Ada%20Lovelace" -H "X-Xcld-Tab: tab1" http://127.0.0.1:3100/api/board/sandbox/guard/checkpoint
+  {"ok":true,"closed":false,"entry":null,"version":"660b905aec1d…"}
+  ```
+
 - `GET /api/config` returns `{ authorName, writeWaitMs, timing }` (`authorName` is
-  `XCLD_AUTHOR_NAME`, for the canvas).
+  `XCLD_AUTHOR_NAME`, the canvas's default author name).
 - `GET /api/status` returns `{ ok, pending, failing }`: writes waiting in the journal per
   board, and commits waiting on a retry after a disk error (retried with backoff 0.5, 1, 2, 4,
   then every 10 s; the board's other writes wait, other boards don't).
@@ -794,14 +813,15 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 | Widget **Edit** does nothing in VS Code | The host refused the widget's fullscreen editor | Ask your assistant to call `open_in_canvas` with the checkpoint id shown in the widget hint and an explicit board path, then open the returned canvas URL |
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
 | My notes disappeared | A tab converted a `.mmd` that the server couldn't apply (a non-flowchart, or a board with no Mermaid shapes), which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
-| The top bar says "Board changed elsewhere; your edits were re-applied" | An agent or another tab saved the board while you had unsaved edits | Nothing to do: your edits were merged onto the newer board and saved. Check the shapes you both touched |
+| The top bar says "Board changed elsewhere; your edits were re-applied" | The server no longer knew the version your tab started from (409, e.g. after a day without reads), so the tab merged your unsaved edits onto the board itself and saved | Nothing to do. Check the shapes you both touched; the banner lists any that were overwritten |
+| The banner says an edit of yours was overwritten | You and someone else changed the same shape (or its label) and theirs was later | Theirs is on the board; yours is in version history (`xcld history export <board>`, the entry's `.meta.json`). Redo it if it should win. See the [user guide](user-guide.md#editing-at-the-same-time-as-agents) |
 | "Save failed: the board kept changing elsewhere (3 retries)" | Something rewrites the board faster than the tab can merge | Stop the other writer, then make any edit to retry; your edits are still in the tab |
 | A write gets 409 `unknown-base` | Its base version isn't known to the server: it expired (24 h after the last read), it was never read through the server, or the board was deleted | Read the board again (`GET /api/board`, MCP `read_board`, `xcld read`) and resend with that version as base |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
 | I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |
 | The browser shows an invalid-board banner | The `?board=` path is invalid | Fix the path in the URL or open <http://127.0.0.1:3100/> and choose a board |
 | Linux: `permission denied` writing boards | The container user doesn't match yours | Rerun `./build.sh` (it writes `XCLD_UID`/`XCLD_GID` to `.env`), then `docker compose up -d --wait` |
-| Ctrl+S downloads a file | Excalidraw's own "Save to…" | Ignore it. The board saves itself (see the top bar) |
+| Ctrl+S opens a download | An older canvas; the current one turns Ctrl+S into a checkpoint ("Saved checkpoint") | Reload the tab. Excalidraw's menu "Save to…" still downloads a copy on purpose |
 | `docker exec` says the container isn't running | Workspace stopped | `docker compose up -d --wait` |
 | `container xcld-collab is unhealthy` right after changing `.env` | A setting has an invalid value, e.g. `XCLD_AUTO_EXPORT=always` | `docker compose logs canvas` names the bad value. Fix `.env` (`off`, `snapshot` or `save`), then `docker compose up -d --wait` |
 | No `boards/.exports/` folder | Only `XCLD_AUTO_EXPORT=save` writes it | Set it in `.env` and restart. See [Saving and exporting](#saving-and-exporting) |

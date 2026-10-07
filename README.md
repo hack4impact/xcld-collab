@@ -165,7 +165,7 @@ git; everything else you create there is gitignored. Nothing leaves your machine
 | `XCLD_AUTO_EXPORT` | `snapshot` | When Mermaid is written for you: `off`, `snapshot` (each `xcld snapshot` also writes a `.mmd`) or `save` (also keeps `boards/.exports/<path>.mmd` current). See the [decision tree](docs/reference.md#saving-and-exporting) |
 | `XCLD_DESIGN_RULES` | `<boards>/design-rules.csv` | Optional path to the default design rules CSV (inside Docker, use `/boards/...`). A folder's own `design-rules.csv` still replaces the inherited defaults for boards below it |
 | `XCLD_PUBLIC_URL` | `http://127.0.0.1:${XCLD_PORT}` | URL returned by MCP `board_url`; Compose sets this for the canvas service |
-| `XCLD_AUTHOR_NAME` | your `git config user.name`, else your OS user | The canvas's default author name in version history. The build writes it into `.env` once and never overwrites it; edit it there |
+| `XCLD_AUTHOR_NAME` | your `git config user.name`, else your OS user | The canvas's default author name in version history, shown as "Author: …" at the bottom of the canvas (click it to rename in that browser). The build writes it into `.env` once and never overwrites it; edit it there |
 | `XCLD_TIMING` | unset | `1` records per-stage commit timings at `GET /api/timings` (for profiling, see `tests/versions-load.mjs`) |
 | `XCLD_CACHE_DIR` | `~/.excalidraw` | A folder on your machine. `xcld history export` writes to `exports/` in it; on Linux it also holds version history (`history/`). Must be a path; on Linux, writable by you. See [where history lives](#where-history-lives) |
 | `XCLD_HISTORY` | Linux: `cache`; Windows/macOS: `volume` | **Advanced.** Where version history lives: `volume` (the Docker volume `xcld-state`) or `cache` (`XCLD_CACHE_DIR/history/`). The build writes the default for your OS once and never overwrites it. `cache` on Windows/macOS is slow |
@@ -204,9 +204,29 @@ direct edits of a board or `.mmd` file all go through one commit pipeline:
   made of one never is). Several agents can write Mermaid to the same board at once. Only a
   brand-new diagram still needs an open tab to lay it out the first time.
 
-Still coming for the tab (versions and merge, slice 5): your name and tab in the corner, a
-banner listing what was merged or overwritten, and saving before accepting a reload. Until
-then the tab saves as one shared author and applies a merged board without a banner.
+The canvas takes part like any other writer:
+
+- **Your name** is at the bottom of the canvas ("Author: …"), from `XCLD_AUTHOR_NAME`. Click it
+  to rename; the browser remembers it for all its tabs. Each tab also saves under a hidden tab
+  id, so two tabs of yours never overwrite each other's turn.
+- **Save before reload:** when someone else's write lands, the tab first saves your pending
+  edits (with the version they started from), then shows the merged board. A drag or a label
+  you are typing carries on.
+- **A banner** lists what merged from whom and every **overwritten** edit, with who won. A
+  losing edit is kept in version history only; nothing re-applies it.
+- **Ctrl+S** (Cmd+S) closes your current turn as a restore point ("Saved checkpoint"). It no
+  longer downloads a file.
+
+Caveats:
+
+- The same shape (or its label) edited on both sides goes **whole** to the later edit; there is
+  no field-by-field merge. Look at the banner's details for what lost.
+- An edit you make in the fraction of a second while a save is on its way, to a shape that the
+  merge changed, is replaced by the merged shape. The banner says so; that edit is not in
+  history.
+- Arrow points can go stale when the bound shape moves on the other side (issue #27).
+- Names are not checked for uniqueness. A shared server with several people (random names, a
+  server-checked unique name) is future work.
 
 ### Where history lives
 
@@ -243,8 +263,8 @@ open: exports, and on Linux the history itself.
 These are designed but **not built yet**. Don't rely on them.
 
 - **Version browsing.** History is recorded and `xcld history export` copies it out (see
-  above); `xcld diff --since` and snapshots as pinned versions come next. Ctrl+S /
-  Excalidraw's "Save to…" still downloads a separate copy.
+  above); `xcld diff --since` and snapshots as pinned versions come next. Ctrl+S closes a
+  restore point; Excalidraw's menu "Save to…" still downloads a separate copy.
 - **More diagram types:** sequence, class, ER, state.
 
 ## Development
