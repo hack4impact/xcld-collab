@@ -108,12 +108,13 @@ Predicates are joined with `;` (AND). Values can be OR-ed with `|`. Use `!=` for
 
 | Property | Values |
 |---|---|
-| `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `image` |
-| `strokeColor`, `backgroundColor` | exact `#rrggbb` hex, normalized to lowercase |
+| `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `magicframe`, `image`, `embeddable`, `iframe`, `stickynote` |
+| `strokeColor`, `backgroundColor` | exact `#rrggbb` hex, normalized to lowercase. A malformed value gets a suggestion when an Excalidraw palette color is close |
 | `strokeStyle` | `solid`, `dashed`, `dotted` |
-| `strokeWidth` | `1`, `2`, `4` |
+| `strokeWidth` | `1`, `2`, `4`, `8` |
 | `fillStyle` | `hachure`, `cross-hatch`, `solid`, `zigzag` |
-| `startArrowhead`, `endArrowhead` | `none`, `arrow`, `bar`, `dot`, `circle`, `circle_outline`, `triangle`, `triangle_outline`, `diamond`, `diamond_outline`, crow's-foot variants |
+| `roundness` | `round`, `sharp` (no corner rounding) |
+| `startArrowhead`, `endArrowhead` | `none`, `arrow`, `bar`, `circle`, `circle_outline`, `triangle`, `triangle_outline`, `diamond`, `diamond_outline`, `cardinality_one`, `cardinality_many`, `cardinality_one_or_many`, `cardinality_exactly_one`, `cardinality_zero_or_one`, `cardinality_zero_or_many`. Legacy names (`dot`, `crowfoot_one`, `crowfoot_many`, `crowfoot_one_or_many`) are rejected: Excalidraw renames them when it loads a board |
 | `elbowed` | `true`, `false` |
 | `opacity` | `0` through `100` |
 | `bound` *(derived)* | `true`, `false`; text inside a container or a line/arrow bound at either end |
@@ -122,6 +123,23 @@ Predicates are joined with `;` (AND). Values can be OR-ed with `|`. Use `!=` for
 
 Open-note checks treat a free text note as resolved when a line/arrow/freedraw crosses it, or
 when it is deleted.
+
+**Where the values come from.** Excalidraw's own values (element types, stroke and fill
+styles, stroke widths, roundness, arrowheads, palette) are generated from the pinned
+Excalidraw commit into [`tools/rules-vocab.generated.mjs`](../tools/rules-vocab.generated.mjs),
+whose header records the commit. `scripts/gen-rules-vocab.mjs` reads
+`packages/element/src/types.ts` with the TypeScript type checker and `STROKE_WIDTH` /
+`COLOR_PALETTE` from the built `@excalidraw/common`, and fails if any of them can't be read.
+
+- The Docker build regenerates the file from the Excalidraw checkout it just built and ships
+  that copy, so bumping the pin updates the vocabulary in the image. The build log prints a
+  `NOTE` with the diff when the checked-in copy is stale.
+- On the host, after `build.ps1 -Target vendor` and `npm install` in `app/`, run
+  `node scripts/gen-rules-vocab.mjs` to regenerate it, or `--check` to verify it.
+  `node --test tests` fails when the checked-in copy drifts from the generator output, and
+  skips that comparison when the vendor packages aren't installed.
+- Rule kinds, change types, `none`, `elbowed`/`bound` booleans, export and snapshot modes
+  are xcld-collab's own vocabulary, in `tools/rules-vocab.mjs`.
 
 ### Commands and output
 

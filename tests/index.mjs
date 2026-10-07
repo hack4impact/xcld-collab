@@ -9,6 +9,7 @@ import "./ids.test.mjs";
 import "./mcp.test.mjs";
 import "./mermaid-pending.test.mjs";
 import "./reconcile.test.mjs";
+import "./rules-vocab.test.mjs";
 import "./rules.test.mjs";
 import "./snapshot.test.mjs";
 import "./stale-save.test.mjs";

@@ -51,6 +51,24 @@ RUN mkdir -p /out \
  && ls -l /out
 
 # ----------------------------------------------------------------------------
+# rules-vocab: the design-rules linter vocabulary (element types, stroke/fill
+# styles, arrowheads, roundness, stroke widths, palette), generated from this
+# exact Excalidraw checkout. Fails the build if the types or constants can't be
+# read. The image ships this file, so a pin bump updates the vocabulary; the
+# checked-in copy (tools/rules-vocab.generated.mjs) is for host dev and tests.
+# ----------------------------------------------------------------------------
+FROM excalidraw AS rules-vocab
+ARG EXCALIDRAW_SHA
+COPY scripts/gen-rules-vocab.mjs /gen/scripts/gen-rules-vocab.mjs
+COPY tools/rules-vocab.generated.mjs /gen/checked-in.mjs
+RUN mkdir -p /out \
+ && node /gen/scripts/gen-rules-vocab.mjs --source /src/excalidraw --sha "$EXCALIDRAW_SHA" --out /out/rules-vocab.generated.mjs \
+ && if ! cmp -s /gen/checked-in.mjs /out/rules-vocab.generated.mjs; then \
+      echo "NOTE: tools/rules-vocab.generated.mjs differs from this Excalidraw build; the image uses the generated one. Run node scripts/gen-rules-vocab.mjs on the host after updating pins."; \
+      diff /gen/checked-in.mjs /out/rules-vocab.generated.mjs || true; \
+    fi
+
+# ----------------------------------------------------------------------------
 # mermaid-to-excalidraw: build the converter from source at the pinned SHA
 # ----------------------------------------------------------------------------
 FROM builder-base AS mermaid-to-excalidraw
@@ -124,6 +142,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
 WORKDIR /src/xcld-collab
 COPY app/ ./app/
 COPY tools/ ./tools/
+COPY --from=rules-vocab /out/rules-vocab.generated.mjs ./tools/rules-vocab.generated.mjs
 WORKDIR /src/xcld-collab/app
 RUN npm run build
 # Record the tree that was bundled into dist/ (runtime deps only); npm ls exits

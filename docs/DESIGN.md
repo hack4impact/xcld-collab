@@ -376,7 +376,9 @@ Rule legend:
 ### Match vocabulary
 
 The property names and values are Excalidraw's own (`packages/element/src/types.ts`), so
-a rule always means exactly what the user sees in the style panel.
+a rule always means exactly what the user sees in the style panel. They are generated from
+the pinned commit into `tools/rules-vocab.generated.mjs` (issue #6; see the reference's
+design-rules section), not maintained by hand.
 
 **v1: property predicates.** Operators are `=`, `!=`, `|` (any of) and `*` (any value).
 `was.` transitions are implemented. `crosses=` is the only v1 geometric predicate because
@@ -384,12 +386,13 @@ open notes are resolved by drawing a line/arrow/freedraw across them.
 
 | Property | Values | Notes |
 |---|---|---|
-| `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `image` | `line` = no arrowheads by default; `freedraw` = pen strokes |
+| `type` | `rectangle`, `diamond`, `ellipse`, `text`, `arrow`, `line`, `freedraw`, `frame`, `magicframe`, `image`, `embeddable`, `iframe`, `stickynote` | `line` = no arrowheads by default; `freedraw` = pen strokes |
 | `strokeColor`, `backgroundColor` | hex, e.g. `#e03131` | Exact match on the palette value, normalized to lowercase |
 | `strokeStyle` | `solid`, `dashed`, `dotted` | Lines, arrows and shape outlines |
-| `strokeWidth` | `1`, `2`, `4` | Thin, bold and extra bold in the UI |
+| `strokeWidth` | `1`, `2`, `4`, `8` | Excalidraw's `STROKE_WIDTH` (thin, medium, bold, extraBold) |
 | `fillStyle` | `hachure`, `cross-hatch`, `solid`, `zigzag` | |
-| `startArrowhead`, `endArrowhead` | `none`, `arrow`, `bar`, `dot`, `circle`, `circle_outline`, `triangle`, `triangle_outline`, `diamond`, `diamond_outline`, plus crow's-foot variants | `none` means null |
+| `roundness` | `round`, `sharp` | `sharp` = `roundness: null` |
+| `startArrowhead`, `endArrowhead` | `none`, `arrow`, `bar`, `circle`, `circle_outline`, `triangle`, `triangle_outline`, `diamond`, `diamond_outline`, `cardinality_one`, `cardinality_many`, `cardinality_one_or_many`, `cardinality_exactly_one`, `cardinality_zero_or_one`, `cardinality_zero_or_many` | `none` means null; legacy `dot`/`crowfoot_*` are rejected because Excalidraw renames them on load |
 | `elbowed` | `true`, `false` | Elbow vs. straight/curved arrows |
 | `opacity` | `0`–`100` | |
 | `bound` *(derived)* | `true`, `false` | Arrow/line bound at either end, or text inside a container |

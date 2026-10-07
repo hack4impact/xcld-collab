@@ -6,8 +6,11 @@ import {
   ARROWHEADS,
   CHANGE_TYPES,
   CROSS_TARGETS,
+  ELEMENT_TYPES,
   EXPORT_MODES,
+  LEGACY_ARROWHEADS,
   MATCH_PROPS,
+  PALETTE_COLORS,
   RULE_KINDS,
   SNAPSHOT_MODES,
   allowedValuesForProp,
@@ -141,7 +144,7 @@ const normalizePropValue = (prop, value, file, line) => {
   const raw = String(value ?? "").trim();
   if (raw === "*") return "*";
   if (prop === "strokeColor" || prop === "backgroundColor") {
-    if (!HEX_COLOR.test(raw)) throw new Error(`unknown ${prop} value "${raw}"; use exact #rrggbb hex`);
+    if (!HEX_COLOR.test(raw)) throw new Error(`unknown ${prop} value "${raw}"; use exact #rrggbb hex.${suggestion(raw, PALETTE_COLORS)}`);
     return raw.toLowerCase();
   }
   if (prop === "opacity") {
@@ -158,6 +161,9 @@ const normalizePropValue = (prop, value, file, line) => {
   }
   const allowed = allowedValuesForProp(prop);
   if (allowed && allowed.includes(raw)) return raw;
+  if (allowed === ARROWHEADS && LEGACY_ARROWHEADS.includes(raw)) {
+    throw new Error(`legacy ${prop} value "${raw}": Excalidraw renames it when it loads a board, so it never matches. Use one of: ${ARROWHEADS.join(", ")}`);
+  }
   if (allowed) throw new Error(`unknown ${prop} value "${raw}"${suggestion(raw, allowed)}`);
   return raw;
 };
@@ -327,6 +333,7 @@ const propValue = (element, prop, allElements = []) => {
   if (prop === "type") return element.type;
   if (prop === "strokeColor" || prop === "backgroundColor") return element[prop] ? String(element[prop]).toLowerCase() : undefined;
   if (prop === "strokeStyle" || prop === "fillStyle") return element[prop] ?? undefined;
+  if (prop === "roundness") return element.roundness ? "round" : "sharp";
   if (prop === "strokeWidth" || prop === "opacity") return element[prop] === undefined || element[prop] === null ? undefined : String(element[prop]);
   if (prop === "startArrowhead" || prop === "endArrowhead") return element[prop] ?? "none";
   if (prop === "elbowed") return String(Boolean(element.elbowed));
@@ -376,7 +383,7 @@ export const elementCrossesTarget = (element, target, allElements) => {
     if (!isLive(item) || item.id === element.id) return false;
     if (target === "note" || target === "text") return isNote(item);
     if (MATCH_PROPS.includes(target)) return false;
-    if (["rectangle", "diamond", "ellipse", "text", "arrow", "line", "freedraw", "frame", "image"].includes(target)) return item.type === target;
+    if (ELEMENT_TYPES.includes(target)) return item.type === target;
     return item.id === target || elementLabel(item) === target;
   });
   for (const candidate of candidates) {
