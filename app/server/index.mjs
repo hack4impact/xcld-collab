@@ -3,6 +3,7 @@ import { createReadStream, constants } from "node:fs";
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { warmUp } from "../../tools/mermaid-parse.mjs";
 import { exportRoot, historyMode, stateDirFromEnv } from "../../tools/storage.mjs";
 import { createBoardApi, isAllowedHostHeader } from "./api.mjs";
 
@@ -84,6 +85,13 @@ if (historyMode()) {
   }
 }
 const api = createBoardApi({ boardsDir: BOARDS_DIR });
+// Mermaid writes are parsed on the server; load the parser in the background now (about a second),
+// so the first write doesn't wait for it.
+void warmUp().then((status) => {
+  if (status.state === "failed") {
+    console.warn(`Mermaid parser unavailable (${status.error}); Mermaid writes answer 503`);
+  }
+});
 
 const server = createServer(async (req, res) => {
   try {

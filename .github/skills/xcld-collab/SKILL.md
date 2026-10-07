@@ -13,7 +13,9 @@ experimental and off by default; if its tools are not available, use `xcld-probe
 
 Follow this order:
 
-1. Call `write_mermaid` with the board path and Mermaid source.
+1. Call `write_mermaid` with the board path and Mermaid source (no `base` for a new board).
+   It answers `status: "needs-tab"`: a brand-new board needs a browser tab to lay out the
+   whole diagram once.
 2. Call `board_url` and give the returned localhost URL to the user.
 3. The user opens or keeps open the URL so the browser converts the Mermaid inbox into
    editable Excalidraw elements.
@@ -24,6 +26,8 @@ Do not present `board_url` as board creation. Opening a URL before `write_mermai
 empty unsaved canvas; the first real edit saves it. If the tab is already open, call
 `write_mermaid` while it remains open; the browser should replace the blank canvas. Ask the
 user to reload once only if the watcher misses the update.
+
+After that first layout, Mermaid writes to the board don't need a tab: the server applies them.
 
 ## Edit a chat drawing in the canvas
 
@@ -61,17 +65,34 @@ When the user says review is complete:
 
 1. Call `diff` before changing the board.
 2. Summarize and act on every semantic change or ask about ambiguous feedback.
-3. Prefer updating the existing board with `write_board` (next section).
-4. If a Mermaid rewrite is necessary, do it only after diffing and incorporating the human
-   feedback, because `write_mermaid` replaces the whole board.
-5. Verify with `read_board`, then `snapshot` the next review baseline.
+3. Update the existing board with `write_mermaid` or `write_board` (next section). Both merge
+   with the human's edits; neither replaces the board.
+4. Verify with `read_board`, then `snapshot` the next review baseline.
 
 Never rewrite Mermaid merely to export the current board. `read_board` returns Mermaid, and
 the CLI `xcld to-mermaid` or automatic exports are the non-destructive export paths.
 
 ## Editing a board in parallel
 
-The server merges writes; the human may be drawing on the same board while you write.
+The server merges writes; the human and other agents may be drawing on the same board while
+you write. Parallel Mermaid writes are merged too.
+
+**With Mermaid** (`write_mermaid`):
+
+1. Call `read_board` (Mermaid is the default format) and keep its `version`.
+2. Edit that Mermaid: keep the node ids (a node id is the shape's id on the board), relabel,
+   restyle, add or remove nodes and edges.
+3. Call `write_mermaid` with the whole Mermaid and `base` = that `version`. Without `base` it
+   applies to the board as it is now.
+4. The server applies it on the board: existing shapes keep their position and the human's
+   notes, arrows and shapes stay; new nodes are placed next to a connected node; only shapes
+   and arrows that came from Mermaid are ever deleted. The result lists `ops` (what your
+   Mermaid changed), `applied`, `overwritten` and the new `version`, as for `write_board`.
+   `status: "queued"` means the merge took longer than 5 s; the write is safe.
+5. A syntax error is refused with its line; nothing is written. Non-flowchart diagrams, and
+   boards with no Mermaid shapes yet, answer `needs-tab` (open `board_url`).
+
+**With Excalidraw JSON** (`write_board`):
 
 1. Call `read_board` with `format: "json"` and keep its `version`.
 2. Change the elements: keep every element id, keep bound text with its container
@@ -85,9 +106,9 @@ The server merges writes; the human may be drawing on the same board while you w
 5. For your next write, use the returned `version` as `base`. If a write is refused with an
    unknown base, call `read_board` again.
 
-Never write `boards/<path>.excalidraw` directly with file tools: it works (the server adopts it
-as an `external` write), but it carries no author and no base, so concurrent edits can't be
-attributed.
+Never write `boards/<path>.excalidraw` or `boards/<path>.mmd` directly with file tools: it works
+(the server adopts the board file, or applies the Mermaid file, as an `external` write), but it
+carries no author and no base, so concurrent edits can't be attributed.
 
 ## Design rules
 

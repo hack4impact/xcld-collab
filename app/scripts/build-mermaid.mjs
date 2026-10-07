@@ -43,5 +43,25 @@ await esbuild.build({
         return { contents: patched, loader: "js" };
       });
     },
+  }, {
+    name: "mermaid-flowdb-config-once",
+    setup(build) {
+      // Mermaid's FlowDB.addVertex deep-copies the whole Mermaid config for every labeled node
+      // (`this.config = getConfig()`), about 0.4 ms each: 85% of a 500-node parse. The config
+      // can't change during one parse (a FlowDB lives for one diagram), so the bundle fetches it
+      // once per FlowDB, on the first labeled node (after the diagram's init). Same result.
+      let patchedFiles = 0;
+      build.onLoad({ filter: /[\\/]mermaid[\\/]dist[\\/].*\.mjs$/ }, async (args) => {
+        const source = await readFile(args.path, "utf8");
+        if (!source.includes("var FlowDB = class")) return undefined;
+        const patched = source.replace(/this\.config = getConfig\(\);(\s*txt = this\.sanitizeText\(textObj\.text\.trim\(\)\);)/, "this.config = this.xcldConfig ??= getConfig();$1");
+        if (patched === source) throw new Error(`Mermaid's FlowDB.addVertex changed (${args.path}); update app/scripts/build-mermaid.mjs`);
+        patchedFiles += 1;
+        return { contents: patched, loader: "js" };
+      });
+      build.onEnd((result) => {
+        if (!result.errors.length && patchedFiles === 0) throw new Error("Mermaid's FlowDB wasn't found to patch; update app/scripts/build-mermaid.mjs");
+      });
+    },
   }],
 });

@@ -10,10 +10,18 @@
 //
 // Start the server with XCLD_TIMING=1 to also get per-stage timings (GET /api/timings).
 // Exit code 1 when p95 at any size is above the gate.
+//
+// --mermaid: the board is a Mermaid-origin flowchart (shapes, labels and tree edges stamped with
+// the Mermaid hash, as a tab conversion writes them), and a fourth writer sends Mermaid through
+// POST /api/mermaid every 1-3 s (relabels, some on the hot units, and now and then a new node and
+// edge). Its latency (parse + apply + commit, submit to answer) is reported on its own, and held
+// to the same gate.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { makeBoard, mulberry32 } from "./merge-fixtures.mjs";
+import { generateKeyBetween } from "../tools/mermaid-apply.mjs";
+import { mermaidSourceHash, stampMermaidHash } from "../tools/mermaid-hash.mjs";
+import { arrow, makeBoard, mulberry32, shape } from "./merge-fixtures.mjs";
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index, all) => (arg.startsWith("--") ? [...pairs, [arg.slice(2), all[index + 1]?.startsWith("--") ? "1" : all[index + 1] ?? "1"]] : pairs), []));
 const url = (args.url ?? "http://127.0.0.1:3201").replace(/\/+$/, "");
@@ -22,6 +30,7 @@ const durationMs = Number(args.duration ?? 120) * 1000;
 const minWrites = Number(args["min-writes"] ?? 300);
 const gateMs = Number(args.gate ?? 450);
 const seed = Number(args.seed ?? 7);
+const mermaidMode = args.mermaid === "1";
 const runId = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15);
 
 const AFTER_ANSWER = new Set(["post", "master", "archive"]);
@@ -70,12 +79,48 @@ const getBoard = async (board) => {
   return { version: response.headers.get("etag").replace(/"/g, ""), elements: scene.elements };
 };
 
+// A flowchart of `size` elements (shapes, their labels and tree edges) and the board a tab would
+// have converted it to: ids s<n>, labels s<n>-t, edges s<a>_s<b>. Mermaid refuses more than 500
+// edges (maxEdges, in the tab too), so a large board has at most 450, leaving room to grow.
+const mermaidText = (labels, edges) => `flowchart TD\n${[...labels].map(([id, label]) => `  ${id}["${label}"]`).join("\n")}\n${edges.map(([from, to]) => `  ${from} --> ${to}`).join("\n")}\n`;
+const makeMermaidBoard = (size) => {
+  const count = Math.max(2, Math.ceil(size / 3), Math.ceil((size - 450) / 2));
+  const labels = new Map(Array.from({ length: count }, (_, n) => [`s${n}`, `Node ${n}`]));
+  const edges = Array.from({ length: Math.max(1, Math.min(count - 1, size - 2 * count)) }, (_, n) => [`s${Math.floor(n / 3)}`, `s${n + 1}`]);
+  const source = mermaidText(labels, edges);
+  let index = null;
+  const next = () => (index = generateKeyBetween(index, null));
+  const elements = [];
+  const byId = new Map();
+  for (let n = 0; n < count; n++) {
+    for (const element of shape(`s${n}`, next(), { x: (n % 25) * 220, y: Math.floor(n / 25) * 140, label: `Node ${n}`, textIndex: next() })) {
+      elements.push(element);
+      byId.set(element.id, element);
+    }
+  }
+  for (const [from, to] of edges) {
+    const item = arrow(`${from}_${to}`, next(), from, to);
+    elements.push(item);
+    for (const end of [from, to]) {
+      byId.get(end).boundElements = [...byId.get(end).boundElements, { id: item.id, type: "arrow" }];
+    }
+  }
+  return { source, labels, edges, elements: stampMermaidHash(elements, mermaidSourceHash(source)) };
+};
+
 const runSize = async (size) => {
   const board = `sandbox/load-${runId}-${size}`;
   const rng = mulberry32(seed + size);
-  const initial = makeBoard(size, rng);
+  const flowchart = mermaidMode ? makeMermaidBoard(size) : null;
+  const initial = flowchart ? flowchart.elements : makeBoard(size, rng);
   const created = await fetch(`${url}/api/branch/${boardPath(board)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "cli:load-seed", base: null, elements: initial }) });
   if (created.status !== 200) throw new Error(`seeding ${board}: ${created.status} ${await created.text()}`);
+  if (flowchart) {
+    // Record the source the board came from (nothing changes on the board).
+    const recorded = await fetch(`${url}/api/mermaid/${boardPath(board)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ author: "cli:load-seed", mermaid: flowchart.source }) });
+    const answer = await recorded.json();
+    if (recorded.status !== 200 || !answer.unchanged) throw new Error(`recording the Mermaid of ${board}: ${recorded.status} ${JSON.stringify(answer).slice(0, 300)}`);
+  }
   if (args.timings !== "0") {
     await fetch(`${url}/api/timings?clear=1`).catch(() => {});
   }
@@ -142,16 +187,62 @@ const runSize = async (size) => {
     }
   };
 
-  await Promise.all([human(), agent(1), agent(2), agent(3)]);
+  // Writes Mermaid like an agent: its own source, relabeled and grown a little each time.
+  const mermaidWriter = async () => {
+    const own = mulberry32(seed * 131 + size);
+    const labels = new Map(flowchart.labels);
+    const edges = [...flowchart.edges];
+    const nodes = [...labels.keys()];
+    let { version } = await getBoard(board);
+    let added = 0;
+    while (!done()) {
+      await sleep(1000 + own() * 2000);
+      if (done()) break;
+      if (own() < 0.5) {
+        ({ version } = await getBoard(board));
+      }
+      const count = 1 + Math.floor(own() * 3);
+      for (let n = 0; n < count; n++) {
+        const pool = own() < 0.5 ? nodes.slice(0, 15) : nodes;
+        const id = pool[Math.floor(own() * pool.length)];
+        labels.set(id, `${id} mermaid ${Math.floor(own() * 1000)}`);
+      }
+      if (own() < 0.2) {
+        const id = `m${added++}`;
+        const from = nodes[Math.floor(own() * nodes.length)];
+        labels.set(id, `New ${id}`);
+        edges.push([from, id]);
+        nodes.push(id);
+      }
+      const t0 = performance.now();
+      const response = await fetch(`${url}/api/mermaid/${boardPath(board)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ author: "agent:load-mermaid#m1", base: version, writtenAt: Date.now(), mermaid: mermaidText(labels, edges) }),
+      });
+      const data = await response.json();
+      const ms = performance.now() - t0;
+      if (response.status === 200) {
+        samples.push({ writer: "mermaid", ms, merged: !data.fastForward, at: t0 - started, ops: data.ops?.length ?? 0 });
+        version = data.version;
+      } else {
+        errors.push({ writer: "mermaid", status: response.status, data });
+        ({ version } = await getBoard(board));
+      }
+    }
+  };
+
+  await Promise.all([human(), agent(1), agent(2), agent(3), ...(flowchart ? [mermaidWriter()] : [])]);
   const wallMs = performance.now() - started;
   let stages = null;
   const timingsResponse = await fetch(`${url}/api/timings?clear=1`).catch(() => null);
   if (timingsResponse?.ok) {
     const { timings } = await timingsResponse.json();
-    const mine = timings.filter((entry) => entry.board === board && entry.status === "committed");
+    const mine = timings.filter((entry) => entry.board === board && (entry.status === "committed" || (entry.kind === "mermaid" && entry.status === "unchanged")));
+    const writerOf = (entry) => (entry.kind === "mermaid" ? "mermaid" : entry.writer);
     stages = {};
-    for (const writer of ["human", "agent", "all"]) {
-      const entries = mine.filter((entry) => writer === "all" || entry.writer === writer);
+    for (const writer of ["human", "agent", ...(flowchart ? ["mermaid"] : []), "all"]) {
+      const entries = mine.filter((entry) => writer === "all" || writerOf(entry) === writer);
       const names = [...new Set(entries.flatMap((entry) => Object.keys(entry.stages)))];
       stages[writer] = Object.fromEntries(names.map((stage) => [stage, summary(entries.map((entry) => entry.stages[stage] ?? 0))]));
       // Stages before the answer; master, the journal removal and post-commit run after it.
@@ -163,6 +254,7 @@ const runSize = async (size) => {
   const latency = {
     human: summary(samples.filter((sample) => sample.writer === "human").map((sample) => sample.ms)),
     agent: summary(samples.filter((sample) => sample.writer === "agent").map((sample) => sample.ms)),
+    ...(flowchart ? { mermaid: summary(samples.filter((sample) => sample.writer === "mermaid").map((sample) => sample.ms)) } : {}),
     all: summary(samples.map((sample) => sample.ms)),
   };
   return { size, board, wallMs, writes: samples.length, merged: samples.filter((sample) => sample.merged).length, errors, latency, stages };
@@ -175,12 +267,12 @@ for (const size of sizes) {
 }
 
 const lines = [];
-lines.push(`Versions load scenario: 1 tab (PUT ~1/s) + 3 agents (POST every 1-3 s), gate p95 <= ${gateMs} ms`);
+lines.push(`Versions load scenario: 1 tab (PUT ~1/s) + 3 agents (POST every 1-3 s)${mermaidMode ? " + 1 Mermaid writer (POST /api/mermaid every 1-3 s)" : ""}, gate p95 <= ${gateMs} ms`);
 lines.push("");
 lines.push("| Size | Writer | Writes | p50 ms | p95 ms | p99 ms | max ms |");
 lines.push("|---|---|---|---|---|---|---|");
 for (const result of results) {
-  for (const writer of ["human", "agent", "all"]) {
+  for (const writer of ["human", "agent", "mermaid", "all"].filter((name) => result.latency[name])) {
     const item = result.latency[writer];
     lines.push(`| ${result.size} | ${writer} | ${item.n} | ${fmt(item.p50)} | ${fmt(item.p95)} | ${fmt(item.p99)} | ${fmt(item.max)} |`);
   }
@@ -189,7 +281,7 @@ for (const result of results) {
   lines.push("");
   lines.push(`Size ${result.size}: ${result.writes} writes in ${(result.wallMs / 1000).toFixed(0)} s, ${result.merged} merged (stale base), ${result.errors.length} errors.`);
   if (result.stages) {
-    for (const writer of ["human", "agent"]) {
+    for (const writer of ["human", "agent", "mermaid"]) {
       const stages = result.stages[writer];
       if (!stages?.beforeAnswer?.n) continue;
       lines.push(`  ${writer} server stages (p50 / p95 ms), merge share ${(stages.mergeShare * 100).toFixed(1)}%:`);

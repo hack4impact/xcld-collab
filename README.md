@@ -186,8 +186,8 @@ Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wai
 ## Working in parallel
 
 The server merges writes instead of letting the last one win. The tab's saves, agents'
-`write_board` (MCP) and `xcld write` (CLI), and direct edits of a board file all go through
-one commit pipeline:
+`write_board` and `write_mermaid` (MCP), `xcld write` and `xcld write-mermaid` (CLI), and
+direct edits of a board or `.mmd` file all go through one commit pipeline:
 
 - Every write names the version it started from (`base`). The server merges it with
   anything committed since. A shape and its label edited on both sides go to the later
@@ -198,6 +198,11 @@ one commit pipeline:
   1,500-element board take about 1 MB. See [where history lives](#where-history-lives).
 - A slow merge never drops a write: after 5 s an agent gets `queued`, and the write lands
   later.
+- **Mermaid merges too, with no tab open.** The server applies an agent's Mermaid to the
+  board: your layout, notes and colors stay, existing shapes keep their place, new nodes go
+  next to a connected one, and only shapes that came from Mermaid are ever removed (a copy you
+  made of one never is). Several agents can write Mermaid to the same board at once. Only a
+  brand-new diagram still needs an open tab to lay it out the first time.
 
 Still coming for the tab (versions and merge, slice 5): your name and tab in the corner, a
 banner listing what was merged or overwritten, and saving before accepting a reload. Until
@@ -237,9 +242,6 @@ open: exports, and on Linux the history itself.
 
 These are designed but **not built yet**. Don't rely on them.
 
-- **Merge on re-import.** Today, when an agent rewrites `boards/<name>.mmd`, the board is
-  **replaced**, and your layout and notes on it are lost. The planned version keeps your
-  edits and merges the agent's changes by node ID.
 - **Version browsing.** History is recorded and `xcld history export` copies it out (see
   above); `xcld diff --since` and snapshots as pinned versions come next. Ctrl+S /
   Excalidraw's "Save to…" still downloads a separate copy.

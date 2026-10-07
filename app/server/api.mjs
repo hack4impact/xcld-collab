@@ -5,7 +5,9 @@ import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/b
 import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
 import { effectiveExportMode } from "../../tools/rules.mjs";
+import { mermaidSourceHash } from "../../tools/mermaid-hash.mjs";
 import { stateDirFromEnv } from "../../tools/storage.mjs";
+import { createMermaidWriter } from "./mermaid-write.mjs";
 import { contentHash, createVersionStore, parseAuthorKey, parseEntityTags, readSettledJsonText, staleSaveCheck } from "./versions.mjs";
 
 export { contentHash, staleSaveCheck };
@@ -165,6 +167,7 @@ export function createBoardApi({
   settleMs = Math.min(Number.isFinite(pollMs) && pollMs > 0 ? pollMs : 100, 100),
   writeWaitMs = WRITE_WAIT_MS,
   versionOptions = {},
+  mermaidOptions = {},
 }) {
   const root = path.resolve(boardsDir);
   mkdirSync(root, { recursive: true });
@@ -218,6 +221,25 @@ export function createBoardApi({
     },
   });
   versions.start().catch((error) => console.warn(`version journal replay failed: ${error.message}`));
+  // Mermaid writes are applied here and committed as branches; only a board that needs a tab's
+  // full layout gets the `mermaid` event (an open tab converts the inbox file).
+  const mermaids = createMermaidWriter({
+    versions,
+    ...mermaidOptions,
+    inboxPath: (name) => filePathFor(root, name, ".mmd"),
+    onInboxWritten: (name, written) => {
+      if (written) {
+        signatures.set(`${name}.mmd`, `${written.mtimeMs}:${written.size}`);
+      }
+    },
+    publishInbox: (name) => publish({ name, kind: "mermaid", timestamp: Date.now() }),
+  });
+  // A Mermaid write that changed nothing on the board still clears "Mermaid pending".
+  const announceMermaid = (name, result) => {
+    if (result?.status === "unchanged") {
+      publish({ name, kind: "mermaid-applied", timestamp: Date.now() });
+    }
+  };
   // Signatures whose JSON content didn't parse (a writer caught mid-write); skipped until
   // the file changes again so a broken file isn't re-read every poll.
   const unparsed = new Map();
@@ -359,6 +381,15 @@ export function createBoardApi({
     }
     signatures.set(item.relativeFile, signature);
     unparsed.delete(item.relativeFile);
+    if (item.kind === "mermaid") {
+      // A direct write to the inbox: applied on the server as the `external` author, with the
+      // file's mtime as its write time.
+      mermaids.fromFile(item.name).then(
+        (result) => announceMermaid(item.name, result),
+        (error) => console.warn(`applying a direct write to ${item.name}.mmd failed: ${error.message}`),
+      );
+      return;
+    }
     publish({
       name: item.name,
       kind: item.kind,
@@ -470,7 +501,7 @@ export function createBoardApi({
 
   // POST /api/branch: wait up to writeWaitMs for the commit. A write that is journaled but not
   // committed by then answers 202 `queued`; it is committed later and never dropped.
-  const respondToBranchWrite = async (res, name, input, receiveMs) => {
+  const respondToBranchWrite = async (res, name, input, receiveMs, { stages, extra = {}, after } = {}) => {
     const TIMEOUT = Symbol("timeout");
     let branchId = null;
     let markIngested;
@@ -480,11 +511,13 @@ export function createBoardApi({
     const submitted = versions.submitBranch(name, input, {
       source: "post",
       receiveMs,
+      stages,
       onIngested: (id) => {
         branchId = id;
         markIngested();
       },
     });
+    after?.(submitted);
     submitted.catch((error) => {
       if (branchId) {
         console.warn(`write ${branchId} to ${name} is journaled but its commit failed (${error.message}); it is replayed on the next start`);
@@ -510,7 +543,7 @@ export function createBoardApi({
       clearTimeout(timer);
     }
     if (result === TIMEOUT || result.status === "queued") {
-      sendJson(res, 202, { status: "queued", branchId, base: input.base ?? null });
+      sendJson(res, 202, { status: "queued", branchId, base: input.base ?? null, ...extra });
       return;
     }
     if (result.status === "invalid") {
@@ -525,10 +558,12 @@ export function createBoardApi({
       status: "merged",
       version: result.version,
       fastForward: result.fastForward,
+      ...(result.status === "unchanged" ? { unchanged: true } : {}),
       applied: result.applied,
       overwritten: overwrittenSummary(result.overwritten),
       unbound: result.unbound,
       branchId: result.branchId,
+      ...extra,
     }, result.timings);
   };
 
@@ -558,7 +593,9 @@ export function createBoardApi({
     }
 
     if (rawPathname === "/api/boards" && req.method === "GET") {
-      sendJson(res, 200, await listBoards(root, { maxDepth }));
+      // A Mermaid write the server applied without changing the board isn't pending either.
+      const appliedMermaidHash = async (name) => (await versions.readMermaid(name).catch(() => null))?.hash ?? null;
+      sendJson(res, 200, await listBoards(root, { maxDepth, appliedMermaidHash }));
       return true;
     }
 
@@ -741,6 +778,69 @@ export function createBoardApi({
       }
 
       const mermaidPrefix = "/api/mermaid/";
+      if (rawPathname.startsWith(mermaidPrefix) && req.method === "POST") {
+        const name = decodeURIComponent(rawPathname.slice(mermaidPrefix.length));
+        filePathFor(root, name, ".mmd");
+        if (!isJsonRequest(req)) {
+          sendError(res, 415, "content-type-must-be-application-json");
+          return true;
+        }
+        const receiveStart = performance.now();
+        let parsed;
+        try {
+          parsed = JSON.parse(await readRequestBody(req));
+        } catch {
+          sendError(res, 400, "invalid-json");
+          return true;
+        }
+        const receiveMs = performance.now() - receiveStart;
+        if (!parsed || typeof parsed !== "object") {
+          sendError(res, 400, "invalid-json");
+          return true;
+        }
+        const prepared = await mermaids.prepare(name, {
+          author: parsed.author ?? "cli:api",
+          displayName: parsed.displayName,
+          base: parsed.base,
+          writtenAt: parsed.writtenAt,
+          source: parsed.mermaid,
+        });
+        if (prepared.status === "invalid") {
+          sendError(res, 400, prepared.error);
+          return true;
+        }
+        if (prepared.status === "syntax-error") {
+          const { message, line, column } = prepared.error;
+          sendError(res, 400, "mermaid-syntax-error", { message, line: line ?? null, column: column ?? null });
+          return true;
+        }
+        if (prepared.status === "unknown-base") {
+          sendJson(res, 409, { error: "unknown-base", base: prepared.base, currentVersion: prepared.currentVersion ?? null });
+          return true;
+        }
+        if (prepared.status === "parser-unavailable") {
+          sendError(res, 503, "mermaid-parser-unavailable", { message: prepared.error });
+          return true;
+        }
+        if (prepared.status === "needs-tab") {
+          sendJson(res, 202, { status: "needs-tab", reason: prepared.reason, hash: prepared.hash });
+          return true;
+        }
+        await respondToBranchWrite(res, name, prepared.input, receiveMs, {
+          stages: prepared.stages,
+          extra: { ops: prepared.ops, hash: prepared.hash, ...(prepared.previousKnown ? {} : { deletesSkipped: true }) },
+          // The inbox file follows the commit (queued writes too), in commit order.
+          after: (submitted) => submitted.then(
+            async (result) => {
+              announceMermaid(name, result);
+              await mermaids.syncInbox(name);
+            },
+            () => {},
+          ).catch((error) => console.warn(`updating ${name}.mmd failed: ${error.message}`)),
+        });
+        return true;
+      }
+
       if (rawPathname.startsWith(mermaidPrefix) && req.method === "GET") {
         const rawName = rawPathname.slice(mermaidPrefix.length);
         const name = decodeURIComponent(rawName);
@@ -750,6 +850,11 @@ export function createBoardApi({
           return true;
         }
         const content = await fs.readFile(filePath, "utf8");
+        // Already applied to the board by the server: a tab must not convert it again.
+        const state = await versions.readState(name).catch(() => null);
+        if (state?.version && state.mermaid?.hash === mermaidSourceHash(content)) {
+          res.setHeader("X-Xcld-Mermaid-Applied", "1");
+        }
         send(res, 200, "text/plain; charset=utf-8", content);
         return true;
       }

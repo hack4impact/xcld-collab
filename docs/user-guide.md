@@ -13,8 +13,10 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
   about a second.
 - **Deleting a board on disk stops that tab's autosave.** Use its top-bar banner to restore
   from the tab or close it.
-- **Mermaid goes in through the inbox.** An agent writes `boards/<path>.mmd`, and the open
-  tab converts it into the board. A board opened for the first time converts too.
+- **Mermaid merges into the board.** An agent writes Mermaid (MCP `write_mermaid`, `xcld
+  write-mermaid`, or the file `boards/<path>.mmd`) and the server applies it to the board,
+  keeping your layout, notes and colors; no tab needs to be open. A brand-new diagram is the
+  exception: the open tab lays it out the first time.
 - **Chat-widget drawings go in through the view inbox.** `open_in_canvas` writes
   `boards/<path>.view.json` from an Excalidraw MCP Apps checkpoint, and the open tab turns
   it into an editable board.
@@ -33,13 +35,14 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
    `xcld snapshot myproject/arch`. This is the "before" picture.
 4. **You mark it up**, using the conventions below.
 5. **Agent diffs:** `xcld diff arch`. It acts on the list and asks about anything unclear.
-6. **Agent updates the board.** Either it edits the `.excalidraw` directly, or it rewrites the
-   `.mmd` (read the warning first). Then the loop repeats from step 3.
+6. **Agent updates the board,** with Mermaid (`write_mermaid`) or the board JSON
+   (`write_board`). Both merge with what you drew: your notes stay, existing shapes keep their
+   place, and a shape you both changed goes to whoever wrote last (the other version stays in
+   history). Then the loop repeats from step 3.
 
-> **Warning: rewriting the `.mmd` replaces the whole board.** Your layout, notes and colors
-> on that board are lost until [merge on re-import](../README.md#coming-soon) ships. Make
-> sure the agent has run `xcld diff` and acted on your feedback *before* it rewrites the
-> Mermaid. To keep a copy, `xcld snapshot` first.
+> **Still replaced by a tab:** Mermaid the server can't apply (a diagram type other than a
+> flowchart, or a board with no shapes from Mermaid yet) is laid out by the open tab, which
+> **replaces** the board. `xcld snapshot` first if the board has work on it.
 
 ## The loop with MCP tools
 
@@ -140,7 +143,8 @@ Conventions: draw anything new or unapproved in light blue with
 Run `xcld rules myproject/flow` before drawing or interpreting feedback. When I change a
 proposal's stroke to black, that means approved. A deleted proposal is rejected. Free text
 near a node is a note; a line crossing the note means it is resolved.
-Never rewrite a .mmd until you've diffed and acted on my feedback.
+Diff and act on my feedback before you write the board again; read it first and pass its
+version as base.
 ```
 
 **Propose a diagram:**

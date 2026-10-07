@@ -108,14 +108,14 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
       assert.match(tool.description, /never <br\/>/);
     }
 
+    // write_mermaid goes through the board server, which isn't running here: nothing is written.
     const write = await callTool(server, "write_mermaid", {
       board: "p/flow",
       mermaid: "flowchart TD\n  A[Start] --> B[Done]\n",
     });
-    assert.equal(write.isError, undefined);
-    assert.equal(existsSync(path.join(root, "p", "flow.mmd")), true);
-    assert.match(write.content[0].text, /REPLACES the board/);
-    assert.match(write.structuredContent.briefing, /Design rules/);
+    assert.equal(write.isError, true);
+    assert.match(write.content[0].text, /Nothing was written: the board server .* is not reachable/);
+    assert.equal(existsSync(path.join(root, "p", "flow.mmd")), false);
 
     const checkpointDir = path.join(root, ".xcld", "mcp-checkpoints", "excalidraw-mcp-checkpoints");
     await mkdir(checkpointDir, { recursive: true });
@@ -126,11 +126,6 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.match(open.content[0].text, /converts/);
 
     await writeFile(path.join(root, "p", "flow.excalidraw"), await readFile(path.resolve("tests", "fixtures", "fixture-a.excalidraw"), "utf8"), "utf8");
-    const writeAgain = await callTool(server, "write_mermaid", {
-      board: "p/flow",
-      mermaid: "flowchart TD\n  A[Again] --> B[Done]\n",
-    });
-    assert.equal(existsSync(writeAgain.structuredContent.preWriteSnapshot.paths.board), true, "snapshot rule should snapshot before MCP agent writes");
 
     const boards = await callTool(server, "list_boards", { folder: "p" });
     assert.equal(boards.structuredContent.boards.some((board) => board.name === "p/flow"), true);
@@ -146,7 +141,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
 
     const read = await callTool(server, "read_board", { board: "p/flow", format: "mermaid" });
     assert.match(read.content[0].text, /^flowchart TD/);
-    assert.match(read.content[0].text, /version: [0-9a-f]{64} \(pass it as base to write_board\)/);
+    assert.match(read.content[0].text, /version: [0-9a-f]{64} \(pass it as base to write_board or write_mermaid\)/);
     assert.match(read.structuredContent.warning, /not reachable/, "without a board server the read falls back to the file and says so");
     assert.match(read.content[0].text, /Design rules/);
 

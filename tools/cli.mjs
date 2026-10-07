@@ -12,7 +12,7 @@ import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { exportRoot, hostPathOf, stateDirFromEnv } from "./storage.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeWrite, readBoardVersion, writeBoardBranch } from "./board-client.mjs";
+import { describeMermaidWrite, describeWrite, formatApplyOp, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 // Versions data and the export root, as the server sees them (tools/storage.mjs).
@@ -31,6 +31,8 @@ Usage:
   xcld open-in-canvas <checkpointId> <board> [--overwrite]
   xcld read <board>                  (JSON with the version to pass as --base)
   xcld write <board> <file.excalidraw|-> --base <version|none> [--json]
+  xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--json]
+                                     (the server applies it to the board and merges; no --base: the current board)
   xcld history export <board> [--to <dir>] [--full] [--json]
                                      (default --to: <cache>/exports/<board>, the host's ~/.excalidraw/exports/<board>
                                       unless XCLD_CACHE_DIR says otherwise; --full: every version as .excalidraw)
@@ -53,23 +55,6 @@ const latestSnapshot = async (name) => {
   const files = existsSync(dir) ? snapshotsFor(name, await readdir(dir)) : [];
   if (!files.length) throw new Error(`No snapshots found for ${name}. Run "xcld snapshot ${name}" first, then edit, then diff.`);
   return path.join(dir, files.at(-1));
-};
-
-const quoteLabel = (value) => JSON.stringify(String(value ?? ""));
-const formatApplyOp = (op) => {
-  if (op.op === "relabel") return op.to ? `relabel ${op.kind} ${op.id}: ${quoteLabel(op.from)} -> ${quoteLabel(op.to)}` : `remove ${op.kind} label ${op.id}: ${quoteLabel(op.from)}`;
-  if (op.op === "restyle") return `restyle ${op.kind} ${op.id}: ${Object.entries(op.changes).map(([key, change]) => `${key} ${change.from ?? "none"} -> ${change.to ?? "none"}`).join(", ")}`;
-  if (op.op === "add-node") return `add node ${op.id} (${op.shape}) ${op.anchor ? `${op.placement} ${op.anchor}` : "beside the drawing"} at ${Math.round(op.x)},${Math.round(op.y)}`;
-  if (op.op === "add-edge") return `add edge ${op.id}: ${op.start} -> ${op.end}${op.label ? ` ${quoteLabel(op.label)}` : ""}`;
-  if (op.op === "add-subgraph") return `add subgraph ${op.id}: ${op.members.join(", ")}`;
-  if (op.op === "delete") return `delete ${op.kind} ${op.id}`;
-  if (op.op === "unbind") return `unbind ${op.end} of ${op.id} from deleted ${op.from}`;
-  if (op.op === "reshape") return `reshape ${op.id}: ${op.from} -> ${op.to}`;
-  if (op.op === "regroup") return `regroup ${op.id}: [${op.from.join(", ")}] -> [${op.to.join(", ")}]`;
-  if (op.op === "reconnect") return `reconnect ${op.id}: ${op.start} -> ${op.end}`;
-  if (op.op === "resize") return `resize ${op.id}: ${Math.round(op.from.width)}x${Math.round(op.from.height)} -> ${Math.round(op.to.width)}x${Math.round(op.to.height)}`;
-  if (op.op === "skip") return `skip ${op.kind} ${op.start} -> ${op.end}: ${op.reason}`;
-  return JSON.stringify(op);
 };
 
 const formatLocalTime = (iso) => {
@@ -200,6 +185,28 @@ const run = async (argv) => {
     const result = await writeBoardBranch(names[0], { author, base: base === "none" ? null : base, elements: scene.elements, appState: scene.appState, files: scene.files });
     console.log(jsonMode ? JSON.stringify(result, null, 2) : describeWrite(names[0], result));
     if (result.status !== "merged" && result.status !== "queued") process.exitCode = 1;
+    return;
+  }
+  if (command === "write-mermaid") {
+    const usage = "Usage: xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--json]   (without --base: the current board)";
+    const jsonMode = args.includes("--json");
+    const baseAt = args.indexOf("--base");
+    if (baseAt >= 0 && (args[baseAt + 1] === undefined || args[baseAt + 1].startsWith("--"))) throw new Error(usage);
+    const base = baseAt >= 0 ? args[baseAt + 1] : undefined;
+    const names = args.filter((arg, index) => arg !== "--json" && (baseAt < 0 || (index !== baseAt && index !== baseAt + 1)));
+    if (names.length !== 2) throw new Error(usage);
+    if (!validateBoardName(names[0])) throw new Error(`Invalid board name: ${names[0]}`);
+    const source = names[1] === "-" ? await new Promise((resolve, reject) => {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { data += chunk; });
+      process.stdin.on("end", () => resolve(data));
+      process.stdin.on("error", reject);
+    }) : await readFile(names[1], "utf8");
+    const author = `cli:${String(process.env.XCLD_AUTHOR ?? "").trim() || "cli"}`;
+    const result = await writeMermaid(names[0], { author, base: base === "none" ? undefined : base, mermaid: source });
+    console.log(jsonMode ? JSON.stringify(result, null, 2) : describeMermaidWrite(names[0], result, { url: `${(process.env.XCLD_PUBLIC_URL || "http://127.0.0.1:3100").replace(/\/+$/g, "")}/?board=${names[0].split("/").map(encodeURIComponent).join("/")}` }));
+    if (!["merged", "queued", "needs-tab"].includes(result.status)) process.exitCode = 1;
     return;
   }
   if (command === "history") {

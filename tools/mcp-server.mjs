@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,7 +13,7 @@ import { checkBoardRules, effectiveRulesBriefing, effectiveSnapshotMode, formatC
 import { sceneToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeWrite, readBoardVersion, writeBoardBranch } from "./board-client.mjs";
+import { describeMermaidWrite, describeWrite, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
 
 // Author key for this process's writes: agent:<MCP clientInfo.name>#<id>. The id is new for
 // every `xcld mcp` process, so two sessions of the same client never share a branch.
@@ -31,7 +31,7 @@ const LABEL_NEWLINE_RULE = 'To break a label across lines, put a real newline in
 
 const conventions = [
   "Conventions: snapshot before human review and diff after.",
-  "Never rewrite a board's .mmd before diffing and acting on feedback: the browser import replaces the board.",
+  "Read the board first (read_board) and pass its version as base when you write: the server merges your write with the human's and other agents' edits.",
   "Draw proposed parts in light blue: classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2.",
   "Read the board's design-rules briefing; folder design-rules.csv files can replace local defaults.",
   "Use Mermaid flowcharts only; subgraphs are supported (they convert to grouped, editable shapes).",
@@ -123,7 +123,7 @@ export const createXcldMcpServer = () => {
     server,
     "read_board",
     {
-      description: `Read a board as Mermaid, raw Excalidraw JSON, or both, through the board server. Returns "version": pass it as "base" to write_board, so the server merges your write with anything written since. ${conventions}`,
+      description: `Read a board as Mermaid, raw Excalidraw JSON, or both, through the board server. Returns "version": pass it as "base" to write_board or write_mermaid, so the server merges your write with anything written since. ${conventions}`,
       inputSchema: {
         board: z.string().describe("Board path without extension, for example examples/demo."),
         format: z.enum(["mermaid", "json", "both"]).default("mermaid").describe("Output format. Default: mermaid."),
@@ -144,7 +144,7 @@ export const createXcldMcpServer = () => {
       if (outputFormat === "json" || outputFormat === "both") result.json = read.scene;
       if (read.warning) result.warning = read.warning;
       result.briefing = await briefingFor(board);
-      const versionLine = `version: ${read.version} (pass it as base to write_board)${read.warning ? `\nwarning: ${read.warning}` : ""}`;
+      const versionLine = `version: ${read.version} (pass it as base to write_board or write_mermaid)${read.warning ? `\nwarning: ${read.warning}` : ""}`;
       return okText(outputFormat === "mermaid" ? `${result.mermaid}\n\n${versionLine}\n\n${result.briefing}` : JSON.stringify(result, null, 2), result);
     },
   );
@@ -179,13 +179,14 @@ export const createXcldMcpServer = () => {
     server,
     "write_mermaid",
     {
-      description: `Write the board inbox boards/<path>.mmd, creating folders. An open browser tab converts it and REPLACES the board. ${conventions}`,
+      description: `Write a Mermaid flowchart to a board. The board server applies it to the board and merges it with edits made since your base, like write_board: existing shapes keep their place and the human's notes stay; relabels, restyles, new nodes and edges and removed Mermaid nodes are applied; a shape changed on both sides goes to the later write. Call read_board first and pass its "version" as base (without base: the board as it is now). Several agents can write Mermaid to the same board in parallel. A brand-new board (or a non-flowchart diagram) needs a browser tab to lay it out once: the result then says so; open board_url. If the merge takes longer than 5 s the write is queued: it is safe and will land. ${conventions}`,
       inputSchema: {
         board: z.string().describe("Board path without extension."),
-        mermaid: z.string().describe("Mermaid flowchart source. Use flowchart TD; subgraphs are supported. Break labels with a real newline inside the quotes, never <br/>."),
+        mermaid: z.string().describe("Mermaid flowchart source. Use flowchart TD; subgraphs are supported. Break labels with a real newline inside the quotes, never <br/>. Keep node ids stable: a node id is the shape's id on the board."),
+        base: z.string().optional().describe('The "version" read_board returned for this board. Omit it to apply to the board as it is now.'),
       },
     },
-    async ({ board, mermaid }) => {
+    async ({ board, mermaid, base }) => {
       if (!validateBoardName(board)) {
         throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
       }
@@ -196,17 +197,27 @@ export const createXcldMcpServer = () => {
           preWriteSnapshot = formatSnapshotResult(await snapshotBoard(board, boardsDir()));
         }
       }
-      const target = path.resolve(boardFilePath(boardsDir(), board, ".mmd", { maxDepth: maxDepth() }));
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, `${String(mermaid).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n?$/, "\n")}`, "utf8");
+      const written = await writeMermaid(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, mermaid });
+      const url = boardUrl(board);
+      const message = describeMermaidWrite(board, written, { url });
+      if (!["merged", "queued", "needs-tab"].includes(written.status)) {
+        return toolError(message);
+      }
       const result = {
-        path: target,
-        url: boardUrl(board),
+        status: written.status,
+        ...(written.version ? { version: written.version } : {}),
+        ...(written.branchId ? { branchId: written.branchId } : {}),
+        ...(written.reason ? { reason: written.reason } : {}),
+        applied: written.applied ?? [],
+        overwritten: written.overwritten ?? [],
+        ops: written.ops ?? [],
+        ...(written.deletesSkipped ? { deletesSkipped: true } : {}),
+        url,
         preWriteSnapshot,
+        message,
         briefing: await briefingFor(board),
-        reminder: "Open or keep open the URL so the browser converts this inbox Mermaid and REPLACES the board. Before rewriting .mmd again, run diff and act on feedback.",
       };
-      return okText(JSON.stringify(result, null, 2), result);
+      return okText(`${message}\n\n${result.briefing}`, result);
     },
   );
 

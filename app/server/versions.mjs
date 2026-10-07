@@ -1490,11 +1490,15 @@ export function createVersionStore({
    * `post` resolves when the post-commit hook (SSE, export) has run. `onIngested(branchId)`
    * fires once the branch is in the journal, i.e. it will not be dropped.
    */
-  const submitBranch = async (name, input, { onIngested, source = "api", receiveMs } = {}) => {
+  const submitBranch = async (name, input, { onIngested, source = "api", receiveMs, stages } = {}) => {
     await start();
     const watch = stopwatch(timing);
     if (receiveMs !== undefined) {
       watch.add("receive", receiveMs);
+    }
+    // Work the caller did before submitting (a Mermaid write's parse and apply).
+    for (const [stage, ms] of Object.entries(stages ?? {})) {
+      watch.add(stage, ms);
     }
     const ingesting = ingest(name, input, watch).then((ingested) => {
       if (ingested.branch) {
@@ -1510,6 +1514,7 @@ export function createVersionStore({
         branchId: result.branchId,
         author: input.author,
         writer: parseAuthorKey(input.author)?.kind ?? "unknown",
+        kind: input.kind ?? "json",
         source,
         elements: Array.isArray(input.elements) ? input.elements.length : 0,
         status: result.status,
@@ -1656,7 +1661,8 @@ export function createVersionStore({
     };
   });
 
-  const readMermaid = async (name) => (await readState(name)).mermaid;
+  // The last applied Mermaid. A loaded board answers from memory, without waiting for its queue.
+  const readMermaid = async (name) => (boards.has(name) ? boards.get(name).mermaid ?? null : (await readState(name)).mermaid);
 
   // For /api/status: queued writes per board and commits waiting on a retry.
   const status = () => ({

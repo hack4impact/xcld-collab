@@ -524,7 +524,8 @@ const BoardView = ({ boardName }: { boardName: string }) => {
 
   const convertMermaidInbox = useCallback(async () => {
     const response = await fetch(boardApiPath("mermaid", boardName));
-    if (!response.ok) {
+    // Already applied to the board by the server: converting it again would replace the board.
+    if (!response.ok || response.headers.get("X-Xcld-Mermaid-Applied")) {
       return false;
     }
 

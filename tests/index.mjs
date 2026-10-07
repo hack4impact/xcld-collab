@@ -15,6 +15,7 @@ import "./merge.test.mjs";
 import "./mermaid-apply.test.mjs";
 import "./mermaid-parse.test.mjs";
 import "./mermaid-pending.test.mjs";
+import "./mermaid-write.test.mjs";
 import "./reconcile.test.mjs";
 import "./rules-vocab.test.mjs";
 import "./rules.test.mjs";

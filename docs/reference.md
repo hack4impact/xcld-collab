@@ -15,7 +15,7 @@ docker exec xcld-collab xcld <command> [args]      # or: docker compose exec can
   `./boards` folder. A path can include folders, for example `myproject/demo`.
 - **File paths** are container paths (`/boards/...`).
 - **Exit codes:** 0 on success, 1 on any error. Errors print one line to stderr.
-- **Writing:** `xcld write` (and MCP `write_board`) goes through the server at `XCLD_API_URL`
+- **Writing:** `xcld write` and `xcld write-mermaid` (and MCP `write_board`, `write_mermaid`) go through the server at `XCLD_API_URL`
   (default `http://127.0.0.1:3100`, the canvas inside the same container). Name yourself with
   `docker exec -e XCLD_AUTHOR=docs-bot xcld-collab xcld write ...`; history then shows
   `cli:docs-bot`.
@@ -53,9 +53,10 @@ XCLD_AUTO_EXPORT: do you want Mermaid written automatically?
 
 - **"Every save"** covers both your browser edits and agents editing the `.excalidraw`
   file on disk (picked up within `XCLD_WATCH_POLL_MS` plus a ~100 ms settle check).
-- **The inbox is never written.** No mode writes `boards/<path>.mmd`, because writing it
-  would replace the board. Exports live in dot-folders, which the board browser and
-  `xcld list` ignore.
+- **The inbox is never exported to.** No mode writes `boards/<path>.mmd`: that file is the
+  Mermaid inbox, which only Mermaid writes update (MCP `write_mermaid`, `xcld write-mermaid`,
+  or writing the file). Exports live in dot-folders, which the board browser and `xcld list`
+  ignore.
 - **Cost:** an export takes about 0.05 ms for a small board and 2 ms for 500 nodes, so
   `save` is safe to leave on.
 - **To change it**, put `XCLD_AUTO_EXPORT=save` (or `off`) in `.env` and run
@@ -226,8 +227,8 @@ the bad rows. MCP diff responses include the same text/JSON diagnostics.
 The `read_board` and `write_mermaid` tools include the effective design-rules briefing. The
 `diff` tool includes rule tags, JSON `rules`, legends and invalid-rule warnings. The
 `check_board` tool returns the same open-item data as `xcld check`. A `snapshot,on-agent-write`
-rule with `means=on` snapshots an existing board before MCP `write_mermaid` writes a new inbox
-Mermaid file; browser saves and CLI writes are not agent writes for this rule.
+rule with `means=on` snapshots an existing board before MCP `write_mermaid` applies Mermaid to
+it; browser saves and CLI writes are not agent writes for this rule.
 
 ## Commands
 
@@ -355,6 +356,20 @@ is an `.excalidraw` scene or a bare element array, and it is the **whole board**
 write was queued (safe, lands later); exits 1 when nothing was written (bad input, unknown
 base, server down).
 
+### `xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--json]`
+
+Writes Mermaid through `POST /api/mermaid`: the server parses it, applies it to the board as it
+was at `--base` (without `--base`: the board as it is now) and merges the result like any other
+write ([how](DESIGN.md#server-side-mermaid-apply)). The author is `cli:<XCLD_AUTHOR>`, the write
+time is now. Prints what changed, or that the write was queued; for a brand-new board (or a
+non-flowchart) it prints that a tab must lay it out. Exits 1 on a syntax error (with its line),
+an unknown base or a server that isn't reachable.
+
+```text
+> docker exec -i -e XCLD_AUTHOR=docs-bot xcld-collab xcld write-mermaid sandbox/flow - < next.mmd
+Merged into sandbox/flow: version e7b798b33424…, 4 change(s) applied. Pass version as base on your next write. Changes: relabel node A: "Start" -> "Start here"; add node E (rectangle) after D at 166,504; add edge D_E: D -> E.
+```
+
 ### `xcld history export <board> [--to <dir>] [--full] [--json]`
 
 Copies a board's version history out of the history folder (`XCLD_HISTORY`: the `xcld-state`
@@ -420,7 +435,7 @@ add edge D_E: D -> E
 ```
 
 A board with no shapes from Mermaid yet prints `Needs a tab: …`: the open tab still lays out
-a brand-new diagram. Writes through this path arrive with versions and merge.
+a brand-new diagram. To write, use `xcld write-mermaid` or MCP `write_mermaid`.
 
 ### `xcld help`
 
@@ -468,7 +483,7 @@ Prints usage.
 |---|---|
 | `boards/<path>.excalidraw` | The board. Standard Excalidraw JSON that excalidraw.com can open too |
 | `boards/examples/` | Example boards, **tracked in git**. Copy them before editing, e.g. into `boards/sandbox/`. Everything else in `boards/` is gitignored, and board edits never make the image tag `-dirty` |
-| `boards/<path>.mmd` | Mermaid inbox. An open tab on `<path>` converts it and **replaces** the board. The converted elements record a hash of this Mermaid (`customData.xcldMermaidHash`), so `xcld list` and the board browser show `mermaid pending` / "Mermaid waiting to convert" exactly when the `.mmd` content differs from what the board was converted from, or the board is missing or empty. That survives a fresh clone or checkout; boards converted before the hash existed fall back to "the `.mmd` is newer than the board" |
+| `boards/<path>.mmd` | Mermaid inbox: the last Mermaid written to the board. A Mermaid write (MCP `write_mermaid`, `xcld write-mermaid`, `POST /api/mermaid`) is applied on the server and merged into the board; the server then rewrites this file with it. Writing the file directly works too (applied as `external`, written at the file's mtime). Only a brand-new board, a board with no Mermaid shapes, or a non-flowchart is converted by an open tab on `<path>`, which **replaces** the board. A tab's converted elements record a hash of this Mermaid (`customData.xcldMermaidHash`), so `xcld list` and the board browser show `mermaid pending` / "Mermaid waiting to convert" exactly when the `.mmd` content differs from what the board was converted from, or the board is missing or empty. That survives a fresh clone or checkout; boards converted before the hash existed fall back to "the `.mmd` is newer than the board" |
 | `boards/<path>.view.json` | View inbox from `open_in_canvas`. An open tab on `<path>` converts it into the board; `xcld list` shows `view pending` until a non-empty board save is newer |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.excalidraw` | Snapshots from `xcld snapshot`; flat boards still use `boards/.snapshots/<name>.<timestamp>.excalidraw` |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.mmd` | The snapshot's Mermaid twin. Written unless `XCLD_AUTO_EXPORT=off` |
@@ -545,9 +560,30 @@ levels.
   board, and commits waiting on a retry after a disk error (retried with backoff 0.5, 1, 2, 4,
   then every 10 s; the board's other writes wait, other boards don't).
 - `GET /api/timings[?clear=1]` (only with `XCLD_TIMING=1`) returns per-stage timings of recent
-  commits.- `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
-- `GET /api/events` publishes `event: board` with `kind: "board"`, `"mermaid"`, `"view"` or
-  `"deleted"`, and `event: merged` `{ name, version, author, applied, overwritten, unbound }`
+  commits.
+- `POST /api/mermaid/<path>` (`Content-Type: application/json`) writes Mermaid:
+  `{ author?, displayName?, base?, writtenAt?, mermaid }`. The server parses it, applies it to
+  the board as it was at `base` (absent or `null`: the current board), and commits the result
+  like `POST /api/branch`, waiting up to 5 s ([how](DESIGN.md#server-side-mermaid-apply)).
+  `writtenAt` (ms since the epoch, default: when the server received it) is when the Mermaid was
+  written: a stale write loses to a newer edit of the same shape.
+
+  | Status | Body | Meaning |
+  |---|---|---|
+  | 200 | `{ status: "merged", version, fastForward, applied, overwritten, unbound, branchId, ops, hash, unchanged?, deletesSkipped? }` | Committed. `ops` lists what the Mermaid changed on the board. `unchanged: true`: the board already matched, only the Mermaid was recorded. `deletesSkipped: true`: the server doesn't know which Mermaid the board came from, so nothing was deleted |
+  | 202 | `{ status: "queued", branchId, base, ops, hash }` | Safely in the journal, committed later; never dropped |
+  | 202 | `{ status: "needs-tab", reason, hash }` | A brand-new board, a board with no Mermaid shapes, or a non-flowchart: the Mermaid is in `boards/<path>.mmd` and an open tab lays it out |
+  | 400 | `{ error: "mermaid-syntax-error", message, line, column }`, or `mermaid-required`, `invalid-author` | Not written |
+  | 409 | `{ error: "unknown-base", base, currentVersion }` | Read again |
+  | 503 | `{ error: "mermaid-parser-unavailable", message }` | The server's Mermaid parser didn't load; nothing was written |
+
+- `GET /api/mermaid/<path>` returns the raw `boards/<path>.mmd` inbox, with
+  `X-Xcld-Mermaid-Applied: 1` when the server has already applied it to the board (the canvas
+  then doesn't convert it).
+- `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
+- `GET /api/events` publishes `event: board` with `kind: "board"`, `"mermaid"` (only when a tab
+  must lay out the inbox), `"mermaid-applied"` (a Mermaid write that left the board as it was),
+  `"view"` or `"deleted"`, and `event: merged` `{ name, version, author, applied, overwritten, unbound }`
   after every commit, also after a write whose every change lost (`applied` empty, master
   unchanged, `overwritten` lists what lost).
 
@@ -570,8 +606,8 @@ All board paths are validated with the same rules as `xcld` board paths. Tool er
 returned as MCP tool errors (`isError: true`) with the CLI's friendly messages.
 
 Every tool description repeats the working conventions: snapshot before human review, diff
-after, never rewrite a board's `.mmd` before diffing and acting on feedback because that
-re-import replaces the board, read the board's design-rules briefing, use light blue for
+after, read the board first and pass its version as `base` when writing (the server merges
+your write with the human's and other agents' edits), read the board's design-rules briefing, use light blue for
 proposed parts (`classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2`), use
 flowcharts only (subgraphs are fine), and break labels with a real newline inside the quoted
 label, never `<br/>`.
@@ -579,9 +615,9 @@ label, never `<br/>`.
 | Tool | Inputs | Output |
 |---|---|---|
 | `list_boards` | optional `folder` | Same JSON shape as `xcld list --json`: `{ boards, folders }` |
-| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Reads through the board server: Mermaid text, Excalidraw JSON, or both, the board's `version` (pass it as `base` to `write_board`), and the effective design-rules briefing. Falls back to the file with a `warning` when the server is down |
+| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Reads through the board server: Mermaid text, Excalidraw JSON, or both, the board's `version` (pass it as `base` to `write_board` or `write_mermaid`), and the effective design-rules briefing. Falls back to the file with a `warning` when the server is down |
 | `write_board` | `board`, `base` (version from `read_board`, `null` for a new board), `elements` (the whole board), optional `appState`, `files` | Writes through `POST /api/branch` as `agent:<MCP client name>#<process id>`; returns `status` (`merged` or `queued`), `version`, `applied`, `overwritten`. Errors (unknown base, bad input) are tool errors |
-| `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, returns the file path, browser URL, replacement reminder and design-rules briefing; snapshots first when `snapshot,on-agent-write` is on |
+| `write_mermaid` | `board`, `mermaid`, optional `base` (version from `read_board`; absent: the board as it is now) | Writes through `POST /api/mermaid` as `agent:<MCP client name>#<process id>`, with this process's clock as the write time: the server applies the Mermaid to the board and merges it. Returns `status` (`merged`, `queued`, or `needs-tab` for a brand-new board or a non-flowchart: open `url`), `version`, `applied`, `overwritten`, `ops`, `url` and the design-rules briefing; snapshots first when `snapshot,on-agent-write` is on. A syntax error (with its line), an unknown base, or a server that isn't reachable are tool errors; nothing is written |
 | `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
 | `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings |
 | `check_board` | `board` | Same open-item result and `<br>` label warnings as `xcld check` |
@@ -754,10 +790,10 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 | `No snapshots found for <board>` | `diff <board>` needs a "before" picture | `xcld snapshot <board>`, edit, then `diff` |
 | `Board not found: <board>` | The board file doesn't exist yet | Open `http://127.0.0.1:3100/?board=<board>` (it converts `<board>.mmd` if present), or check the path |
 | The board opens but the canvas is empty | The URL was opened before an inbox was written | Call MCP `write_mermaid`, `open_in_canvas`, or write an inbox while the tab stays open. The browser replaces the blank canvas; reload once if it misses the update |
-| The agent wrote `<board>.mmd` but nothing appeared | Conversion runs in the browser | Open (or keep open) a tab on `?board=<board>` |
+| The agent wrote `<board>.mmd` but nothing appeared | A brand-new board (or a non-flowchart) is laid out by the browser | Open (or keep open) a tab on `?board=<board>`. On an existing board the server applies it; check `docker compose logs canvas` for a parse error |
 | Widget **Edit** does nothing in VS Code | The host refused the widget's fullscreen editor | Ask your assistant to call `open_in_canvas` with the checkpoint id shown in the widget hint and an explicit board path, then open the returned canvas URL |
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
-| My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
+| My notes disappeared | A tab converted a `.mmd` that the server couldn't apply (a non-flowchart, or a board with no Mermaid shapes), which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
 | The top bar says "Board changed elsewhere; your edits were re-applied" | An agent or another tab saved the board while you had unsaved edits | Nothing to do: your edits were merged onto the newer board and saved. Check the shapes you both touched |
 | "Save failed: the board kept changing elsewhere (3 retries)" | Something rewrites the board faster than the tab can merge | Stop the other writer, then make any edit to retry; your edits are still in the tab |
 | A write gets 409 `unknown-base` | Its base version isn't known to the server: it expired (24 h after the last read), it was never read through the server, or the board was deleted | Read the board again (`GET /api/board`, MCP `read_board`, `xcld read`) and resend with that version as base |

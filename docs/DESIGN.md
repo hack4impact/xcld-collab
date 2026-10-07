@@ -38,11 +38,12 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   `boards/<path>.mmd` is the Mermaid inbox, and `boards/<path>.view.json` is the
   Excalidraw MCP checkpoint/view inbox. Any agent can take part by reading and writing
   files, with or without MCP.
-- **Mermaid conversion happens in the host's default browser** through the mapped port.
-  Mermaid needs a DOM, and this avoids putting headless Chromium in the image. When it
-  needs a conversion or review, the agent opens the board with
-  `Start-Process http://127.0.0.1:3100/?board=<path>`. Opening the tab is the handoff.
-  Limitation: no conversion happens without an open tab.
+- **A brand-new Mermaid diagram is laid out in the host's default browser** through the
+  mapped port. The full layout needs a real page, and this avoids putting headless Chromium in
+  the image. When it needs a conversion or review, the agent opens the board with
+  `Start-Process http://127.0.0.1:3100/?board=<path>`. Opening the tab is the handoff. Every
+  later Mermaid write to that board is applied by the server, with no tab
+  ([Server-side Mermaid apply](#server-side-mermaid-apply)).
 - **Live sync.** The browser saves debounced edits through `PUT /api/board/:name`. A file
   watcher pushes on-disk (agent) changes to the browser over SSE.
   Each side ignores its own echoes by content hash.
@@ -98,7 +99,9 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     index; BOM, CRLF and trailing whitespace are normalized). Excalidraw keeps element
     `customData` through restore, edits and saves (**verified 2026-10-06** in a browser:
     convert, reload, edit, save). Pending = no board, no live elements, or no live element
-    carries the hash of the current `.mmd`. Boards with no stamp keep the mtime rule.
+    carries the hash of the current `.mmd`. Boards with no stamp keep the mtime rule. The
+    server's board list (`GET /api/boards`) also counts a `.mmd` the server applied as not
+    pending, even when it changed nothing on the board.
   - Board paths can now be nested, e.g. `boards/myproject/demo.excalidraw` and
     `?board=myproject/demo`. The poller walks recursively, skips dot-folders such as
     `.snapshots`, skips `node_modules`, and never follows symlinks. Folder depth is unlimited
@@ -296,7 +299,8 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 
 ## Agent loop
 
-1. The agent writes `boards/x.mmd` (or edits `x.excalidraw`) and runs `snapshot x`.
+1. The agent writes Mermaid with `write_mermaid` (or the board JSON with `write_board`) and runs
+   `snapshot x`. Both merge with what the human drew meanwhile.
 2. The agent opens the board in the browser. The human annotates.
 3. The agent runs `diff x` (changes since the last snapshot). Output is text, or `--json`
    for other agents.
@@ -358,11 +362,15 @@ Options:
 
 **Decision (lead, 2026-10-02): B + C in v1.** Re-import merges by stable ID, and
 structured `%% xcld:` comments carry annotations through Mermaid.
+**Status (2026-10-07):** B is built: a Mermaid write is applied on the server and merged
+([Server-side Mermaid apply](#server-side-mermaid-apply)). C is not built yet.
+
 
 ## Merge rules
 
 **Status (2026-10-07):** the merge module `tools/merge.mjs`, the server's commit pipeline and
-the write API are built: tab saves, `POST /api/branch` (MCP `write_board`, `xcld write`) and
+the write API are built: tab saves, `POST /api/branch` (MCP `write_board`, `xcld write`),
+Mermaid writes (`POST /api/mermaid`: MCP `write_mermaid`, `xcld write-mermaid`, slice 4b) and
 direct file writes all merge. The tab's banner and identity overlay (slice 5) and the
 concurrency test come next.
 
@@ -406,9 +414,8 @@ touches it. It is reported as overwritten. Tracked in issue #27.
 ### Server-side Mermaid apply
 
 Versions and merge (Wave 2) applies a Mermaid write to the board on the server, so it
-doesn't need an open tab. **Status:** the parser and the apply step are built and tested
-(`xcld mermaid-apply --dry-run` previews them). Nothing calls them on a write yet: the tab
-still converts `.mmd`, until the versions write API runs them.
+doesn't need an open tab. **Status (2026-10-07):** built and wired in (slice 4a: parser and
+apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews an apply.
 
 - **Parse with Mermaid itself.** `tools/mermaid-parse.mjs` runs the same Mermaid version as
   the tab's converter. Mermaid needs a DOM even to load (DOMPurify), so it runs in a
@@ -449,11 +456,60 @@ still converts `.mmd`, until the versions write API runs them.
   are tab conversions captured in headless Chromium (`tests/browser`, `--app`). The tests
   compare every field that decides rendering, except position and size.
 
+#### The write path (slice 4b)
+
+`app/server/mermaid-write.mjs`, called by `POST /api/mermaid/<path>` and by the file watcher
+(`tests/mermaid-write.test.mjs`):
+
+1. **Parse** the source (`parseFlowchart`, waiting for the warm-up the server starts at boot).
+   A syntax error is 400 with Mermaid's message and line; nothing is written.
+2. **Read the board at the writer's base:** `readVersion(base)`, or the current master when
+   `base` is absent or `null`. An unknown base is 409.
+3. **Find `previous`**, the Mermaid the base was built from. It decides which ids may be
+   deleted and which styles Mermaid had set. Candidates, first match wins:
+   1. the board's last applied source (`readMermaid`), if the base carries its hash;
+   2. the `.mmd` on disk, if the base carries its hash (a board a tab converted);
+   3. the last applied source, if there is one (it may have changed nothing on the board);
+   4. none: **nothing is deleted** and the answer says `deletesSkipped`.
+
+   So a human's Ctrl+D copy of a Mermaid shape, which carries the same hash under a new id, is
+   never deleted.
+4. **Apply** with `now = writtenAt`: the time the writer wrote the Mermaid (its own clock, or
+   the file's mtime), never the apply time. Changed elements carry it as `updated`, and the
+   merge stamps it in `masterMeta`, so a stale `.mmd` loses to a newer human edit of the same
+   unit, and its other changes still apply (D8).
+5. **Commit** with `submitBranch(board, { kind: "mermaid", base, writtenAt, elements, ops,
+   mermaid: { source, hash } })` and answer like `POST /api/branch`: 200 `merged` or, after
+   5 s, 202 `queued` (journaled, never dropped). The answer adds `ops` and `hash`. When the
+   apply changes nothing, `elements: null` records only the source (`unchanged: true`), so the
+   board stops showing "Mermaid pending".
+6. **The inbox file** `boards/<path>.mmd` is then rewritten with the last applied source, in
+   commit order (one write at a time per board; left alone when it only differs in line endings
+   or trailing whitespace). It stays the human-readable "last Mermaid written to this board"
+   and the source a later write can use as `previous`. `GET /api/mermaid/<path>` sends
+   `X-Xcld-Mermaid-Applied: 1` for an applied inbox, and the tab doesn't convert it.
+7. **Still the tab:** a brand-new board, a board with no Mermaid shapes, and non-flowcharts
+   answer 202 `needs-tab`. The source goes to the inbox file and an SSE `mermaid` event asks an
+   open tab to lay it out, which replaces the board as before. That is the only `mermaid` event
+   the server sends now.
+
+**Direct writes to the inbox.** When the watcher sees a settled `boards/<path>.mmd` that isn't
+the last applied source (and isn't what the board was converted from), it applies it the same
+way as the `external` author, written at the file's mtime. Parse errors and an unavailable
+parser fall back to the `mermaid` event, so an open tab shows the error as before.
+
+**Parser speed.** Mermaid's `FlowDB.addVertex` deep-copies the whole Mermaid config for every
+labeled node (about 0.4 ms each, 85% of a 500-node parse). The parser bundle fetches it once
+per diagram instead (`app/scripts/build-mermaid.mjs`; the build fails if Mermaid's code
+changes). A 525-node, 450-edge flowchart parses in about 95 ms instead of 312 ms. Mermaid's own
+limit of 500 edges (`maxEdges`, the same in the tab) applies.
+
 ## Versions storage and commit pipeline
 
 **Status (2026-10-07):** built (`app/server/versions.mjs`) and wired into the server, with the
 write API (`POST /api/branch`), tab saves that merge, identities, MCP/CLI writes through
-the server, and history v2 (change-only entries). Still to come: the tab's side (slice 5:
+the server, history v2 (change-only entries), and Mermaid writes through the same pipeline
+(slice 4b, `POST /api/mermaid`). Still to come: the tab's side (slice 5:
 author overlay, banner, save before reload) and the 50-seed concurrency test.
 
 **Where it lives** (lead, 2026-10-07: one setting). The user-facing setting is the cache
@@ -662,8 +718,8 @@ The pipeline, per write:
 - A master read on a Docker Desktop bind mount right after the file was replaced can come back
   short (seen under load). Reads retry until the JSON parses.
 
-**Interfaces for server-side Mermaid (slice 4b)** (`api.versions`, stable):
-- `submitBranch(board, { author, displayName?, base, writtenAt?, kind?: "json" | "mermaid", elements | null, appState?, files?, template?, ops?, mermaid?: { source, hash } }, { onIngested?, source? })`
+**Interfaces used by server-side Mermaid writes (slice 4b)** (`api.versions`, stable):
+- `submitBranch(board, { author, displayName?, base, writtenAt?, kind?: "json" | "mermaid", elements | null, appState?, files?, template?, ops?, mermaid?: { source, hash } }, { onIngested?, source?, stages? })`
   resolves to `{ status, version, fastForward, applied, overwritten, unbound, scene, branchId, finished, post, timings? }`.
   - `status` is `committed`, `unchanged`, `unknown-base`, `invalid`, or `queued` after
     `close()`.
@@ -672,8 +728,10 @@ The pipeline, per write:
   - `kind: "mermaid"` with `mermaid: { source, hash }` records the applied source per board
     (`readMermaid`). `elements: null` records it without changing master.
   - `writtenAt` should be when the `.mmd` was written, not when it was applied (D8).
+  - `stages` adds the caller's own timings (a Mermaid write's `parse`, `read`, `apply`) to the
+    commit's timing log (`XCLD_TIMING=1`), which also records the branch `kind`.
 - `readVersion(board, version)` → `{ version, text, scene }` (pins the version);
-  `readMaster(board)` → the same for the current master; `readMermaid(board)` →
+  `readMaster(board)` → the same for the current master; `readMermaid(board)` (from memory once the board is loaded) →
   `{ source, hash, author, writtenAt, appliedAt, branchId, version }` or null.
 - Also: `readState(board)` (now with `depth`), `checkpoint(board, { pin? })` (a `pin` label
   makes the current version a full checkpoint and labels its meta), `adoptExternal(board)`,
@@ -774,6 +832,37 @@ Next steps toward 250 ms, then 100 ms (not done):
 | 9 | Skip the journal fsync, or share one fsync with the state write | 5–10 ms at 1,500 | **Durability on power loss** (not on a process kill): needs the lead's call |
 | — | Skipping the content compare when `version`/`versionNonce` match the base | — | Rejected: agents don't bump versions, so their edits would be lost |
 | — | A cheaper version id than sha256 of the whole master | 6 ms | Rejected: the ETag contract |
+
+### Mermaid writes (slice 4b)
+
+`node tests/versions-load.mjs --url … --mermaid` runs the same scenario on a board that came from
+Mermaid (shapes, labels and tree edges with the Mermaid hash, at most 450 edges because Mermaid
+refuses more than 500), plus a fourth writer that sends its own Mermaid through
+`POST /api/mermaid` every 1–3 s: 1–3 relabels per write (half on the 15 hot units the tab and
+agents also edit) and a new node and edge on one write in five. The Mermaid writer's latency
+(submit to answer: parse, apply and commit) is reported on its own and counts toward the gate.
+
+Measured 2026-10-07, image `bde31f4`, volume storage, the same Windows 11 host (journal fsync
+p50 about 18–37 ms that day), 2 min per size, p50 / p95 / p99 ms:
+
+| Run | 50 elements | 1,500 elements | Gate |
+|---|---|---|---|
+| Gate scenario (no Mermaid writer) | 65 / 285 / 822 | 126 / 233 / 325 | pass |
+| With the Mermaid writer, all writes | 65 / 159 / 290 | 143 / 293 / 386 | pass |
+| Mermaid writes alone (58 and 51 writes) | **74 / 189 / 290** | **245 / 386 / 501** | pass |
+
+Mermaid write stages at 1,500 elements, p50 / p95 ms: parse 88 / 120, read the base 5 / 114
+(it waits for the board's queue), apply 40 / 53, then the usual commit (journal 35 / 69, merge
+17 / 23, state 18 / 29); before the answer 225 / 375. At 50 elements: parse 16 / 21, apply 1 / 2,
+before the answer 58 / 170. Without the parser bundle's FlowDB fix
+([above](#server-side-mermaid-apply)) the parse at 1,500 elements was 344 / 393 ms
+(measured on the host before the fix).
+
+Next for Mermaid writes (not done): read a recent base from memory without waiting for the
+queue (read p95 114 → about 5 ms); parse the previous Mermaid only once per board (it is cached
+after the first write, so this matters only after a restart); profile the apply (40 ms at
+1,500 elements).
+
 ## Annotation convention — free-form by default, local design rules
 
 **Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`

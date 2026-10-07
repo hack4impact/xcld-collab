@@ -82,6 +82,7 @@ const readMermaidHash = async (filePath) => {
 const isMermaidPending = (entry) => {
   if (!entry.hasMermaid) return false;
   if (!entry.hasBoard || !entry._boardHasLiveElements) return true;
+  if (entry._mermaidApplied) return false;
   if (entry._boardMermaidHashes.size && entry._mermaidHash) return !entry._boardMermaidHashes.has(entry._mermaidHash);
   return entry._mermaidMtimeMs > entry._boardMtimeMs;
 };
@@ -192,6 +193,11 @@ export const listBoards = async (root, options = {}) => {
     if (entry.hasMermaid && entry._boardMermaidHashes.size) {
       entry._mermaidHash = await readMermaidHash(entry._mermaidPath);
     }
+    // The server records a Mermaid write it applied (also one that changed nothing on the board).
+    if (options.appliedMermaidHash && entry.hasMermaid && entry.hasBoard && entry._boardHasLiveElements && isMermaidPending(entry)) {
+      entry._mermaidHash ??= await readMermaidHash(entry._mermaidPath);
+      entry._mermaidApplied = entry._mermaidHash !== null && entry._mermaidHash === await options.appliedMermaidHash(entry.name);
+    }
   }
   const boards = [...byName.values()]
     .map((entry) => {
@@ -202,6 +208,7 @@ export const listBoards = async (root, options = {}) => {
       delete entry._boardMermaidHashes;
       delete entry._mermaidPath;
       delete entry._mermaidHash;
+      delete entry._mermaidApplied;
       delete entry._boardMtimeMs;
       delete entry._mermaidMtimeMs;
       delete entry._viewMtimeMs;
