@@ -22,10 +22,13 @@ You need Docker (with Compose), git, Node.js 22, and on macOS/Linux bash and `jq
 
    ```powershell
    cd app
-   npm install                     # app/.npmrc disables the lockfile on purpose
+   npm ci                          # installs exactly app/package-lock.json
    npm run build                   # or `npm run dev` for the canvas with hot reload
    cd ..
    ```
+
+   After `npm install <pkg>` through a private registry, run `npm run lockfile:public`
+   before committing so the lockfile only names public npm.
 
 3. **Run the tests** from the repo root:
 

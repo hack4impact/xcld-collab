@@ -3,9 +3,9 @@
   Build the xcld-collab image with a tag derived from the exact source commits.
 
 .DESCRIPTION
-  Tag: <ours7>-<excalidraw7>-<mermaid-to-excalidraw7>-<excalidraw-mcp7>, plus "-dirty" when
-  this repo has uncommitted changes. Components disabled in pins.json are not built and keep
-  their slot as 0000000 (phase B: <ours7>-<exc7>-<m2e7>-0000000).
+  Tag: <ours7>-<excalidraw7>-<mermaid-to-excalidraw7>-<excalidraw-mcp7>, plus "-nolock" for
+  -NoLockfile builds and "-dirty" when this repo has uncommitted changes. Components disabled
+  in pins.json are not built and keep their slot as 0000000 (phase B: <ours7>-<exc7>-<m2e7>-0000000).
 
   -Mode pinned (default): use the SHAs in pins.json (team/class use, reproducible).
   -Mode latest: resolve each component's branch HEAD with git ls-remote (development).
@@ -14,8 +14,14 @@
   `npm config get registry` (if not the public default), otherwise public npm.
   The URL is passed to builder stages only and never committed or baked into the image.
 
+  -NoLockfile (or $env:XCLD_NO_LOCKFILE=1): ignore app/package-lock.json and install the app
+  with `npm install --no-package-lock` (package.json ranges, through the registry). For
+  private-registry environments; not reproducible, so the tag gets "-nolock".
+
 .EXAMPLE
   .\build.ps1
+.EXAMPLE
+  .\build.ps1 -NoLockfile
 .EXAMPLE
   .\build.ps1 -Mode latest -UpdatePins
 .EXAMPLE
@@ -28,6 +34,7 @@ param(
   [string]$Registry,
   [string]$NpmrcPath,
   [switch]$UpdatePins,
+  [switch]$NoLockfile,
   [ValidateSet('runtime', 'vendor')]
   [string]$Target = 'runtime',
   [string]$Image = 'xcld-collab',
@@ -84,7 +91,8 @@ foreach ($c in $order) {
   }
 }
 
-$tag = ($tagParts -join '-') + $(if ($dirty) { '-dirty' } else { '' })
+$noLock = $NoLockfile -or $env:XCLD_NO_LOCKFILE -eq '1'
+$tag = ($tagParts -join '-') + $(if ($noLock) { '-nolock' } else { '' }) + $(if ($dirty) { '-dirty' } else { '' })
 
 # --- registry ---------------------------------------------------------------
 $registrySource = 'parameter'
@@ -108,6 +116,7 @@ foreach ($r in $resolved.Values) {
   $buildArgs += @('--build-arg', "$($r.Arg)_REPO=$($r.Repo)", '--build-arg', "$($r.Arg)_SHA=$($r.Sha)")
 }
 if ($Registry) { $buildArgs += @('--build-arg', "NPM_CONFIG_REGISTRY=$Registry") }
+if ($noLock) { $buildArgs += @('--build-arg', 'XCLD_NO_LOCKFILE=1') }
 if ($NpmrcPath) {
   if (-not (Test-Path $NpmrcPath)) { throw "NpmrcPath not found: $NpmrcPath" }
   $buildArgs += @('--secret', "id=npmrc,src=$((Resolve-Path $NpmrcPath).Path)")
@@ -121,6 +130,7 @@ $buildArgs += $root
 
 Write-Host "mode      : $Mode"
 Write-Host "registry  : $registrySource"
+Write-Host "lockfile  : $(if ($noLock) { 'ignored (npm install --no-package-lock)' } else { 'app/package-lock.json (npm ci)' })"
 Write-Host "target    : $Target"
 Write-Host "tag       : ${Image}:$tag"
 if ($dirty) { Write-Warning 'Working tree is dirty; tag carries -dirty and is not reproducible.' }

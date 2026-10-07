@@ -2,8 +2,9 @@
 # Usage: with-registry [--rewrite <lockfile>]... [--] <command> [args...]
 #
 # When NPM_CONFIG_REGISTRY is set (e.g. an internal proxy), routes npm, yarn,
-# pnpm and corepack through it, then execs the command. Yarn v1 lockfiles pin
-# tarball URLs to the public registry, so --rewrite rewrites those in place.
+# pnpm and corepack through it, then execs the command. Yarn v1 lockfiles and
+# npm package-lock.json pin tarball URLs to the public registry, so --rewrite
+# rewrites those in place (inside the build stage; never in the repo).
 # With no registry set, the command runs unchanged against public npm.
 set -eu
 locks=""

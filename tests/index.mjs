@@ -6,6 +6,7 @@ import "./deleted-events.test.mjs";
 import "./diff.test.mjs";
 import "./export.test.mjs";
 import "./ids.test.mjs";
+import "./lockfile.test.mjs";
 import "./mcp.test.mjs";
 import "./mermaid-pending.test.mjs";
 import "./reconcile.test.mjs";

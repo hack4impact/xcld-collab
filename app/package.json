@@ -8,7 +8,8 @@
     "build:mcp": "node scripts/build-mcp.mjs",
     "dev": "npm run copy-assets && vite --host 127.0.0.1",
     "build": "npm run copy-assets && npm run build:mcp && tsc --noEmit && vite build",
-    "start": "node server/index.mjs"
+    "start": "node server/index.mjs",
+    "lockfile:public": "node scripts/public-lockfile.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "file:vendor/excalidraw.tgz",

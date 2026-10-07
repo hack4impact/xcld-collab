@@ -128,17 +128,28 @@ COPY --from=mermaid-to-excalidraw /out/ /
 # app: our canvas (Vite) + board server + tools, built against vendor tarballs
 # app/package.json references them as file:vendor/<name>.tgz and uses npm
 # "overrides" so Excalidraw's own mermaid-to-excalidraw dependency also
-# resolves to the source build.
+# resolves to the source build. app/package-lock.json pins the full tree with
+# public npm URLs; with a registry set, with-registry rewrites them in this stage
+# only, and `npm ci` fails if the lockfile and package.json disagree.
+# XCLD_NO_LOCKFILE=1 (build -NoLockfile / --no-lockfile; tag suffix -nolock) is the
+# opt-out for private-registry environments: the lockfile is ignored and
+# `npm install --no-package-lock` resolves package.json ranges instead.
 # ----------------------------------------------------------------------------
 FROM builder-base AS app
 ARG NPM_CONFIG_REGISTRY=""
+ARG XCLD_NO_LOCKFILE=""
 WORKDIR /src/xcld-collab
 COPY --from=vendor / ./app/vendor/
-COPY app/package.json app/.npmrc ./app/
+COPY app/package.json app/package-lock.json ./app/
 WORKDIR /src/xcld-collab/app
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=cache,target=/root/.npm \
-    with-registry npm install --no-audit --no-fund
+    if [ "$XCLD_NO_LOCKFILE" = 1 ]; then \
+      rm -f package-lock.json \
+   && with-registry npm install --no-package-lock --no-audit --no-fund; \
+    else \
+      with-registry --rewrite package-lock.json -- npm ci --no-audit --no-fund; \
+    fi
 WORKDIR /src/xcld-collab
 COPY app/ ./app/
 COPY tools/ ./tools/
@@ -147,8 +158,15 @@ WORKDIR /src/xcld-collab/app
 RUN npm run build
 # Record the tree that was bundled into dist/ (runtime deps only); npm ls exits
 # non-zero on extraneous/peer warnings, so check the file instead of the exit code.
+# Map registry tarball URLs (a configured registry, or the host it redirects to
+# in -nolock builds) to their public npm equivalent, and fail if any other host
+# remains: the registry must not reach the runtime image.
 RUN npm ls --all --omit=dev --json > /src/xcld-collab/resolved-deps.json; \
-    test -s /src/xcld-collab/resolved-deps.json
+    test -s /src/xcld-collab/resolved-deps.json \
+ && sed -E -i 's#"resolved": "https?://[^"@]*/((@[^/"]+/)?[^/"@]+/-/[^/"]+\.tgz)"#"resolved": "https://registry.npmjs.org/\1"#g' \
+      /src/xcld-collab/resolved-deps.json \
+ && ! grep -Eo '"resolved": "[^"]*' /src/xcld-collab/resolved-deps.json \
+      | grep -Ev '"resolved": "(https://registry\.npmjs\.org/|file:)'
 
 # ----------------------------------------------------------------------------
 # runtime: built artifacts only, non-root, no git, no registry config

@@ -167,7 +167,7 @@ const run = async (argv) => {
     if (args.length !== 0) throw new Error("Usage: xcld mcp");
     const bundle = new URL("./mcp.bundle.mjs", import.meta.url);
     if (!existsSync(bundle)) {
-      throw new Error("MCP bundle not found. Run \"cd app; npm install; npm run build\" first, then retry \"xcld mcp\".");
+      throw new Error("MCP bundle not found. Run \"cd app; npm ci; npm run build\" first, then retry \"xcld mcp\".");
     }
     const { startStdioServer } = await import(bundle.href);
     await startStdioServer();

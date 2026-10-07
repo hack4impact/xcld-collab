@@ -106,13 +106,14 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   - The Dockerfile's `fetch-at-sha` fetches **exactly** that commit and fails if HEAD
     differs. The Dockerfile never clones "latest" itself, because the layer cache would
     silently serve stale commits.
-- **Tag:** `<ours7>-<exc7>-<m2e7>-<mcp7>[-dirty]`, with fixed slots.
+- **Tag:** `<ours7>-<exc7>-<m2e7>-<mcp7>[-nolock][-dirty]`, with fixed slots.
   - A component marked disabled in `pins.json` isn't built, and its slot is `0000000`. So
     phase B images are `<ours7>-<exc7>-<m2e7>-0000000`, and every tag has the same shape.
   - Identical inputs produce an identical tag.
   - The base image is pinned by digest in `pins.json`.
   - Full SHAs are stored as OCI labels and in `/opt/xcld-collab/manifest.json`.
   - Uncommitted changes in our repo add `-dirty` to the tag.
+  - Lockfile opt-out builds (below) add `-nolock`.
 - **Multi-stage build** (`Dockerfile`):
   - `builder-base`: git plus yarn 1.22.22, installed with npm through the registry.
     Corepack's yarn download returned 404 through the internal proxy (measured on the first
@@ -123,9 +124,9 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     before install/build. The build fails if any patch is stale.
   - `vendor`: the tarballs only. `build -Target vendor` exports them to `app/vendor/` for
     local app development.
-  - `app`: our canvas, built against the vendor tarballs. npm `overrides` force
-    Excalidraw's own `@excalidraw/*` and `mermaid-to-excalidraw` dependencies to the
-    source builds.
+  - `app`: our canvas, built against the vendor tarballs with `npm ci` from the committed
+    `app/package-lock.json`. npm `overrides` force Excalidraw's own `@excalidraw/*` and
+    `mermaid-to-excalidraw` dependencies to the source builds.
   - `excalidraw-mcp`: fetches the pinned MCP Apps server, installs `pnpm@10.11.0` with npm
     through `with-registry`, applies versioned patches with `git apply --check`, installs
     with `pnpm install --frozen-lockfile`, and runs the upstream build.
@@ -145,19 +146,29 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     (2,266 entries in excalidraw). `with-registry --rewrite yarn.lock` rewrites them inside
     the builder stage when a registry is set. The internal proxy serves standard
     `<pkg>/-/<file>.tgz` paths, including scoped packages, without credentials.
-- **Determinism (accepted by the lead, 2026-10-02): semi-deterministic by design.**
+  - `app/package-lock.json` is committed with `https://registry.npmjs.org/` URLs only; the
+    app stage rewrites it the same way (`with-registry --rewrite package-lock.json`). A
+    lockfile generated through a mirror records the mirror's URLs, so
+    `npm run lockfile:public` (`app/scripts/public-lockfile.mjs`) swaps the registry base
+    back (same tarball path, same `integrity`), and `tests/lockfile.test.mjs` fails on any
+    other host.
+- **Determinism (accepted by the lead, 2026-10-02; app stage locked 2026-10-06).**
   - Deterministic:
     - The upstream build stages, which use each project's frozen `yarn.lock` at the pinned SHA.
-    - The vendor tarballs.
+    - The vendor tarballs. **verified:** a `--no-cache` rebuild produced byte-identical
+      tarballs.
     - The base image, pinned by digest.
-  - Semi-deterministic: the app stage. Its third-party dependencies (Excalidraw's runtime
-    deps, React, Vite) are resolved at build time within the semver ranges declared at
-    those SHAs. They therefore map *semi-deterministically* to the tag and stay configurable.
-  - What a tag guarantees is "same source", not "same bytes". Two builds with the same tag
-    made weeks apart can differ in `node_modules`, within those ranges.
-  - The resolved tree is recorded in `/opt/xcld-collab/resolved-deps.json`, so drift can be
-    diffed after the fact.
-  - If a class ever needs byte-identical images, commit a lockfile per `pins.json` set.
+    - The app stage: `npm ci` installs exactly `app/package-lock.json` (lockfileVersion 3),
+      and fails if it disagrees with `package.json`.
+  - The lockfile records each vendor tarball's `integrity`, so it belongs to one `pins.json`
+    set. **verified:** `npm ci` fails with `EINTEGRITY` on a mismatched vendor tarball. After
+    changing pins (or dependencies), rebuild `app/vendor`, run `npm install` and
+    `npm run lockfile:public` in `app/`, and commit both files together.
+  - **Opt-out (`-NoLockfile` / `--no-lockfile` / `XCLD_NO_LOCKFILE=1`):** for environments
+    such as an internal npm proxy where the locked install can't be used. The app stage skips the
+    lockfile and runs `npm install --no-package-lock` against `package.json` ranges (the old
+    semi-deterministic behaviour); the tag gets `-nolock`. Locked builds stay the default.
+  - The resolved tree is still recorded in `/opt/xcld-collab/resolved-deps.json`.
 - **Linux bind mounts:** the container runs as `node` (uid 1000). The build scripts print a
   `docker run -u $(id -u):$(id -g)` command so boards stay writable. Docker Desktop on
   Windows/macOS doesn't need this.

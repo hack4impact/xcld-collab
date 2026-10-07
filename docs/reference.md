@@ -493,7 +493,7 @@ Host development:
 
 ```powershell
 cd app
-npm install
+npm ci
 npm run build      # creates gitignored tools/mcp.bundle.mjs
 cd ..
 $env:XCLD_BOARDS_DIR='boards'

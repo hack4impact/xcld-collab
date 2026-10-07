@@ -30,6 +30,11 @@ cd xcld-collab
 The first build compiles Excalidraw from source, so go get a coffee. Rebuilds reuse the cache.
 The build ends with `.env updated (XCLD_TAG=...)`; that's how Compose knows which image to run.
 
+Builds install the app from the committed `app/package-lock.json` (`npm ci`), which is the
+reproducible default. If your environment can only use a private npm registry and the locked
+build fails there, `.\build.ps1 -NoLockfile` (`./build.sh --no-lockfile`, or
+`XCLD_NO_LOCKFILE=1`) resolves `package.json` ranges instead; its tag ends in `-nolock`.
+
 ### 2. Start
 
 ```powershell
@@ -162,9 +167,19 @@ These are designed but **not built yet**. Don't rely on them.
 
 ```powershell
 .\build.ps1 -Target vendor    # upstream packages built from source, into app\vendor
-cd app; npm install; npm run dev
+cd app; npm ci; npm run dev   # npm ci installs exactly app/package-lock.json
 node --test tests             # from the repo root
 ```
+
+`app/package-lock.json` is committed with public npm URLs only. If you change dependencies
+(or `pins.json`, which changes the vendor tarballs), rebuild `app\vendor`, then run
+`npm install` and `npm run lockfile:public` in `app/` and commit the lockfile.
+npm writes your registry's URLs into the lockfile, so after **any** `npm install <pkg>`
+through a private registry, run `npm run lockfile:public` before committing.
+`npm run lockfile:public -- --check` exits non-zero if any URL isn't public npm, and
+`tests/lockfile.test.mjs` runs the same check. `npm ci` rejects stale vendor tarballs.
+Installing through a mirror is fine: npm fetches the same tarballs from your configured
+registry.
 
 ## License
 

@@ -75,7 +75,7 @@ const callTool = async (server, name, args = {}) => {
   return response.result;
 };
 
-test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !existsSync(bundlePath) && "Run cd app; npm install; npm run build before MCP tests." }, async () => {
+test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !existsSync(bundlePath) && "Run cd app; npm ci; npm run build before MCP tests." }, async () => {
   const root = path.resolve(".test-run", `mcp-${Date.now()}-${process.pid}`);
   await mkdir(path.join(root, "p"), { recursive: true });
   await writeFile(path.join(root, "p", "design-rules.csv"), [

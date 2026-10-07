@@ -5,15 +5,19 @@
 #   ./build.sh                          # pinned (default): SHAs from pins.json
 #   ./build.sh --latest --update-pins   # resolve branch HEADs, rewrite pins.json
 #   ./build.sh --target vendor          # export upstream tarballs to app/vendor
+#   ./build.sh --no-lockfile            # ignore app/package-lock.json; tag gets -nolock
 #   ./build.sh --dry-run
 #
 # npm registry, first match wins: --registry, $XCLD_NPM_REGISTRY, `npm config get
 # registry` (if not the public default), otherwise public npm.
+# --no-lockfile (or XCLD_NO_LOCKFILE=1) installs the app with npm install
+# --no-package-lock (package.json ranges) for private-registry environments.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pins_path="$root/pins.json"
 mode=pinned target=runtime image=xcld-collab registry="" npmrc="" update_pins=0 dry_run=0
+no_lock=0; [ "${XCLD_NO_LOCKFILE:-}" = 1 ] && no_lock=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -22,10 +26,11 @@ while [ $# -gt 0 ]; do
     --registry) registry="$2"; shift ;;
     --npmrc) npmrc="$2"; shift ;;
     --update-pins) update_pins=1 ;;
+    --no-lockfile) no_lock=1 ;;
     --target) target="$2"; shift ;;
     --image) image="$2"; shift ;;
     --dry-run) dry_run=1 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -71,7 +76,8 @@ for entry in excalidraw:EXCALIDRAW mermaid-to-excalidraw:M2E excalidraw-mcp:MCP;
   tag="$tag-$(short "$sha")"
   build_args+=(--build-arg "${arg}_REPO=$repo" --build-arg "${arg}_SHA=$sha")
 done
-tag="$tag$dirty"
+nolock=""; [ "$no_lock" -eq 1 ] && nolock="-nolock"
+tag="$tag$nolock$dirty"
 
 # --- registry ---------------------------------------------------------------
 registry_source=parameter
@@ -91,6 +97,7 @@ cmd=(docker build --target "$target"
   --build-arg "BUILD_TAG=$tag"
   ${build_args[@]+"${build_args[@]}"})
 [ -n "$registry" ] && cmd+=(--build-arg "NPM_CONFIG_REGISTRY=$registry")
+[ "$no_lock" -eq 1 ] && cmd+=(--build-arg "XCLD_NO_LOCKFILE=1")
 if [ -n "$npmrc" ]; then
   [ -f "$npmrc" ] || { echo "--npmrc not found: $npmrc" >&2; exit 1; }
   cmd+=(--secret "id=npmrc,src=$(cd "$(dirname "$npmrc")" && pwd)/$(basename "$npmrc")")
@@ -104,6 +111,7 @@ cmd+=("$root")
 
 echo "mode      : $mode"
 echo "registry  : $registry_source"
+if [ "$no_lock" -eq 1 ]; then echo "lockfile  : ignored (npm install --no-package-lock)"; else echo "lockfile  : app/package-lock.json (npm ci)"; fi
 echo "target    : $target"
 echo "tag       : $image:$tag"
 [ -n "$dirty" ] && echo "WARNING: working tree is dirty; tag carries -dirty and is not reproducible." >&2
