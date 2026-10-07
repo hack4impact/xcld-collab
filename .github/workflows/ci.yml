@@ -1,0 +1,143 @@
+# CI for main. Hack4Impact CI-cost rule: automatic runs only on push to main (after
+# merge) plus manual dispatch; no pull_request triggers and no required status checks.
+#
+#   hygiene      every push: gitleaks over main's full history (.gitleaks.toml) and the
+#                GitHub-noreply author/committer email check
+#   build-test   only when build/app/test inputs changed (or on manual dispatch):
+#                build.sh image + vendor tarballs, app build, `node --test tests`,
+#                then a Compose smoke (healthz + `xcld list`)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: History hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # last successful CI run, for the build decision
+    outputs:
+      build: ${{ steps.changes.outputs.build }}
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's checksums.txt
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+
+      # Every commit reachable from main. Other refs (archive tags, WIP branches) are
+      # not part of main and are left out on purpose.
+      - name: gitleaks (full history of main)
+        run: >-
+          "$RUNNER_TEMP/gitleaks" git
+          --config .gitleaks.toml
+          --log-opts="--full-history HEAD"
+          --redact --no-banner --verbose .
+
+      - name: Commit emails are GitHub noreply
+        run: ./scripts/check-commit-emails.sh HEAD
+
+      # Compare with the last successful CI run on main, not just this push's "before":
+      # a run cancelled by a newer push must not let its changes skip the build.
+      - name: Decide whether to build
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build=true
+          base=""
+          if [ "$EVENT" = push ]; then
+            base="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
+              --jq '.workflow_runs[0].head_sha // empty' || true)"
+          fi
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            changed="$(git diff --name-only "$base" "$GITHUB_SHA")"
+            printf 'changed since last successful run (%s):\n%s\n' "${base:0:7}" "$changed"
+            if ! grep -Eq '^(app/|tools/|tests/|patches/|scripts/(fetch-at-sha|with-registry)\.sh$|Dockerfile$|\.dockerignore$|build\.sh$|compose\.yaml$|pins\.json$|LICENSE$|NOTICE$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+              build=false
+            fi
+          fi
+          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
+
+  build-test:
+    name: Build, test, smoke
+    needs: hygiene
+    if: needs.hygiene.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # app/package-lock.json pins the app (npm ci); its vendor entries come from the
+      # freshly built vendor tarballs. Cache npm's download cache on the lockfile.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      # Runtime image first, from a pristine tree, so the tag is never -dirty. The
+      # vendor export afterwards reuses the same BuildKit cache and takes seconds.
+      # No registry is configured, so both builds use public npm.
+      - name: build.sh (runtime image)
+        run: ./build.sh
+
+      - name: build.sh --target vendor
+        run: ./build.sh --target vendor
+
+      - name: App install and build
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Tests
+        run: node --test tests
+
+      - name: Compose smoke
+        run: |
+          docker compose up -d --wait --wait-timeout 120
+          code="$(curl -sS --retry 5 --retry-connrefused --retry-delay 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/healthz)"
+          echo "healthz: $code"
+          [ "$code" = 200 ]
+          docker exec xcld-collab xcld list
+
+      - name: Compose logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Compose down
+        if: always()
+        run: docker compose down || true

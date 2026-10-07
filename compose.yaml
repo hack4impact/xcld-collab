@@ -1,5 +1,8 @@
 # Run the workspace. Build first with build.ps1 / build.sh: they compute the
 # image tag from the exact source commits and write it to .env as XCLD_TAG.
+# Or run the prebuilt image instead (see README): put these in .env, then pull:
+#   XCLD_IMAGE=ghcr.io/hack4impact/xcld-collab
+#   XCLD_TAG=latest                 # or a full <ours7>-<exc7>-<m2e7>-<mcp7> tag
 #
 #   docker compose up -d --wait     # start the canvas; returns once the healthcheck passes
 #   docker compose down             # stop; boards stay on disk
@@ -21,7 +24,7 @@ name: xcld-collab
 
 services:
   canvas:
-    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
+    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first, or see README for the prebuilt image}
     container_name: ${XCLD_CONTAINER:-xcld-collab}
     ports:
       - "127.0.0.1:${XCLD_PORT:-3100}:3100"
@@ -40,7 +43,7 @@ services:
   # COMPOSE_PROFILES=widget; the widget loads React/Excalidraw from https://esm.sh (#9).
   mcp:
     profiles: ["widget"]
-    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
+    image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first, or see README for the prebuilt image}
     container_name: ${XCLD_MCP_CONTAINER:-xcld-mcp}
     entrypoint: ["node", "/opt/xcld-collab/excalidraw-mcp/dist/index.js"]
     ports:

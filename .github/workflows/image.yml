@@ -1,0 +1,200 @@
+# Publish the image to GHCR as one multi-arch manifest (linux/amd64 + linux/arm64):
+#   ghcr.io/<owner>/<repo>:<ours7>-<exc7>-<m2e7>-<mcp7>   (tag computed by build.sh)
+#   ghcr.io/<owner>/<repo>:latest
+#
+# Hack4Impact CI-cost rule: automatic runs only on push to main (after merge) plus
+# manual dispatch (main only); no pull_request triggers.
+#
+# arm64 builds on GitHub's native arm64 runner (ubuntu-24.04-arm) by default. Standard
+# arm64 runners are free on public repositories and billed per minute on private ones
+# (at a lower rate than x64), so native is the cheapest option either way. Set the
+# repository variable XCLD_ARM64_BUILD=qemu (or pick "qemu" on a manual run) to build
+# arm64 under QEMU emulation on an x64 runner instead; it is several times slower, so
+# use it only if arm64 runners are unavailable to the repository.
+#
+# Package visibility is managed in the package settings, never here.
+name: Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - tools/**
+      - patches/**
+      - scripts/fetch-at-sha.sh
+      - scripts/with-registry.sh
+      - Dockerfile
+      - .dockerignore
+      - pins.json
+      - build.sh
+      - LICENSE
+      - NOTICE
+      - .github/workflows/image.yml
+  workflow_dispatch:
+    inputs:
+      arm64:
+        description: How to build linux/arm64
+        type: choice
+        options: [native, qemu]
+        default: native
+
+permissions: {}
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Resolve tag and build args
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+      tag: ${{ steps.plan.outputs.tag }}
+      build-args: ${{ steps.plan.outputs.build-args }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # build.sh stays the single source of truth for the tag and build args: take
+      # them from its dry run (the last line is the docker command, shell-quoted).
+      - name: build.sh --dry-run
+        id: plan
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          out="$(./build.sh --pinned --dry-run --image "$image")"
+          printf '%s\n' "$out"
+          eval "cmd=($(printf '%s\n' "$out" | tail -n 1))"
+          ref="" args=()
+          for ((i = 0; i < ${#cmd[@]}; i++)); do
+            case "${cmd[i]}" in
+              --build-arg) args+=("${cmd[i+1]}") ;;
+              --tag) ref="${cmd[i+1]}" ;;
+            esac
+          done
+          tag="${ref##*:}"
+          [[ "$tag" =~ ^[0-9a-f]{7}(-[0-9a-f]{7}){3}$ ]] || { echo "::error::unexpected tag '$tag'"; exit 1; }
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "build-args<<XCLD_EOF"
+            printf '%s\n' "${args[@]}"
+            echo "XCLD_EOF"
+          } >>"$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ${{ (inputs.arm64 || vars.XCLD_ARM64_BUILD || 'native') == 'qemu' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU (arm64 on an x64 runner)
+        if: matrix.arch == 'arm64' && runner.arch != 'ARM64'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push by digest only; the merge job tags the multi-arch index.
+      - name: Build and push ${{ matrix.platform }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ needs.plan.outputs.build-args }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ needs.plan.outputs.tag }}
+          outputs: type=image,name=${{ needs.plan.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=xcld-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=xcld-image-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-arch manifest
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push index (:tag and :latest)
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          sources=()
+          for d in *; do sources+=("$IMAGE@sha256:$d"); done
+          [ "${#sources[@]}" -eq 2 ] || { echo "::error::expected 2 platform digests, got ${#sources[@]}"; exit 1; }
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=$SOURCE" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            --annotation "index:org.opencontainers.image.version=$TAG" \
+            --annotation "index:org.opencontainers.image.description=Shared Excalidraw workspace for humans and agents" \
+            --tag "$IMAGE:$TAG" --tag "$IMAGE:latest" \
+            "${sources[@]}"
+          docker buildx imagetools inspect "$IMAGE:$TAG"

@@ -650,7 +650,7 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `required variable XCLD_TAG is missing a value` | No build yet, or `.env` deleted | Run `.\build.ps1` / `./build.sh`, then `docker compose up -d --wait` |
+| `required variable XCLD_TAG is missing a value` | No build yet, or `.env` deleted | Run `.\build.ps1` / `./build.sh`, then `docker compose up -d --wait`. Or set `XCLD_IMAGE`/`XCLD_TAG` for the [prebuilt image](../README.md#or-use-the-prebuilt-image) |
 | `Bind for 127.0.0.1:3100 failed: port is already allocated` | Something else is using 3100 | Put `XCLD_PORT=3200` in `.env`, run `docker compose up -d --wait`, then use `http://127.0.0.1:3200` |
 | `No snapshots found for <board>` | `diff <board>` needs a "before" picture | `xcld snapshot <board>`, edit, then `diff` |
 | `Board not found: <board>` | The board file doesn't exist yet | Open `http://127.0.0.1:3100/?board=<board>` (it converts `<board>.mmd` if present), or check the path |

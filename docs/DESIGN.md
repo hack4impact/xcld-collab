@@ -172,6 +172,19 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     lockfile and runs `npm install --no-package-lock` against `package.json` ranges (the old
     semi-deterministic behaviour); the tag gets `-nolock`. Locked builds stay the default.
   - The resolved tree is still recorded in `/opt/xcld-collab/resolved-deps.json`.
+- **CI and published image** (`.github/workflows/`). Hack4Impact cost rule: workflows run
+  only on push to `main` (after merge) or manual dispatch; there are no `pull_request`
+  triggers and no required status checks.
+  - `ci.yml`: gitleaks (pinned 8.30.1 binary, checksum-verified, `.gitleaks.toml`) and a
+    GitHub-noreply author/committer email check over `main`'s full history on every push.
+    When build, app or test inputs change, it also runs `build.sh` (image and vendor), the app
+    build, `node --test tests`, and a Compose smoke (`/healthz` 200, `xcld list`).
+  - `image.yml`: takes the tag and build args from `build.sh --dry-run`, so the scheme can't
+    drift. It builds `linux/amd64` and `linux/arm64` on native runners
+    (`ubuntu-24.04-arm`: free on public repositories, billed per minute below the x64 rate
+    on private ones), pushes by digest, and publishes one multi-arch index as
+    `ghcr.io/hack4impact/xcld-collab:<tag>` and `:latest`. `XCLD_ARM64_BUILD=qemu` (repository
+    variable) switches arm64 to QEMU on an x64 runner, which is several times slower.
 - **Linux bind mounts:** the container runs as `node` (uid 1000). The build scripts print a
   `docker run -u $(id -u):$(id -g)` command so boards stay writable. Docker Desktop on
   Windows/macOS doesn't need this.

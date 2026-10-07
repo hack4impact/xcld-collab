@@ -35,6 +35,32 @@ reproducible default. If your environment can only use a private npm registry an
 build fails there, `.\build.ps1 -NoLockfile` (`./build.sh --no-lockfile`, or
 `XCLD_NO_LOCKFILE=1`) resolves `package.json` ranges instead; its tag ends in `-nolock`.
 
+#### Or: use the prebuilt image
+
+> Available after the public release. Until then the image is private and
+> `docker compose pull` fails with `denied`; build from source as above.
+
+Every push to `main` that changes the image publishes a multi-arch image (linux/amd64 and
+linux/arm64) to `ghcr.io/hack4impact/xcld-collab`, so you can skip the build. You still need
+the clone (for `compose.yaml` and `boards/`). Create `.env` next to `compose.yaml`:
+
+```dotenv
+XCLD_IMAGE=ghcr.io/hack4impact/xcld-collab
+XCLD_TAG=latest
+COMPOSE_PROFILES=widget
+# Linux only, so boards stay writable: your `id -u` / `id -g`
+# XCLD_UID=1000
+# XCLD_GID=1000
+```
+
+```powershell
+docker compose pull
+```
+
+Then continue with step 2. `latest` follows `main`; set `XCLD_TAG` to a full
+`<ours7>-<exc7>-<m2e7>-<mcp7>` tag to stay on one build. Running `build.ps1` / `build.sh`
+later points `.env` back at your local build.
+
 ### 2. Start
 
 ```powershell
@@ -180,6 +206,11 @@ through a private registry, run `npm run lockfile:public` before committing.
 `tests/lockfile.test.mjs` runs the same check. `npm ci` rejects stale vendor tarballs.
 Installing through a mirror is fine: npm fetches the same tarballs from your configured
 registry.
+
+Optional: `scripts/install-hooks.sh` (Windows: `scripts\install-hooks.ps1`) adds a gitleaks
+pre-commit hook with the same `.gitleaks.toml` rules CI enforces on `main`; it also rejects a staged
+`app/package-lock.json` that names a non-public registry. CI runs only
+after merge to `main` (see `.github/workflows/`).
 
 ## License
 

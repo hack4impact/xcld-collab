@@ -1,0 +1,22 @@
+title = "xcld-collab gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "host-user-path"
+description = "Absolute host path that reveals a local user name"
+regex = '''(?i)(?:\b[a-z]:[\\/]+users[\\/]+[a-z0-9._-]+|(?:^|[\s"'`(=])/users/[a-z0-9._-]+/|(?:^|[\s"'`(=])/home/[a-z0-9._-]+/)'''
+keywords = ["users", "home"]
+
+[[rules.allowlists]]
+regexes = ['''(?i)/home/node/''']
+
+[[rules]]
+id = "personal-email"
+description = "Email address other than GitHub noreply or example domains"
+regex = '''[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}'''
+keywords = ["@"]
+
+[[rules.allowlists]]
+regexes = ['''@users\.noreply\.github\.com$''', '''^noreply@github\.com$''', '''@example\.(?:com|org|net)$''']
