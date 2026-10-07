@@ -18,6 +18,7 @@ const tempRoot = async (name) => {
   return root;
 };
 const scene = (elements) => `${JSON.stringify({ type: "excalidraw", elements, appState: {}, files: {} })}\n`;
+const slashed = (value) => value.replace(/\\/g, "/");
 const box = (id, label, props = {}) => ([
   { id, type: "rectangle", x: props.x ?? 10, y: props.y ?? 10, width: props.width ?? 120, height: props.height ?? 60, strokeColor: props.strokeColor ?? "#1e1e1e", backgroundColor: props.backgroundColor ?? "transparent", strokeStyle: props.strokeStyle ?? "solid", strokeWidth: props.strokeWidth ?? 2, fillStyle: props.fillStyle ?? "hachure", opacity: props.opacity ?? 100, isDeleted: false },
   { id: `${id}_label`, type: "text", x: (props.x ?? 10) + 10, y: (props.y ?? 10) + 10, width: 80, height: 24, strokeColor: "#1e1e1e", backgroundColor: "transparent", strokeStyle: "solid", strokeWidth: 2, text: label, originalText: label, containerId: id, isDeleted: false },
@@ -91,6 +92,32 @@ test("rules cascade uses nearest file and XCLD_DESIGN_RULES as the overridable d
     assert.match((await effectiveRulesBriefing("rootboard", root, env)).text, /env-note/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rules output names rules files relative to the boards root", async () => {
+  const root = await tempRoot("rules-relative");
+  const outside = await tempRoot("rules-outside");
+  try {
+    await mkdir(path.join(root, "examples"), { recursive: true });
+    await writeFile(path.join(root, "examples", "design-rules.csv"), "kind,rule_id,on,match,means,instruct\ndraw,direction,,,LR,left to right\ninterpet,typo,added,,x,y\n", "utf8");
+    const cli = await runCli(["rules", "examples/demo"], root);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^Effective file: examples\/design-rules\.csv$/m);
+    assert.match(cli.stdout, /direction: LR — left to right \(examples\/design-rules\.csv\)/);
+    assert.match(cli.stdout, /examples\/design-rules\.csv:3: typo: unknown kind/);
+    assert.equal(cli.stdout.includes(slashed(root)), false, "no absolute boards path in output");
+
+    const check = await runCli(["rules", "check", "examples/demo"], root);
+    assert.match(check.stdout, /^ERROR: examples\/design-rules\.csv:3:/m);
+
+    const envFile = path.join(outside, "team-rules.csv");
+    await writeFile(envFile, "kind,rule_id,on,match,means,instruct\ndraw,env,,,env,env rule\n", "utf8");
+    const env = { ...process.env, XCLD_DESIGN_RULES: envFile };
+    assert.match((await effectiveRulesBriefing("demo", root, env)).text, new RegExp(`Effective file: ${slashed(envFile).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "a rules file outside the boards root keeps its full path");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

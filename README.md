@@ -132,7 +132,9 @@ These are designed but **not built yet**. Don't rely on them.
 - **Versions.** Today, Ctrl+S / Excalidraw's "Save to…" downloads a separate copy and isn't
   how the board saves. Planned: every save becomes a version in `boards/.history/`, tagged
   with who made it (your tab or a named agent), plus `xcld versions` and
-  `xcld diff --since`.
+  `xcld diff --since`. Already built: a save based on an old board is rejected, and the canvas
+  re-applies your edits on the newer one instead of overwriting an agent's write. True
+  parallel editing comes with versions and merge.
 - **More diagram types:** sequence, class, ER, state.
 
 ## Development

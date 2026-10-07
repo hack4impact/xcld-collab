@@ -125,19 +125,21 @@ when it is deleted.
 
 ### Commands and output
 
-`xcld rules <board>` prints the effective briefing. Captured from this repo:
+`xcld rules <board>` prints the effective briefing. Rules files are named relative to the boards
+root; a file outside it (set with `XCLD_DESIGN_RULES`) keeps its full path. Captured from this
+repo (some rows left out):
 
 ```text
 > xcld rules examples/demo
 Design rules for examples/demo: local defaults only; any folder can replace them with its own design-rules.csv.
-Effective file: /boards/examples/design-rules.csv
+Effective file: examples/design-rules.csv
 Draw:
-  - proposed-style: proposed — Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2 (...)
-  - direction: LR — Lay flowcharts out left to right (...)
+  - proposed-style: proposed — Draw new or unapproved parts with classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2 (examples/design-rules.csv)
+  - direction: LR — Lay flowcharts out left to right (examples/design-rules.csv)
 Interpret:
-  - approve on restyled when was.strokeColor=#1971c2; strokeColor=#1e1e1e: approved — Promote to agreed; keep it in the Mermaid source (...)
+  - approve on restyled when was.strokeColor=#1971c2; strokeColor=#1e1e1e: approved — Promote to agreed; keep it in the Mermaid source (examples/design-rules.csv)
 Check:
-  - open-proposals when strokeColor=#1971c2: open proposal — Not done while light-blue nodes remain (...)
+  - open-proposals when strokeColor=#1971c2: open proposal — Not done while light-blue nodes remain (examples/design-rules.csv)
 ```
 
 `xcld rules check [board]` validates rules and exits 1 on bad CSV, unknown kind, unknown
@@ -162,14 +164,15 @@ Diff output gets short tags on matching changes and a deduped legend at the end:
 
 ```text
 > xcld diff before.excalidraw after.excalidraw
-Semantic diff C:\...\before.excalidraw -> C:\...\after.excalidraw
+Semantic diff /boards/sandbox/before.excalidraw -> /boards/sandbox/after.excalidraw
 Style:
   ~ node "Cache" strokeColor: #1971c2 -> #1e1e1e (Cache)  [approve → approved]
 Rule legend:
   [approve → approved] Promote to agreed; keep it in the Mermaid source
 ```
 
-`--json` adds a `rules` array to each change:
+`--json` adds a `rules` array to each change (`scope` is the rules file, relative to the boards
+root) and the effective `rulesFile`:
 
 ```json
 "rules": [
@@ -177,7 +180,7 @@ Rule legend:
     "id": "approve",
     "means": "approved",
     "instruct": "Promote to agreed; keep it in the Mermaid source",
-    "scope": "C:/.../design-rules.csv"
+    "scope": "sandbox/design-rules.csv"
   }
 ]
 ```
@@ -376,6 +379,35 @@ levels.
 
 - `GET /api/boards` returns `{ boards, folders }` with board paths, folder/leaf names, board,
   Mermaid and view-inbox presence, pending states and last modified time.
+- `GET /api/board/<path>` returns the board JSON with `ETag: "<sha256 of the file on disk>"`,
+  or 404 `{"error":"board-not-found"}`.
+- `PUT /api/board/<path>` (`Content-Type: application/json`) writes the board and returns
+  `{ ok: true, hash }` plus the new `ETag`. Saves based on an old board are rejected:
+
+  | Header | Saves when | Otherwise |
+  |---|---|---|
+  | `If-Match: "<hash>"` | the file on disk still hashes to `<hash>` | 409 |
+  | `If-None-Match: *` | the board doesn't exist yet | 409 |
+  | neither | always: **unguarded**, the last write wins (kept for scripts) | — |
+
+  The server hashes the file on disk at save time, so direct file writes by agents count, not
+  just API saves. A 409 body is `{"error":"stale-save","currentHash":"<sha256>"}`
+  (`currentHash` is `null` when the board is gone). Weak `W/` tags never match; a bare hash
+  without quotes is accepted. The canvas always sends one of the two headers; on 409 it
+  re-applies your unsaved edits to the newer board and saves again (see
+  [Design](DESIGN.md)).
+
+  ```text
+  > curl -si http://127.0.0.1:3100/api/board/sandbox/guard
+  HTTP/1.1 200 OK
+  ETag: "b6747c4c3549441bcc2c69173d47b35af6f24d8e745a97c6b470552ffb9dd342"
+  > # an agent rewrites boards/sandbox/guard.excalidraw, then:
+  > curl -si -X PUT -H "Content-Type: application/json" -H 'If-Match: "b6747c4c…"' --data-binary @board.json http://127.0.0.1:3100/api/board/sandbox/guard
+  HTTP/1.1 409 Conflict
+  ETag: "fe99bb1e46997e8d9a4afbaaebc7fc9c9f6c3a2f26c639ab721cc3e2314b50fd"
+  {"error":"stale-save","currentHash":"fe99bb1e46997e8d9a4afbaaebc7fc9c9f6c3a2f26c639ab721cc3e2314b50fd"}
+  ```
+
 - `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
 - `GET /api/events` publishes `event: board` with `kind: "board"`, `"mermaid"`, `"view"` or
   `"deleted"`.
@@ -564,6 +596,9 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 | Widget **Edit** does nothing in VS Code | The host refused the widget's fullscreen editor | Ask your assistant to call `open_in_canvas` with the checkpoint id shown in the widget hint and an explicit board path, then open the returned canvas URL |
 | The diagram came in as a picture you can't edit, and the top bar says "came in as a picture" | The converter couldn't parse it into shapes; the exact error is in the browser console (F12) | Simplify unsupported Mermaid syntax or have the agent rewrite the `.mmd` as a flowchart using supported shapes |
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
+| The top bar says "Board changed elsewhere; your edits were re-applied" | An agent or another tab saved the board while you had unsaved edits | Nothing to do: your edits were merged onto the newer board and saved. Check the shapes you both touched |
+| "Save failed: the board kept changing elsewhere (3 retries)" | Something rewrites the board faster than the tab can merge | Stop the other writer, then make any edit to retry; your edits are still in the tab |
+| A script's `PUT /api/board/...` gets 409 `stale-save` | Its `If-Match` hash is not the file on disk any more | `GET` the board again and resend with the new `ETag`, or drop `If-Match` for an unguarded write |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
 | I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |
 | The browser shows an invalid-board banner | The `?board=` path is invalid | Fix the path in the URL or open <http://127.0.0.1:3100/> and choose a board |

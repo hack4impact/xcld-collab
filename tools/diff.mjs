@@ -156,7 +156,7 @@ const annotateRules = async (diff, oldElements, newElements, options = {}) => {
   if (!board) return diff;
   const loaded = await loadEffectiveRulesForBoard(board, boardsDir);
   diff.ruleDiagnostics = loaded.diagnostics;
-  diff.rulesFile = loaded.effectiveFile;
+  diff.rulesFile = loaded.effectiveLabel;
   const oldModel = makeModel(oldElements);
   const newModel = makeModel(newElements);
   const oldLive = liveElements(oldElements);

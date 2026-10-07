@@ -178,7 +178,11 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   (e.g. `auth-flow`, `v2.data-model`).
 - **Snapshot at every hand-off.** Each agent → human → agent switch is a natural point.
   Snapshots are cheap, and `diff` always compares against the latest one.
-- **Don't edit the same board at the same moment as an agent.** The last write wins.
+- **Don't edit the same board at the same moment as an agent.** If the board changes while
+  you have unsaved edits, the canvas no longer overwrites it: it re-applies your edits on top
+  and says "Board changed elsewhere; your edits were re-applied". If you and the agent changed
+  the same shape, only one of the two changes is kept (usually yours). Real merging with
+  versions is coming.
 
 ## What doesn't work yet
 

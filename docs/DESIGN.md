@@ -43,8 +43,27 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   `Start-Process http://127.0.0.1:3100/?board=<path>`. Opening the tab is the handoff.
   Limitation: no conversion happens without an open tab.
 - **Live sync.** The browser saves debounced edits through `PUT /api/board/:name`. A file
-  watcher pushes on-disk (agent) changes to the browser over SSE. The last write wins.
+  watcher pushes on-disk (agent) changes to the browser over SSE.
   Each side ignores its own echoes by content hash.
+  - **Stale-save guard** (an interim step before versions + merge). `GET` returns the sha256
+    of the file as an `ETag`; the tab sends the hash its scene is based on as `If-Match`
+    (`If-None-Match: *` for a new board). The server re-hashes the file on disk at `PUT` time,
+    so a direct agent write counts too, and answers `409 {error:"stale-save", currentHash}`
+    when it moved. A per-board lock makes check-and-write atomic between tabs. `PUT` without
+    either header is unguarded (last write wins) for scripts.
+  - On 409 the tab fetches the board, re-applies its unsaved edits per element id against
+    the base it last loaded or saved (`app/src/reconcile.mjs`): a side that changed an element
+    since the base wins; if both changed it, the higher Excalidraw `version` wins and a tie
+    goes to the tab; an untouched element the other side removed stays removed. It shows
+    "Board changed elsewhere; your edits were re-applied" and saves again, up to 3 retries,
+    then reports an error. A reload that arrives while the tab has unsaved edits merges the
+    same way, and the debounced save reads the latest canvas. This closes the old window
+    where a pending autosave wrote the pre-reload scene over an agent's write.
+  - Not Excalidraw's `reconcileElements`: it has no base, so an agent edit that doesn't bump
+    `version` loses to the tab's untouched copy, and an element left out of the file comes
+    back. Agents writing JSON rarely bump versions.
+  - Still upcoming: true parallel editing (every save a version, merges you can inspect).
+    Two edits of the same element still keep only one of them.
   - **verified (2026-10-02):** `fs.watch` (inotify) gets **no events for host-side writes**
     through a Docker Desktop bind mount from Windows. Writes made inside the container do
     fire.

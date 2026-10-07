@@ -16,6 +16,7 @@ import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBoardPath } from "../../tools/board-path.mjs";
 import { disambiguateDuplicateElementIds } from "./ids.mjs";
+import { reconcileElements } from "./reconcile.mjs";
 
 type SceneFile = {
   type: "excalidraw";
@@ -52,6 +53,8 @@ type Status = {
 };
 
 const SAVE_DEBOUNCE_MS = 1000;
+const MAX_STALE_RETRIES = 3;
+const REAPPLIED_TEXT = "Board changed elsewhere; your edits were re-applied";
 const DEFAULT_APP_STATE: Partial<AppState> = {
   viewBackgroundColor: "#ffffff",
 };
@@ -77,6 +80,17 @@ const readBoardParam = () => {
 };
 
 const boardApiPath = (prefix: "board" | "mermaid" | "view", boardName: string) => `/api/${prefix}/${encodeURIComponent(boardName)}`;
+
+const etagHash = (response: Response) => response.headers.get("ETag")?.replace(/^"(.*)"$/, "$1") || null;
+
+type SceneState = {
+  elements: readonly ExcalidrawElement[];
+  appState: Partial<AppState>;
+  files: BinaryFiles;
+};
+
+// What is on disk now: `hash` is the server's content hash, null when the board doesn't exist.
+type RemoteBoard = { hash: string | null; text: string | null; scene: SceneFile | null };
 
 const sceneFromText = (text: string): SceneFile => {
   const parsed = JSON.parse(text) as SceneFile;
@@ -297,11 +311,26 @@ const BoardView = ({ boardName }: { boardName: string }) => {
   const lastLoadedHashRef = useRef<string>("");
   const lastSavedHashRef = useRef<string>("");
   const lastLoadedElementHashRef = useRef<string>("");
-  const currentSceneRef = useRef<{
-    elements: readonly ExcalidrawElement[];
-    appState: Partial<AppState>;
-    files: BinaryFiles;
-  }>({ elements: [], appState: DEFAULT_APP_STATE, files: {} });
+  const hasSceneRef = useRef(false);
+  const currentSceneRef = useRef<SceneState>({ elements: [], appState: DEFAULT_APP_STATE, files: {} });
+  // The board on disk this tab's scene is based on: sent as If-Match on every save.
+  // null hash = the board doesn't exist yet (sent as If-None-Match: *).
+  const baseHashRef = useRef<string | null>(null);
+  const baseElementsRef = useRef<readonly ExcalidrawElement[]>([]);
+  // Loads, saves and conversions run one at a time so a reload can't interleave with a save.
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const exclusive = useCallback(<T,>(task: () => Promise<T>) => {
+    const run = queueRef.current.then(task, task);
+    queueRef.current = run.catch(() => {});
+    return run;
+  }, []);
+
+  // Excalidraw mutates element objects in place while editing, so the base is a copy.
+  const setBase = useCallback((hash: string | null, elements: readonly ExcalidrawElement[]) => {
+    baseHashRef.current = hash;
+    baseElementsRef.current = structuredClone(elements);
+  }, []);
 
   const setDeletedState = useCallback((value: boolean) => {
     deletedOnDiskRef.current = value;
@@ -313,13 +342,15 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = undefined;
     }
+    setBase(null, []);
     setDeletedState(true);
     setStatus({ level: "warn", text: "This board was deleted on disk." });
-  }, [setDeletedState]);
+  }, [setBase, setDeletedState]);
 
   // `recenter` frames the drawing: on first load and when Mermaid brings in new content.
   // Live reloads from agent edits keep the user's current view.
   const applyScene = useCallback((scene: SceneFile, hash: string, recenter = false) => {
+    hasSceneRef.current = true;
     lastLoadedHashRef.current = hash;
     lastLoadedElementHashRef.current = elementHash(scene.elements);
     applyingRemoteRef.current = true;
@@ -352,28 +383,96 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     }, 0);
   }, []);
 
-  const saveText = useCallback(
-    async (text: string, reason: string, options: { force?: boolean } = {}) => {
-      const persistedText = text.endsWith("\n") ? text : `${text}\n`;
-      const hash = textHash(persistedText);
-      if (!options.force && (hash === lastSavedHashRef.current || hash === lastLoadedHashRef.current)) {
-        return hash;
-      }
+  const fetchRemote = useCallback(async (): Promise<RemoteBoard> => {
+    const response = await fetch(boardApiPath("board", boardName));
+    if (response.status === 404) {
+      return { hash: null, text: null, scene: null };
+    }
+    if (!response.ok) {
+      throw new Error(`Load failed: HTTP ${response.status}`);
+    }
+    const text = await response.text();
+    return { hash: etagHash(response), text, scene: sceneFromText(text) };
+  }, [boardName]);
 
-      const response = await fetch(boardApiPath("board", boardName), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: persistedText,
-      });
-      if (!response.ok) {
-        throw new Error(`Save failed: HTTP ${response.status}`);
+  // Re-applies this tab's unsaved edits on top of the board on disk and shows the result.
+  // The board on disk becomes the base; the caller saves the merged scene.
+  const rebaseOnto = useCallback((remote: RemoteBoard & { text: string; scene: SceneFile }) => {
+    const merged = reconcileElements({
+      base: baseElementsRef.current,
+      local: currentSceneRef.current.elements,
+      remote: remote.scene.elements,
+    });
+    const scene: SceneFile = {
+      ...remote.scene,
+      elements: restoreElements(merged, null),
+      files: { ...(remote.scene.files ?? {}), ...currentSceneRef.current.files },
+    };
+    applyScene(scene, textHash(remote.text));
+    lastLoadedElementHashRef.current = elementHash(remote.scene.elements);
+    setBase(remote.hash, remote.scene.elements);
+    return currentSceneRef.current;
+  }, [applyScene, setBase]);
+
+  // Saves with If-Match (or If-None-Match: * for a new board). On 409 the board changed
+  // elsewhere: "rebase" re-applies this tab's edits on the newer board and retries;
+  // "replace" (inbox conversions, which replace the board by design) just retries on the new base.
+  const saveScene = useCallback(
+    async (
+      input: SceneState,
+      reason: string,
+      { force = false, onStale = "rebase" }: { force?: boolean; onStale?: "rebase" | "replace" } = {},
+    ) => {
+      let scene = input;
+      let reapplied = false;
+      for (let attempt = 0; ; attempt++) {
+        const text = persistedSceneText(scene.elements, scene.appState, scene.files);
+        const hash = textHash(text);
+        if (!force && !reapplied && (hash === lastSavedHashRef.current || hash === lastLoadedHashRef.current)) {
+          return hash;
+        }
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (baseHashRef.current === null) {
+          headers["If-None-Match"] = "*";
+        } else {
+          headers["If-Match"] = `"${baseHashRef.current}"`;
+        }
+        const response = await fetch(boardApiPath("board", boardName), { method: "PUT", headers, body: text });
+        if (response.ok) {
+          const saved = await response.json() as { hash?: string };
+          setBase(saved.hash ?? etagHash(response), scene.elements);
+          lastSavedHashRef.current = hash;
+          lastLoadedHashRef.current = hash;
+          lastLoadedElementHashRef.current = elementHash(scene.elements);
+          setStatus(reapplied
+            ? { level: "ok", text: `${REAPPLIED_TEXT}; saved ${boardName}.excalidraw` }
+            : { level: "ok", text: `Saved ${boardName}.excalidraw (${reason})` });
+          return hash;
+        }
+        if (response.status !== 409) {
+          throw new Error(`Save failed: HTTP ${response.status}`);
+        }
+        if (attempt >= MAX_STALE_RETRIES) {
+          throw new Error(`Save failed: the board kept changing elsewhere (${MAX_STALE_RETRIES} retries). Your edits are still in this tab; edit again to retry.`);
+        }
+        const remote = await fetchRemote();
+        if (!remote.scene || !remote.text) {
+          if (onStale === "rebase" && !force) {
+            markDeletedOnDisk();
+            return hash;
+          }
+          setBase(null, []);
+          continue;
+        }
+        if (onStale === "replace") {
+          setBase(remote.hash, remote.scene.elements);
+          continue;
+        }
+        scene = rebaseOnto({ ...remote, text: remote.text, scene: remote.scene });
+        reapplied = true;
       }
-      lastSavedHashRef.current = hash;
-      lastLoadedHashRef.current = hash;
-      setStatus({ level: "ok", text: `Saved ${boardName}.excalidraw (${reason})` });
-      return hash;
     },
-    [boardName],
+    [boardName, fetchRemote, markDeletedOnDisk, rebaseOnto, setBase],
   );
 
   const convertViewInbox = useCallback(async () => {
@@ -387,11 +486,14 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       throw new Error("View inbox is not an xcld-view file.");
     }
     const scene = sceneFromViewInbox(view);
-    const text = sceneToText(scene.elements, scene.appState ?? {}, scene.files ?? {});
-    const hash = await saveText(text, "converted view inbox");
+    const hash = await saveScene(
+      { elements: scene.elements, appState: scene.appState ?? {}, files: scene.files ?? {} },
+      "converted view inbox",
+      { onStale: "replace" },
+    );
     applyScene(scene, hash, true);
     return true;
-  }, [applyScene, boardName, saveText]);
+  }, [applyScene, boardName, saveScene]);
 
   const convertMermaidInbox = useCallback(async () => {
     const response = await fetch(boardApiPath("mermaid", boardName));
@@ -422,8 +524,11 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       appState: DEFAULT_APP_STATE,
       files: parsedFiles,
     };
-    const text = sceneToText(scene.elements, scene.appState ?? {}, scene.files ?? {});
-    const hash = await saveText(text, "converted Mermaid inbox");
+    const hash = await saveScene(
+      { elements: scene.elements, appState: scene.appState ?? {}, files: scene.files ?? {} },
+      "converted Mermaid inbox",
+      { onStale: "replace" },
+    );
     applyScene(scene, hash, true);
     if (isImageFallback) {
       setStatus({
@@ -432,13 +537,14 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       });
     }
     return true;
-  }, [applyScene, boardName, saveText]);
+  }, [applyScene, boardName, saveScene]);
 
   const loadBoard = useCallback(
     async (reason: string) => {
       try {
-        const response = await fetch(boardApiPath("board", boardName));
-        if (response.status === 404) {
+        const remote = await fetchRemote();
+        if (!remote.scene || !remote.text) {
+          setBase(null, []);
           const converted = await convertViewInbox() || await convertMermaidInbox();
           if (!converted) {
             const scene: SceneFile = {
@@ -457,80 +563,76 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           }
           return;
         }
-        if (!response.ok) {
-          throw new Error(`Load failed: HTTP ${response.status}`);
-        }
 
-        const text = await response.text();
-        const hash = textHash(text);
-        if (hash === lastSavedHashRef.current || hash === lastLoadedHashRef.current) {
-          return;
-        }
-        const scene = sceneFromText(text);
-        if (!hasLiveElements(scene.elements) && (await convertViewInbox() || await convertMermaidInbox())) {
-          setDeletedState(false);
-          return;
-        }
-        applyScene(scene, hash);
+        const hash = textHash(remote.text);
         setDeletedState(false);
+        if (hash === lastSavedHashRef.current || hash === lastLoadedHashRef.current) {
+          if (hash === lastLoadedHashRef.current) {
+            setBase(remote.hash, remote.scene.elements);
+          }
+          return;
+        }
+        if (!hasLiveElements(remote.scene.elements)) {
+          const previousBase = { hash: baseHashRef.current, elements: baseElementsRef.current };
+          setBase(remote.hash, remote.scene.elements);
+          if (await convertViewInbox() || await convertMermaidInbox()) {
+            return;
+          }
+          setBase(previousBase.hash, previousBase.elements);
+        }
+        // Unsaved edits in this tab (e.g. the debounced autosave hasn't fired yet): merge
+        // them onto the new board instead of dropping them, then save the result.
+        const unsaved = hasSceneRef.current
+          && elementHash(currentSceneRef.current.elements) !== lastLoadedElementHashRef.current;
+        if (unsaved) {
+          await saveScene(rebaseOnto({ ...remote, text: remote.text, scene: remote.scene }), "re-applied edits");
+          setStatus({ level: "ok", text: `${REAPPLIED_TEXT}.` });
+          return;
+        }
+        applyScene(remote.scene, hash);
+        setBase(remote.hash, remote.scene.elements);
         setStatus({ level: "ok", text: `Loaded ${boardName}.excalidraw (${reason})` });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setStatus({ level: "error", text: message });
       }
     },
-    [applyScene, boardName, convertMermaidInbox, convertViewInbox, setDeletedState],
+    [applyScene, boardName, convertMermaidInbox, convertViewInbox, fetchRemote, rebaseOnto, saveScene, setBase, setDeletedState],
   );
 
-  const scheduleSave = useCallback(
-    (
-      elements: readonly ExcalidrawElement[],
-      appState: AppState,
-      files: BinaryFiles,
-    ) => {
-      if (applyingRemoteRef.current || deletedOnDiskRef.current) {
-        return;
-      }
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-      saveTimerRef.current = window.setTimeout(async () => {
-        if (deletedOnDiskRef.current) {
+  const reportError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus({ level: "error", text: message });
+  }, []);
+
+  // Reads the latest canvas when the timer fires, not the scene that scheduled it.
+  const scheduleSave = useCallback(() => {
+    if (applyingRemoteRef.current || deletedOnDiskRef.current) {
+      return;
+    }
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined;
+      void exclusive(async () => {
+        const scene = currentSceneRef.current;
+        if (deletedOnDiskRef.current || elementHash(scene.elements) === lastLoadedElementHashRef.current) {
           return;
         }
-        try {
-          const nextElementHash = elementHash(elements);
-          if (nextElementHash === lastLoadedElementHashRef.current) {
-            return;
-          }
-          const text = sceneToText(elements, appState, files ?? {});
-          await saveText(text, "browser edit");
-          lastLoadedElementHashRef.current = nextElementHash;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          setStatus({ level: "error", text: message });
-        }
-      }, SAVE_DEBOUNCE_MS);
-    },
-    [saveText],
-  );
+        await saveScene(scene, "browser edit");
+      }).catch(reportError);
+    }, SAVE_DEBOUNCE_MS);
+  }, [exclusive, reportError, saveScene]);
 
-  const restoreFromThisTab = useCallback(async () => {
-    try {
-      const scene = currentSceneRef.current;
-      const text = sceneToText(scene.elements, scene.appState, scene.files);
-      await saveText(text, "restored from this tab", { force: true });
-      lastLoadedElementHashRef.current = elementHash(scene.elements);
-      setDeletedState(false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus({ level: "error", text: message });
-    }
-  }, [saveText, setDeletedState]);
+  const restoreFromThisTab = useCallback(() => exclusive(async () => {
+    await saveScene(currentSceneRef.current, "restored from this tab", { force: true });
+    setDeletedState(false);
+  }).catch(reportError), [exclusive, reportError, saveScene, setDeletedState]);
 
   useEffect(() => {
-    void loadBoard("initial");
-  }, [loadBoard]);
+    void exclusive(() => loadBoard("initial"));
+  }, [exclusive, loadBoard]);
 
   useEffect(() => {
     const events = new EventSource("/api/events");
@@ -544,29 +646,27 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           return;
         }
         if (data.kind === "deleted") {
-          markDeletedOnDisk();
+          void exclusive(async () => markDeletedOnDisk());
           return;
         }
         if (data.kind === "mermaid") {
-          void convertMermaidInbox();
+          void exclusive(convertMermaidInbox).catch(reportError);
           return;
         }
         if (data.kind === "view") {
-          void convertViewInbox();
+          void exclusive(convertViewInbox).catch(reportError);
           return;
         }
-        setDeletedState(false);
-        void loadBoard("file change");
+        void exclusive(() => loadBoard("file change"));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setStatus({ level: "error", text: message });
+        reportError(error);
       }
     });
     events.onerror = () => {
       setStatus({ level: "warn", text: "SSE disconnected; retrying..." });
     };
     return () => events.close();
-  }, [boardName, convertMermaidInbox, convertViewInbox, loadBoard, markDeletedOnDisk, setDeletedState]);
+  }, [boardName, convertMermaidInbox, convertViewInbox, exclusive, loadBoard, markDeletedOnDisk, reportError]);
 
   return (
     <main className="app-shell">
@@ -595,7 +695,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
             initialData={initialData}
             onChange={(elements, appState, files) => {
               currentSceneRef.current = { elements, appState, files: files ?? {} };
-              scheduleSave(elements, appState, files ?? {});
+              scheduleSave();
             }}
           />
         ) : (

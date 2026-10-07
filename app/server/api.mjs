@@ -26,7 +26,49 @@ export function isAllowedHostHeader(hostHeader) {
 
 export const validateBoardName = (name) => validateBoardPath(name, { maxDepth: maxDepthFromEnv() }).ok;
 
-const contentHash = (content) => createHash("sha256").update(content).digest("hex");
+export const contentHash = (content) => createHash("sha256").update(content).digest("hex");
+
+const etagFor = (hash) => `"${hash}"`;
+
+// Strong comparison only: W/ tags never match. Bare (unquoted) hashes are accepted for scripts.
+const parseEntityTags = (header) => {
+  if (header === undefined) {
+    return null;
+  }
+  const value = Array.isArray(header) ? header.join(",") : String(header);
+  return value.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => (
+    tag === "*" || tag.startsWith("W/") ? tag : tag.replace(/^"(.*)"$/, "$1")
+  ));
+};
+
+// Returns null when the save may proceed. No If-Match/If-None-Match header means an
+// unguarded write (last write wins), kept for scripts.
+export const staleSaveCheck = (headers, currentHash) => {
+  const ifMatch = parseEntityTags(headers["if-match"]);
+  const ifNoneMatch = parseEntityTags(headers["if-none-match"]);
+  if (ifMatch) {
+    const ok = currentHash !== null && ifMatch.some((tag) => tag === "*" || tag === currentHash);
+    if (!ok) {
+      return { error: "stale-save", currentHash };
+    }
+  }
+  if (ifNoneMatch?.includes("*") && currentHash !== null) {
+    return { error: "stale-save", currentHash };
+  }
+  return null;
+};
+
+const readCurrent = async (filePath) => {
+  try {
+    const content = await fs.readFile(filePath);
+    return { content, hash: contentHash(content) };
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { content: null, hash: null };
+    }
+    throw error;
+  }
+};
 
 const send = (res, status, contentType, body) => {
   if (res.headersSent) {
@@ -117,6 +159,21 @@ export function createBoardApi({
   const clients = new Set();
   let watcher;
   let closed = false;
+
+  // Serializes check-then-write per board so two tabs can't both pass the same If-Match.
+  const boardLocks = new Map();
+  const withBoardLock = (key, fn) => {
+    const previous = boardLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    const settled = run.catch(() => {});
+    boardLocks.set(key, settled);
+    settled.then(() => {
+      if (boardLocks.get(key) === settled) {
+        boardLocks.delete(key);
+      }
+    });
+    return run;
+  };
 
   // XCLD_AUTO_EXPORT=save, or a folder export rule, keeps boards/.exports/<path>.mmd current.
   const exportBoard = async (name) => {
@@ -350,12 +407,13 @@ export function createBoardApi({
         const filePath = filePathFor(root, name, ".excalidraw");
 
         if (req.method === "GET") {
-          if (!existsSync(filePath)) {
+          const current = await readCurrent(filePath);
+          if (current.hash === null) {
             sendError(res, 404, "board-not-found", { name });
             return true;
           }
-          const content = await fs.readFile(filePath, "utf8");
-          send(res, 200, "application/json; charset=utf-8", content);
+          res.setHeader("ETag", etagFor(current.hash));
+          send(res, 200, "application/json; charset=utf-8", current.content);
           return true;
         }
 
@@ -377,12 +435,30 @@ export function createBoardApi({
             return true;
           }
           const persisted = body.endsWith("\n") ? body : `${body}\n`;
-          await writeAtomic(filePath, persisted);
-          const stat = await fs.stat(filePath);
-          signatures.set(`${name}.excalidraw`, `${stat.mtimeMs}:${stat.size}`);
+          // Hash what is on disk now, not what this server last wrote, so direct on-disk
+          // agent writes are detected too.
+          const result = await withBoardLock(filePath, async () => {
+            const current = await readCurrent(filePath);
+            const stale = staleSaveCheck(req.headers, current.hash);
+            if (stale) {
+              return { stale };
+            }
+            await writeAtomic(filePath, persisted);
+            const stat = await fs.stat(filePath);
+            signatures.set(`${name}.excalidraw`, `${stat.mtimeMs}:${stat.size}`);
+            return { hash: contentHash(persisted) };
+          });
+          if (result.stale) {
+            if (result.stale.currentHash) {
+              res.setHeader("ETag", etagFor(result.stale.currentHash));
+            }
+            sendJson(res, 409, result.stale);
+            return true;
+          }
           publish({ name, kind: "board", timestamp: Date.now() });
           await exportBoard(name);
-          sendJson(res, 200, { ok: true, hash: contentHash(persisted) });
+          res.setHeader("ETag", etagFor(result.hash));
+          sendJson(res, 200, { ok: true, hash: result.hash });
           return true;
         }
 

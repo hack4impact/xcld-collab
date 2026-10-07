@@ -217,6 +217,13 @@ export const validateRules = (records, file = "design-rules.csv") => {
   return { rules, diagnostics };
 };
 
+// Rules files print relative to the boards root (`examples/design-rules.csv`); a file outside it
+// (an XCLD_DESIGN_RULES path elsewhere) keeps its full path.
+export const rulesFileLabel = (file, boardsDir) => {
+  const relative = path.relative(path.resolve(boardsDir), path.resolve(file));
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? slash(relative) : slash(file);
+};
+
 const defaultRulesPath = (root, env = process.env) => env.XCLD_DESIGN_RULES ? path.resolve(env.XCLD_DESIGN_RULES) : path.join(root, "design-rules.csv");
 
 export const ruleFileCandidates = (boardsDir, board, env = process.env) => {
@@ -261,15 +268,16 @@ export const discoverRuleFiles = async (boardsDir, env = process.env) => {
   return files;
 };
 
-const loadRuleFile = async (file, { required = false } = {}) => {
+const loadRuleFile = async (file, { required = false, root } = {}) => {
+  const label = root ? rulesFileLabel(file, root) : file;
   try {
     const text = await readFile(file, "utf8");
-    const parsed = parseRulesCsv(text, file);
-    const validated = validateRules(parsed.records, file);
-    return { file, exists: true, rules: validated.rules, diagnostics: [...parsed.errors, ...validated.diagnostics] };
+    const parsed = parseRulesCsv(text, label);
+    const validated = validateRules(parsed.records, label);
+    return { file, label, exists: true, rules: validated.rules, diagnostics: [...parsed.errors, ...validated.diagnostics] };
   } catch (error) {
-    if (!required && error?.code === "ENOENT") return { file, exists: false, rules: [], diagnostics: [] };
-    return { file, exists: false, rules: [], diagnostics: [diagnostic("error", file, 1, error?.code === "ENOENT" ? "rules file not found" : error.message)] };
+    if (!required && error?.code === "ENOENT") return { file, label, exists: false, rules: [], diagnostics: [] };
+    return { file, label, exists: false, rules: [], diagnostics: [diagnostic("error", label, 1, error?.code === "ENOENT" ? "rules file not found" : error.message)] };
   }
 };
 
@@ -277,7 +285,7 @@ export const loadEffectiveRulesForBoard = async (board, boardsDir = process.env.
   const root = path.resolve(boardsDir);
   const candidates = ruleFileCandidates(root, board, env);
   const loaded = [];
-  for (const candidate of candidates) loaded.push(await loadRuleFile(candidate.file, { required: candidate.default && Boolean(env.XCLD_DESIGN_RULES) }));
+  for (const candidate of candidates) loaded.push(await loadRuleFile(candidate.file, { required: candidate.default && Boolean(env.XCLD_DESIGN_RULES), root }));
   const existing = loaded.filter((item) => item.exists || item.diagnostics.length);
   const effective = [...loaded].reverse().find((item) => item.exists || item.diagnostics.some((d) => d.severity === "error")) ?? { rules: [], file: null, diagnostics: [] };
   return {
@@ -285,6 +293,7 @@ export const loadEffectiveRulesForBoard = async (board, boardsDir = process.env.
     boardsDir: root,
     files: existing,
     effectiveFile: effective.exists ? effective.file : null,
+    effectiveLabel: effective.exists ? effective.label : null,
     rules: effective.exists ? effective.rules : [],
     diagnostics: existing.flatMap((item) => item.diagnostics),
   };
@@ -294,7 +303,7 @@ export const validateApplicableRules = async (board, boardsDir = process.env.XCL
   if (board) return loadEffectiveRulesForBoard(board, boardsDir, env);
   const files = await discoverRuleFiles(boardsDir, env);
   const loaded = [];
-  for (const file of files) loaded.push(await loadRuleFile(file, { required: path.resolve(file) === path.resolve(defaultRulesPath(path.resolve(boardsDir), env)) && Boolean(env.XCLD_DESIGN_RULES) }));
+  for (const file of files) loaded.push(await loadRuleFile(file, { required: path.resolve(file) === path.resolve(defaultRulesPath(path.resolve(boardsDir), env)) && Boolean(env.XCLD_DESIGN_RULES), root: boardsDir }));
   return { board: null, boardsDir: path.resolve(boardsDir), files: loaded, rules: loaded.flatMap((item) => item.rules), diagnostics: loaded.flatMap((item) => item.diagnostics) };
 };
 
@@ -435,7 +444,7 @@ export const formatBriefing = (loaded) => {
   if (!loaded.effectiveFile) {
     lines.push("No design-rules.csv applies; use free-form interpretation.");
   } else {
-    lines.push(`Effective file: ${slash(loaded.effectiveFile)}`);
+    lines.push(`Effective file: ${loaded.effectiveLabel ?? slash(loaded.effectiveFile)}`);
     const sections = [
       ["Draw", loaded.rules.filter((rule) => rule.kind === "draw")],
       ["Interpret", loaded.rules.filter((rule) => rule.kind === "interpret")],
@@ -488,7 +497,7 @@ export const checkBoardRules = async (board, boardsDir = process.env.XCLD_BOARDS
       open.push({ rule: rule.id, means: rule.means, instruct: rule.instruct, scope: slash(rule.file), id: element.id, type: element.type, label: elementLabel(element) || short(element.id) });
     }
   }
-  return { board, file, open, diagnostics: loaded.diagnostics, rulesFile: loaded.effectiveFile };
+  return { board, file, open, diagnostics: loaded.diagnostics, rulesFile: loaded.effectiveLabel };
 };
 
 export const formatCheckResult = (result) => {
