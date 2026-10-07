@@ -1,22 +1,31 @@
 // Versions and merge, server side: branch store (journal), per-board FIFO queue, the commit
-// step (the only writer of master), coalesced history, a base store, journal replay and
-// external-write adoption. Rules and layout: docs/DESIGN.md#versions-storage-and-commit-pipeline.
+// step (the only writer of master), coalesced history (checkpoints and deltas), a base store, a
+// per-board image file store, journal replay, commit retry and external-write adoption.
+// Rules and layout: docs/DESIGN.md#versions-storage-and-commit-pipeline.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { splitBoardPath } from "../../tools/board-path.mjs";
+import { applyDelta, CHECKPOINT_EVERY, encodeDelta, gzipText, HISTORY_SCHEMA, historyEntryFiles, readRecordFile } from "../../tools/history.mjs";
 import { mergeBoard } from "../../tools/merge.mjs";
 
 export const IDLE_CLOSE_MS = 3 * 60 * 1000;
 export const BASE_TTL_MS = 24 * 60 * 60 * 1000;
+export const RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 10_000];
 const GC_INTERVAL_MS = 10 * 60 * 1000;
 const STATE_SCHEMA = 1;
+// State `records`: 2 = images live in the file store, not in records.
+const RECORD_SCHEMA = 2;
+const TIMING_LOG_LIMIT = 20_000;
+// Slice-2 records embed images; only files this large can hold one worth moving out.
+const MIGRATE_MIN_BYTES = 32 * 1024;
 
 export const contentHash = (content) => createHash("sha256").update(content).digest("hex");
 
 // Strong comparison only: W/ tags never match. Bare (unquoted) hashes are accepted for scripts.
-const parseEntityTags = (header) => {
-  if (header === undefined) {
+export const parseEntityTags = (header) => {
+  if (header === undefined || header === null) {
     return null;
   }
   const value = Array.isArray(header) ? header.join(",") : String(header);
@@ -25,8 +34,7 @@ const parseEntityTags = (header) => {
   ));
 };
 
-// Returns null when the save may proceed. No If-Match/If-None-Match header means an
-// unguarded write (last write wins), kept for scripts.
+// Returns null when the save may proceed. Kept for `If-Match: *` (the board must exist).
 export const staleSaveCheck = (headers, currentHash) => {
   const ifMatch = parseEntityTags(headers["if-match"]);
   const ifNoneMatch = parseEntityTags(headers["if-none-match"]);
@@ -42,12 +50,14 @@ export const staleSaveCheck = (headers, currentHash) => {
   return null;
 };
 
-// Author keys (lead, 2026-10-06). Display names are not unique; the suffix after `#` is.
+// Author keys (lead, 2026-10-06/07). Display names are not unique; the suffix after `#` is.
+// `init` labels the first snapshot of a board that existed before versions.
 const AUTHOR_FORMS = [
   { kind: "human", pattern: /^human:([^\u0000-\u001f]{1,100})#([A-Za-z0-9_-]{1,64})$/ },
   { kind: "agent", pattern: /^agent:([^\u0000-\u001f]{1,100})#([A-Za-z0-9_.-]{1,64})$/ },
   { kind: "cli", pattern: /^cli:([^\u0000-\u001f]{1,100})$/ },
   { kind: "external", pattern: /^external$/ },
+  { kind: "init", pattern: /^init$/ },
 ];
 
 export const parseAuthorKey = (key) => {
@@ -57,7 +67,7 @@ export const parseAuthorKey = (key) => {
   for (const { kind, pattern } of AUTHOR_FORMS) {
     const match = pattern.exec(key);
     if (match) {
-      return { kind, name: kind === "external" ? "external" : match[1] };
+      return { kind, name: match[1] ?? kind };
     }
   }
   return null;
@@ -83,6 +93,9 @@ const sortableId = (time) => {
 };
 
 const utcStamp = (time) => new Date(time).toISOString().replace(/[-:]/g, "");
+const delay = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms).unref?.();
+});
 
 const readText = async (file) => {
   try {
@@ -100,6 +113,25 @@ const readJson = async (file) => {
   return text === null ? null : JSON.parse(text);
 };
 
+// A JSON file read right after it was replaced can come back short on a Docker Desktop bind
+// mount (seen under load). Re-read until it parses, a few times, then return what was read.
+export const readSettledJsonText = async (file, attempts = 5) => {
+  let text = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    text = await readText(file);
+    if (text === null) {
+      return null;
+    }
+    try {
+      JSON.parse(text);
+      return text;
+    } catch {
+      await delay(20 * (attempt + 1));
+    }
+  }
+  return text;
+};
+
 // Windows can refuse a rename while another process (the watcher, an editor) has the target
 // open; retry briefly.
 const renameWithRetry = async (from, to) => {
@@ -111,19 +143,27 @@ const renameWithRetry = async (from, to) => {
       if (attempt >= 8 || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+      await delay(10 * (attempt + 1));
     }
   }
 };
 
-export const writeFileAtomic = async (target, content, { sync = false } = {}) => {
-  await fs.mkdir(path.dirname(target), { recursive: true });
+// Returns the written file's stat when `stat` is set (taken on the open handle: the rename keeps
+// inode, mtime and size, and it saves a round trip).
+export const writeFileAtomic = async (target, content, { sync = false, mkdir = true, stat = false } = {}) => {
+  if (mkdir) {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+  }
   const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await fs.open(temp, "w");
+  let written = null;
   try {
     await handle.writeFile(content, "utf8");
     if (sync) {
       await handle.sync();
+    }
+    if (stat) {
+      written = await handle.stat();
     }
   } finally {
     await handle.close();
@@ -134,6 +174,7 @@ export const writeFileAtomic = async (target, content, { sync = false } = {}) =>
     await fs.rm(temp, { force: true });
     throw error;
   }
+  return written;
 };
 
 const unlinkIfExists = async (file) => {
@@ -148,14 +189,18 @@ const parseScene = (text) => {
   return scene;
 };
 
-const serializeScene = (template, { elements, appState, files }) => `${JSON.stringify({
+// Master's bytes as the commit step writes them: Excalidraw's own serializeAsJSON layout, so a
+// tab's save keeps its exact text and hash.
+export const canonicalText = (scene) => `${JSON.stringify(scene, null, 2)}\n`;
+
+const sceneObject = (template, { elements, appState, files }) => ({
   type: "excalidraw",
   version: typeof template?.version === "number" ? template.version : 2,
   source: typeof template?.source === "string" ? template.source : "xcld-collab",
   elements,
   appState: appState ?? {},
   files: files ?? {},
-}, null, 2)}\n`;
+});
 
 // The open entry accumulates applied changes per unit: the first kind sticks ("added" then
 // "changed" is still "added"), the latest label wins, and added-then-deleted drops out.
@@ -173,6 +218,29 @@ const foldApplied = (previous, next) => {
 };
 
 const validateElements = (elements) => Array.isArray(elements) && elements.every((element) => element && typeof element === "object" && typeof element.id === "string" && element.id !== "");
+const validateFiles = (files) => files === undefined || files === null || (typeof files === "object" && !Array.isArray(files) && Object.values(files).every((file) => file && typeof file === "object"));
+
+const isRetryable = (error) => typeof error?.code === "string" && /^E[A-Z0-9]+$/.test(error.code);
+
+// Per-stage timings (XCLD_TIMING=1). A stage that runs several times adds up.
+const stopwatch = (enabled) => {
+  if (!enabled) {
+    return { run: (_stage, fn) => fn(), add: () => {}, stages: null };
+  }
+  const stages = {};
+  const add = (stage, ms) => {
+    stages[stage] = (stages[stage] ?? 0) + ms;
+  };
+  const run = async (stage, fn) => {
+    const start = performance.now();
+    try {
+      return await fn();
+    } finally {
+      add(stage, performance.now() - start);
+    }
+  };
+  return { run, add, stages };
+};
 
 /**
  * @param {object} options
@@ -180,39 +248,114 @@ const validateElements = (elements) => Array.isArray(elements) && elements.every
  * @param {() => number} [options.now]
  * @param {number} [options.idleMs] Close an open human history entry after this much idle time.
  * @param {number} [options.baseTtlMs] Keep a served or pinned base this long after it was last served.
+ * @param {number[]} [options.retryDelaysMs] Backoff between attempts of a commit that failed on an I/O error; the last value repeats.
+ * @param {number} [options.checkpointEvery] History entries per full checkpoint (the rest are deltas); default 20.
+ * @param {boolean} [options.timing] Record per-stage timings (`timings()`); default XCLD_TIMING=1.
  * @param {(name: string) => Promise<void> | void} [options.onMasterWritten] After the commit step writes master.
  * @param {(event: object) => Promise<void> | void} [options.onCommitted] Post-commit hook (Hook 3), run after the commit, not awaited by the queue.
  * @param {{ onStep?: (step: string, info: object) => Promise<void> | void }} [options.testHooks]
  */
 export function createVersionStore({
   boardsDir,
+  stateDir,
   now = Date.now,
   idleMs = IDLE_CLOSE_MS,
   baseTtlMs = BASE_TTL_MS,
+  retryDelaysMs = RETRY_DELAYS_MS,
+  checkpointEvery = CHECKPOINT_EVERY,
+  timing = process.env.XCLD_TIMING === "1",
   onMasterWritten = () => {},
   onCommitted = () => {},
   testHooks = {},
 }) {
   const root = path.resolve(boardsDir);
-  const xcld = path.join(root, ".xcld");
+  const defaultStateDir = path.join(root, ".xcld");
+  // A stateDir moves the journal, history and state off the boards folder. Compose picks it with
+  // XCLD_HISTORY (tools/storage.mjs): <cache>/history on Linux, a named volume on Docker Desktop,
+  // where every file operation on a bind mount is a slow round trip.
+  const xcld = stateDir ? path.resolve(stateDir) : defaultStateDir;
   const boards = new Map();
   const queues = new Map();
   const pendingRefs = new Map();
   const pendingExternal = new Map();
+  const pendingCount = new Map();
+  const failures = new Map();
   const idleTimers = new Map();
   const lastGc = new Map();
+  const knownFiles = new Map();
+  const timingLog = [];
+  const sleepers = new Set();
   let closed = false;
   let started = null;
 
   // Throws (statusCode 400) on an invalid board path, so no name escapes boardsDir.
   const segments = (name) => splitBoardPath(name);
-  const masterPath = (name) => path.join(root, ...segments(name).slice(0, -1), `${segments(name).at(-1)}.excalidraw`);
+  const leafPath = (dir, name, extension) => path.join(dir, ...segments(name).slice(0, -1), `${segments(name).at(-1)}${extension}`);
+  const masterPath = (name) => leafPath(root, name, ".excalidraw");
   const branchDir = (name) => path.join(xcld, "branches", ...segments(name));
   const historyDir = (name) => path.join(xcld, "history", ...segments(name));
-  const basePath = (name, version) => path.join(xcld, "bases", ...segments(name), `${version}.excalidraw`);
-  const statePath = (name) => path.join(xcld, "state", ...segments(name).slice(0, -1), `${segments(name).at(-1)}.json`);
+  const basesDir = (name) => path.join(xcld, "bases", ...segments(name));
+  const basePath = (name, version) => path.join(basesDir(name), `${version}.excalidraw`);
+  const filesDir = (name) => path.join(xcld, "files", ...segments(name));
+  const statePath = (name) => leafPath(path.join(xcld, "state"), name, ".json");
   const step = async (name, info) => {
     await testHooks.onStep?.(name, info);
+  };
+
+  // Every file operation costs a round trip on a Docker Desktop bind mount, so folders known to
+  // exist aren't created again.
+  const knownDirs = new Set();
+  const writeAtomic = async (target, content, options = {}) => {
+    const dir = path.dirname(target);
+    if (!knownDirs.has(dir)) {
+      await fs.mkdir(dir, { recursive: true });
+      knownDirs.add(dir);
+    }
+    try {
+      return await writeFileAtomic(target, content, { ...options, mkdir: false });
+    } catch (error) {
+      knownDirs.delete(dir);
+      throw error;
+    }
+  };
+
+  // Master's identity without reading it: inode (atomic writes replace it), mtime and size.
+  const masterSignature = async (name) => {
+    try {
+      const stat = await fs.stat(masterPath(name));
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  };
+  // Master as it is on disk. Skips reading and hashing it while its signature is the one seen
+  // with the committed version (the watcher relies on the same signature).
+  const diskState = async (board) => {
+    const signature = await masterSignature(board.name);
+    if (signature !== null && board.version && signature === board.masterSig) {
+      return { hash: board.version, text: null, signature };
+    }
+    const disk = await readMasterFile(board.name);
+    if (disk.hash !== null && disk.hash === board.version) {
+      board.masterSig = signature;
+    }
+    return { ...disk, signature };
+  };
+
+  // Recently committed or read versions, by id: stale bases are usually among them.
+  const RECENT_VERSIONS = 8;
+  const remember = (board, version, scene) => {
+    if (!version || !scene) {
+      return;
+    }
+    board.recent.delete(version);
+    board.recent.set(version, scene);
+    while (board.recent.size > RECENT_VERSIONS) {
+      board.recent.delete(board.recent.keys().next().value);
+    }
   };
 
   const refKey = (name, version) => `${name}\u0000${version}`;
@@ -232,6 +375,14 @@ export function createVersionStore({
     }
   };
   const isReferenced = (name, version) => pendingRefs.has(refKey(name, version));
+  const countPending = (name, delta) => {
+    const count = (pendingCount.get(name) ?? 0) + delta;
+    if (count > 0) {
+      pendingCount.set(name, count);
+    } else {
+      pendingCount.delete(name);
+    }
+  };
 
   // One merge in flight per board; boards run in parallel.
   const enqueue = (name, job) => {
@@ -248,8 +399,125 @@ export function createVersionStore({
   };
 
   const readMasterFile = async (name) => {
-    const text = await readText(masterPath(name));
+    const text = await readSettledJsonText(masterPath(name));
     return text === null ? { text: null, hash: null } : { text, hash: contentHash(text) };
+  };
+
+  // Images: stored once per board under files/<path>/<fileId>.<contentHash16>.json; branch,
+  // history and base records hold [fileId, key] references.
+  const fileKey = (id, file) => `${authorKeySafe(id)}.${contentHash(typeof file.dataURL === "string" ? file.dataURL : JSON.stringify(file)).slice(0, 16)}`;
+  const boardFiles = (name) => {
+    let known = knownFiles.get(name);
+    if (!known) {
+      known = new Map();
+      knownFiles.set(name, known);
+    }
+    return known;
+  };
+  const storeFiles = async (name, files) => {
+    const refs = [];
+    const known = boardFiles(name);
+    for (const [id, file] of Object.entries(files ?? {})) {
+      const key = fileKey(id, file);
+      refs.push([id, key]);
+      if (!known.has(key)) {
+        const target = path.join(filesDir(name), `${key}.json`);
+        const exists = await fs.stat(target).then(() => true, () => false);
+        if (!exists) {
+          await writeAtomic(target, JSON.stringify(file), { sync: true });
+        }
+        known.set(key, file);
+      }
+    }
+    return refs;
+  };
+  const loadFiles = async (name, refs) => {
+    const files = {};
+    const known = boardFiles(name);
+    for (const [id, key] of refs ?? []) {
+      let file = known.get(key);
+      if (!file) {
+        file = await readJson(path.join(filesDir(name), `${key}.json`));
+        if (!file) {
+          throw new Error(`image ${id} of ${name} is missing from the file store`);
+        }
+        known.set(key, file);
+      }
+      files[id] = file;
+    }
+    return files;
+  };
+
+  // A history or base record: the scene with `files` emptied plus
+  // `xcld: { schema, version, files: [[fileId, key]] }`. Slice-2 records are plain master
+  // text, checked against their hash. `text` (the scene's canonical text) saves serializing a
+  // board without images twice.
+  const writeRecord = async (name, target, version, scene, text = null) => {
+    const refs = await storeFiles(name, scene.files);
+    const xcldInfo = { schema: RECORD_SCHEMA, version, files: refs };
+    const record = text !== null && !refs.length && text.endsWith("\n}\n")
+      ? `${text.slice(0, -3)},\n  "xcld": ${JSON.stringify(xcldInfo)}\n}\n`
+      : canonicalText({ ...scene, files: {}, xcld: xcldInfo });
+    await writeAtomic(target, record);
+  };
+  const readRecord = async (name, file, version) => {
+    const text = await readText(file);
+    if (text === null) {
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (parsed?.xcld) {
+      if (parsed.xcld.version !== version) {
+        return null;
+      }
+      const { xcld: info, ...scene } = parsed;
+      scene.files = await loadFiles(name, info.files);
+      return { scene };
+    }
+    return contentHash(text) === version && Array.isArray(parsed?.elements) ? { scene: parsed, text } : null;
+  };
+
+  // History v2 records (tools/history.mjs), gzipped. A checkpoint is a record as above with
+  // `record: "checkpoint"`; a delta holds the changes against its parent version.
+  const writeCheckpoint = async (name, target, version, scene, text = null) => {
+    const refs = await storeFiles(name, scene.files);
+    const info = { schema: HISTORY_SCHEMA, record: "checkpoint", version, depth: 0, files: refs };
+    const record = text !== null && !refs.length && text.endsWith("\n}\n")
+      ? `${text.slice(0, -3)},\n  "xcld": ${JSON.stringify(info)}\n}\n`
+      : canonicalText({ ...scene, files: {}, xcld: info });
+    await writeAtomic(target, await gzipText(record));
+  };
+  const writeDelta = async (name, target, { version, parent, depth, parentScene, scene }) => {
+    const refs = await storeFiles(name, scene.files);
+    const record = { xcld: { schema: HISTORY_SCHEMA, record: "delta", version, parent, depth, files: refs }, ...encodeDelta(parentScene, scene) };
+    await writeAtomic(target, await gzipText(JSON.stringify(record)));
+  };
+  // An entry's version: a delta rebuilt on its parent, a checkpoint, or a full record written
+  // before history v2 (still valid as a checkpoint).
+  const readEntry = async (board, entry, version, guard) => {
+    const files = entryFiles(board.name, entry);
+    const delta = await readRecordFile(files.delta);
+    if (delta?.data?.xcld?.version === version) {
+      const parent = await versionScene(board, delta.data.xcld.parent, { keep: false, guard: guard + 1 });
+      if (parent) {
+        const scene = applyDelta(parent.scene, delta.data);
+        scene.files = await loadFiles(board.name, delta.data.xcld.files);
+        return { scene };
+      }
+      console.warn(`history of ${board.name}: the parent of entry ${entry} is not readable`);
+    }
+    const checkpoint = await readRecordFile(files.checkpoint);
+    if (checkpoint?.data?.xcld?.version === version) {
+      const { xcld: info, ...scene } = checkpoint.data;
+      scene.files = await loadFiles(board.name, info.files);
+      return { scene };
+    }
+    return readRecord(board.name, files.legacy, version);
   };
 
   const writeState = async (board) => {
@@ -262,14 +530,17 @@ export function createVersionStore({
       open: board.open,
       mermaid: board.mermaid,
       lastEntryAt: board.lastEntryAt,
+      records: board.records ?? RECORD_SCHEMA,
+      // How many deltas lead from the nearest checkpoint to the entry holding `version`.
+      depth: board.depth ?? null,
     };
-    await writeFileAtomic(statePath(board.name), `${JSON.stringify(state)}\n`, { sync: true });
+    await writeAtomic(statePath(board.name), `${JSON.stringify(state)}\n`, { sync: true });
   };
 
-  const entryFiles = (name, entry) => ({
-    content: path.join(historyDir(name), `${entry}.excalidraw`),
-    meta: path.join(historyDir(name), `${entry}.meta.json`),
-  });
+  const entryFiles = (name, entry) => {
+    const files = historyEntryFiles(historyDir(name), entry);
+    return { ...files, content: files.legacy };
+  };
 
   const historyIndex = async (board) => {
     if (!board.index) {
@@ -285,52 +556,88 @@ export function createVersionStore({
       for (const file of names.filter((item) => item.endsWith(".meta.json")).sort()) {
         try {
           const meta = await readJson(path.join(historyDir(board.name), file));
-          if (meta?.version) {
+          // Meta-only entries (`record: "none"`, losers of a write that changed nothing) have no
+          // version of their own.
+          if (meta?.version && meta.record !== "none") {
             index.set(meta.version, file.slice(0, -".meta.json".length));
           }
         } catch {}
+      }
+      // The open entry's meta is written when it closes; until then it lives in the state.
+      if (board.open) {
+        index.set(board.open.version, board.open.entry);
       }
       board.index = index;
     }
     return board.index;
   };
 
-  // Resolves a version id (the sha256 of master's bytes, the ETag) to its text: current
-  // master, then the base store, then history. Content is verified against the id.
-  const versionText = async (board, version) => {
+  // Resolves a version id (the sha256 of master's bytes, the ETag) to its scene: the cached
+  // master, master on disk, the base store, then history. `text` is set only when the exact
+  // master bytes are known. `keep: false` (a delta's parent) leaves the recent cache alone.
+  const versionScene = async (board, version, { keep = true, guard = 0 } = {}) => {
     if (!version) {
       return null;
     }
-    const candidates = [];
+    if (guard > 4 * Math.max(checkpointEvery, CHECKPOINT_EVERY)) {
+      throw new Error(`history of ${board.name}: delta chain too long at ${version}`);
+    }
+    if (board.cache?.version === version) {
+      return { scene: board.cache.scene, text: board.cache.text ?? null };
+    }
+    if (board.recent.has(version)) {
+      return { scene: board.recent.get(version), text: null };
+    }
     if (version === board.version) {
-      candidates.push(masterPath(board.name));
+      const disk = await readMasterFile(board.name);
+      if (disk.hash === version) {
+        try {
+          return { scene: parseScene(disk.text), text: disk.text };
+        } catch {}
+      }
     }
-    candidates.push(basePath(board.name, version));
-    const entry = (await historyIndex(board)).get(version);
-    if (entry) {
-      candidates.push(entryFiles(board.name, entry).content);
+    const record = await readRecord(board.name, basePath(board.name, version), version);
+    if (record) {
+      if (keep) {
+        remember(board, version, record.scene);
+      }
+      return record;
     }
-    if (board.last?.entry) {
-      candidates.push(entryFiles(board.name, board.last.entry).content);
-    }
-    for (const file of candidates) {
-      const text = await readText(file);
-      if (text !== null && contentHash(text) === version) {
-        return text;
+    const entries = [...new Set([(await historyIndex(board)).get(version), board.last?.entry].filter(Boolean))];
+    for (const entry of entries) {
+      const found = await readEntry(board, entry, version, guard);
+      if (found) {
+        if (keep) {
+          remember(board, version, found.scene);
+        }
+        return found;
       }
     }
     return null;
   };
 
-  const saveBase = async (board, version, text) => {
+  const saveBase = async (board, version, scene) => {
     const file = basePath(board.name, version);
     const stamp = new Date(now());
+    board.baseCopies.add(version);
     try {
       await fs.utimes(file, stamp, stamp);
       return;
     } catch {}
-    await writeFileAtomic(file, text);
+    await writeRecord(board.name, file, version, scene);
     await fs.utimes(file, stamp, stamp).catch(() => {});
+  };
+
+  // A base copy of a version that is now a closed history entry is redundant: history resolves
+  // it. Dropped once the closing state is durable (the GC catches what a restart missed).
+  const dropRedundantBases = async (board) => {
+    for (const version of board.redundantBases) {
+      board.redundantBases.delete(version);
+      board.baseCopies.delete(version);
+      if (version !== board.open?.version) {
+        await unlinkIfExists(basePath(board.name, version)).catch(() => {});
+      }
+    }
   };
 
   const gcBases = async (board, force = false) => {
@@ -340,7 +647,7 @@ export function createVersionStore({
     lastGc.set(board.name, now());
     let files = [];
     try {
-      files = await fs.readdir(path.dirname(basePath(board.name, "x")));
+      files = await fs.readdir(basesDir(board.name));
     } catch {
       return;
     }
@@ -350,12 +657,50 @@ export function createVersionStore({
         continue;
       }
       try {
+        const entry = (await historyIndex(board)).get(version);
         const stat = await fs.stat(basePath(board.name, version));
-        if (now() - stat.mtimeMs > baseTtlMs) {
+        if ((entry && entry !== board.open?.entry) || now() - stat.mtimeMs > baseTtlMs) {
           await unlinkIfExists(basePath(board.name, version));
+          board.baseCopies.delete(version);
         }
       } catch {}
     }
+  };
+
+  // Slice-2 history and base records embed images; move them to the file store. Safe to
+  // interrupt: a record is replaced atomically, and both layouts stay readable.
+  const migrateRecords = async (board) => {
+    const candidates = [];
+    const index = await historyIndex(board);
+    for (const [version, entry] of index) {
+      candidates.push({ file: entryFiles(board.name, entry).content, version });
+    }
+    try {
+      for (const file of await fs.readdir(basesDir(board.name))) {
+        if (file.endsWith(".excalidraw")) {
+          candidates.push({ file: path.join(basesDir(board.name), file), version: file.slice(0, -".excalidraw".length) });
+        }
+      }
+    } catch {}
+    for (const { file, version } of candidates) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size < MIGRATE_MIN_BYTES) {
+          continue;
+        }
+        const text = await readText(file);
+        const parsed = JSON.parse(text);
+        if (parsed.xcld || !parsed.files || !Object.keys(parsed.files).length || contentHash(text) !== version) {
+          continue;
+        }
+        await writeRecord(board.name, file, version, parsed);
+        await fs.utimes(file, stat.atime, stat.mtime).catch(() => {});
+      } catch (error) {
+        console.warn(`migrating ${path.relative(root, file)} failed: ${error.message}`);
+      }
+    }
+    board.records = RECORD_SCHEMA;
+    await writeState(board);
   };
 
   const clearIdle = (name) => {
@@ -374,11 +719,13 @@ export function createVersionStore({
     const timer = setTimeout(() => {
       idleTimers.delete(board.name);
       enqueue(board.name, async () => {
-        if (!closed && board.open && now() - board.open.lastCommitAt >= idleMs) {
-          await closeOpenEntry(board, "idle");
-          await writeState(board);
-        } else {
-          scheduleIdle(board);
+        const current = boards.get(board.name);
+        if (!closed && current?.open && now() - current.open.lastCommitAt >= idleMs) {
+          await closeOpenEntry(current, "idle");
+          await writeState(current);
+          await dropRedundantBases(current);
+        } else if (current) {
+          scheduleIdle(current);
         }
       }).catch((error) => console.warn(`closing idle history entry for ${board.name} failed: ${error.message}`));
     }, wait);
@@ -386,7 +733,7 @@ export function createVersionStore({
     idleTimers.set(board.name, timer);
   };
 
-  const entryMetaFile = (board, open, closedBy) => ({
+  const entryMetaFile = (open, closedBy) => ({
     version: open.version,
     author: open.author,
     displayName: open.displayName,
@@ -400,6 +747,9 @@ export function createVersionStore({
     lastCommitAt: open.lastCommitAt,
     lastBranchId: open.lastBranchId,
     kind: open.kind,
+    // History v2: `delta` or `checkpoint`, and the number of deltas back to a checkpoint.
+    record: open.record ?? "checkpoint",
+    depth: open.depth ?? 0,
   });
 
   // Rewrites the open entry's meta as closed; the caller writes the state afterwards.
@@ -407,14 +757,25 @@ export function createVersionStore({
     if (!board.open) {
       return false;
     }
-    await writeFileAtomic(entryFiles(board.name, board.open.entry).meta, `${JSON.stringify(entryMetaFile(board, board.open, reason), null, 2)}\n`);
+    await writeAtomic(entryFiles(board.name, board.open.entry).meta, `${JSON.stringify(entryMetaFile(board.open, reason), null, 2)}\n`);
+    if (board.baseCopies.has(board.open.version)) {
+      board.redundantBases.add(board.open.version);
+    }
     board.open = null;
     clearIdle(board.name);
     return true;
   };
 
+  const branchFile = (branch) => path.join(branchDir(branch.board), `${authorKeySafe(branch.author)}.${branch.id}.json`);
+
   const loadBoard = async (name) => {
     let board = boards.get(name);
+    if (board) {
+      return board;
+    }
+    // A state dir migration (start) must come first.
+    await start();
+    board = boards.get(name);
     if (board) {
       return board;
     }
@@ -427,7 +788,17 @@ export function createVersionStore({
       open: state?.open ?? null,
       mermaid: state?.mermaid ?? null,
       lastEntryAt: state?.lastEntryAt ?? 0,
+      records: state ? state.records ?? 1 : RECORD_SCHEMA,
+      // Unknown for a state written before history v2: its next entry is a checkpoint.
+      depth: Number.isInteger(state?.depth) ? state.depth : null,
       index: null,
+      cache: null,
+      masterSig: null,
+      recent: new Map(),
+      // The open entry's parent version and scene (its delta is taken against it).
+      chainBase: null,
+      baseCopies: new Set(),
+      redundantBases: new Set(),
     };
     // Crash between the state write (the commit point) and the master write: the committed
     // branch's file is still in the journal, so roll master forward. Once the branch file is
@@ -436,14 +807,18 @@ export function createVersionStore({
       const disk = await readMasterFile(name);
       const pending = await fs.stat(branchFile({ board: name, author: board.last.author, id: board.last.branchId })).then(() => true, () => false);
       if (disk.hash !== board.version && pending) {
-        const text = await versionText(board, board.version);
-        if (text !== null) {
-          await writeFileAtomic(masterPath(name), text);
+        const found = await versionScene(board, board.version);
+        const text = found ? found.text ?? canonicalText(found.scene) : null;
+        if (text !== null && contentHash(text) === board.version) {
+          await writeAtomic(masterPath(name), text);
           await onMasterWritten(name);
         }
       }
     }
     boards.set(name, board);
+    if (board.records < RECORD_SCHEMA) {
+      await migrateRecords(board);
+    }
     if (board.open) {
       if (now() - board.open.lastCommitAt >= idleMs) {
         await closeOpenEntry(board, "idle");
@@ -456,21 +831,25 @@ export function createVersionStore({
     return board;
   };
 
-  const branchFile = (branch) => path.join(branchDir(branch.board), `${authorKeySafe(branch.author)}.${branch.id}.json`);
-
   const archiveBranch = async (branch) => {
     await step("before-archive", { branch });
-    await unlinkIfExists(branchFile(branch));
-    releaseRef(branch.board, branch.base);
-    if (branch.author === "external" && branch.rawHash) {
-      pendingExternal.get(branch.board)?.delete(branch.rawHash);
+    try {
+      await unlinkIfExists(branchFile(branch));
+    } finally {
+      releaseRef(branch.board, branch.base);
+      countPending(branch.board, -1);
+      if (branch.rawHash) {
+        pendingExternal.get(branch.board)?.delete(branch.rawHash);
+      }
     }
   };
 
   // Hook 0: validate, stamp, persist (the journal). The caller enqueues the commit. The base
   // is referenced before the branch is written, so a coalescing commit keeps it; whether it
   // still resolves is decided in the commit step.
-  const ingest = async (name, input) => {
+  const ingest = async (name, input, watch = stopwatch(false)) => {
+    const started = performance.now();
+    segments(name);
     const author = parseAuthorKey(input.author);
     if (!author) {
       return { error: "invalid-author" };
@@ -484,47 +863,58 @@ export function createVersionStore({
         return { error: "invalid-elements" };
       }
     }
+    if (!validateFiles(input.files)) {
+      return { error: "invalid-files" };
+    }
     if (input.base !== null && input.base !== undefined && typeof input.base !== "string") {
       return { error: "invalid-base" };
     }
     const receivedAt = now();
     const writtenAt = typeof input.writtenAt === "number" && Number.isFinite(input.writtenAt) ? input.writtenAt : receivedAt;
     const base = input.base ?? null;
+    watch.add("validate", performance.now() - started);
     const branch = {
       schema: STATE_SCHEMA,
       id: sortableId(receivedAt),
       board: name,
       author: input.author,
-      displayName: typeof input.displayName === "string" && input.displayName ? input.displayName : author.name,
+      displayName: typeof input.displayName === "string" && input.displayName ? input.displayName.slice(0, 100) : author.name,
       base,
       writtenAt,
       receivedAt,
       kind,
       elements: input.elements ?? null,
       ...(input.appState !== undefined ? { appState: input.appState } : {}),
-      ...(input.files !== undefined ? { files: input.files } : {}),
-      ...(input.raw !== undefined ? { raw: input.raw, rawHash: contentHash(input.raw) } : {}),
+      ...(input.template !== undefined ? { template: { version: input.template.version, source: input.template.source } } : {}),
+      ...(input.rawHash !== undefined ? { rawHash: input.rawHash } : {}),
       ...(input.ops !== undefined ? { ops: input.ops } : {}),
       ...(input.mermaid !== undefined ? { mermaid: input.mermaid } : {}),
       ...(input.legacy !== undefined ? { legacy: input.legacy } : {}),
     };
     addRef(name, base);
+    countPending(name, 1);
     try {
-      await writeFileAtomic(branchFile(branch), `${JSON.stringify(branch)}\n`, { sync: true });
+      await watch.run("journal", async () => {
+        if (input.files !== undefined && input.files !== null) {
+          branch.fileRefs = await storeFiles(name, input.files);
+        }
+        await writeAtomic(branchFile(branch), `${JSON.stringify(branch)}\n`, { sync: true });
+      });
     } catch (error) {
       releaseRef(name, base);
+      countPending(name, -1);
       throw error;
     }
     await step("after-ingest", { branch });
-    return { branch };
+    return { branch, ingestedAt: performance.now() };
   };
 
   // Adopts a master file changed outside the commit step as an `external` branch based on the
-  // last committed version. Runs inside the board's queue. Returns the master file as read
-  // (the commit compares against it, so a write or delete landing later is never undone)
-  // and the adoption's commit result, if any.
-  const syncExternal = async (board, current = null) => {
-    const disk = await readMasterFile(board.name);
+  // last committed version (`init` for a board that existed before versions). Runs inside the
+  // board's queue. Returns the master file as read (the commit compares against it, so a write
+  // or delete landing later is never undone) and the adoption's commit result, if any.
+  const syncExternal = async (board, current = null, { firstTouch = "init" } = {}) => {
+    const disk = await diskState(board);
     if (disk.hash === board.version) {
       return { disk, result: null };
     }
@@ -532,23 +922,29 @@ export function createVersionStore({
       // Board file deleted outside: history stays, the next commit starts a new board.
       await closeOpenEntry(board, "deleted");
       board.version = null;
+      board.depth = null;
+      board.chainBase = null;
+      board.cache = null;
+      board.masterSig = null;
       await writeState(board);
       return { disk, result: null };
     }
-    if ((current?.author === "external" && current.rawHash === disk.hash) || pendingExternal.get(board.name)?.has(disk.hash)) {
+    if ((current?.rawHash && current.rawHash === disk.hash) || pendingExternal.get(board.name)?.has(disk.hash)) {
       return { disk, result: null };
     }
-    const ingested = await ingestExternal(board, disk, board.version);
+    const ingested = await ingestExternal(board, disk, board.version, board.version === null && !board.last ? firstTouch : "external");
     if (!ingested) {
       return { disk, result: null };
     }
-    const result = await commitBranch(board, ingested.branch, { diskAtStart: disk });
+    const { finish, ...result } = await commitBranch(board, ingested.branch, { diskAtStart: disk });
+    await finish?.();
     void postCommit(board.name, result);
     return { disk, result };
   };
-  // Journals a master file written outside the commit step as an `external` branch: base is
-  // the version it overwrote, write time is the file's mtime.
-  const ingestExternal = async (board, disk, base) => {
+
+  // Journals a master file written outside the commit step as a branch: base is the version it
+  // overwrote, write time is the file's mtime.
+  const ingestExternal = async (board, disk, base, author = "external") => {
     let scene;
     try {
       scene = parseScene(disk.text);
@@ -556,7 +952,7 @@ export function createVersionStore({
       console.warn(`board ${board.name} changed on disk but isn't valid Excalidraw JSON; not adopted`);
       return null;
     }
-    if (!validateElements(scene.elements)) {
+    if (!validateElements(scene.elements) || !validateFiles(scene.files)) {
       console.warn(`board ${board.name} changed on disk with elements lacking ids; not adopted`);
       return null;
     }
@@ -565,14 +961,15 @@ export function createVersionStore({
       writtenAt = (await fs.stat(masterPath(board.name))).mtimeMs;
     } catch {}
     const ingested = await ingest(board.name, {
-      author: "external",
+      author,
       base,
       writtenAt,
       kind: "json",
       elements: scene.elements,
       appState: scene.appState,
       files: scene.files,
-      raw: disk.text,
+      template: scene,
+      rawHash: disk.hash,
     });
     if (ingested.error) {
       return null;
@@ -593,7 +990,7 @@ export function createVersionStore({
   };
 
   const rememberExternal = (branch) => {
-    if (branch.author === "external" && branch.rawHash) {
+    if (branch.rawHash) {
       const set = pendingExternal.get(branch.board) ?? new Set();
       set.add(branch.rawHash);
       pendingExternal.set(branch.board, set);
@@ -602,80 +999,159 @@ export function createVersionStore({
 
   const legacyStale = (legacy, currentHash) => staleSaveCheck({ "if-match": legacy.ifMatch ?? undefined, "if-none-match": legacy.ifNoneMatch ?? undefined }, currentHash) !== null;
 
+  // A write that left master as it was because every unit it changed lost: its losers fold into
+  // the author's open entry, or go into a meta-only entry (`record: "none"`, no version of its
+  // own; the history index skips it). The caller writes the state, which also marks the branch
+  // committed for a replay.
+  const keepUnchangedLosers = async (board, branch, base, overwritten) => {
+    const committedAt = now();
+    if (board.open && board.open.author === branch.author) {
+      board.open = { ...board.open, overwritten: [...board.open.overwritten, ...overwritten], lastCommitAt: committedAt, lastBranchId: branch.id };
+      board.last = { ...board.last, branchId: branch.id, writtenAt: branch.writtenAt, committedAt };
+      return;
+    }
+    const stamp = Math.max(branch.receivedAt, board.lastEntryAt + 1);
+    const entry = `${utcStamp(stamp)}-${authorKeySafe(branch.author)}`;
+    const meta = {
+      version: board.version,
+      author: branch.author,
+      displayName: branch.displayName,
+      base,
+      parents: board.version ? [board.version] : [],
+      applied: [],
+      overwritten,
+      coalescedCount: 1,
+      closedBy: "unchanged",
+      openedAt: committedAt,
+      lastCommitAt: committedAt,
+      lastBranchId: branch.id,
+      kind: branch.kind,
+      record: "none",
+      depth: null,
+    };
+    await writeAtomic(entryFiles(board.name, entry).meta, `${JSON.stringify(meta, null, 2)}\n`);
+    board.lastEntryAt = stamp;
+    board.last = { branchId: branch.id, author: branch.author, entry, previous: board.version, writtenAt: branch.writtenAt, committedAt };
+  };
 
   // Hook 2: the commit step, the only writer of master. Order: history entry and state (the
   // commit point), master, then the branch file is removed. A replay is idempotent.
-  const commitBranch = async (board, branch, { diskAtStart = null } = {}) => {
-    diskAtStart ??= (await syncExternal(board, branch)).disk;
+  const commitBranch = async (board, branch, { diskAtStart = null, watch = stopwatch(false) } = {}) => {
+    if (!diskAtStart) {
+      diskAtStart = (await watch.run("sync", () => syncExternal(board, branch))).disk;
+    }
     await step("commit-start", { branch });
     if (board.last?.branchId === branch.id || board.mermaid?.branchId === branch.id) {
-      await archiveBranch(branch);
+      await watch.run("archive", () => archiveBranch(branch));
       return { status: "committed", version: board.version, applied: [], overwritten: [], unbound: [], replayed: true, masterChanged: false };
     }
     let base = branch.base;
     if (branch.legacy) {
       if (legacyStale(branch.legacy, board.version)) {
-        await archiveBranch(branch);
+        await watch.run("archive", () => archiveBranch(branch));
         return { status: "stale", version: board.version };
       }
       base = board.version;
+    } else if (board.version === null && base !== null && board.last) {
+      // The board file was deleted since the writer read it: let the writer look again.
+      await watch.run("archive", () => archiveBranch(branch));
+      return { status: "unknown-base", version: null, base, reason: "board-deleted" };
     }
-    const masterText = board.version ? await versionText(board, board.version) : null;
-    if (board.version && masterText === null) {
-      throw new Error(`current version of ${board.name} is not readable`);
-    }
-    const masterScene = masterText === null ? null : parseScene(masterText);
-    const baseText = base === board.version ? masterText : await versionText(board, base);
-    if (base !== null && baseText === null) {
-      await archiveBranch(branch);
+    const { masterScene, baseScene, branchFiles } = await watch.run("read", async () => {
+      const master = board.version ? await versionScene(board, board.version) : null;
+      if (board.version && !master) {
+        throw new Error(`current version of ${board.name} is not readable`);
+      }
+      const baseFound = base === board.version ? master : await versionScene(board, base);
+      return {
+        masterScene: master?.scene ?? null,
+        baseScene: baseFound ? baseFound.scene : base === null ? null : undefined,
+        branchFiles: branch.files ?? (branch.fileRefs ? await loadFiles(board.name, branch.fileRefs) : undefined),
+      };
+    });
+    if (baseScene === undefined) {
+      await watch.run("archive", () => archiveBranch(branch));
       return { status: "unknown-base", version: board.version, base };
     }
-    const baseScene = baseText === null ? null : parseScene(baseText);
-
-    let text = masterText;
-    let result = { elements: masterScene?.elements ?? [], applied: [], overwritten: [], unbound: [], meta: board.meta, fastForward: true };
+    const fastForward = base === board.version;
+    let sceneOut = masterScene;
+    let version = board.version;
+    let result = { applied: [], overwritten: [], unbound: [], meta: board.meta, fastForward: true };
     if (branch.elements !== null) {
-      const branchScene = { elements: branch.elements, appState: branch.appState, files: branch.files };
-      result = mergeBoard({
+      result = await watch.run("merge", () => mergeBoard({
         base: baseScene,
         master: masterScene,
-        branch: branchScene,
+        branch: { elements: branch.elements, appState: branch.appState, files: branchFiles },
         branchWrittenAt: branch.writtenAt,
         branchAuthor: branch.author,
         masterMeta: board.meta,
-      });
-      // A fast-forward keeps the writer's exact bytes when it sent them (tab saves, files).
-      text = base === board.version && typeof branch.raw === "string"
-        ? branch.raw
-        : serializeScene(masterScene ?? baseScene, result);
+      }));
+      // A fast-forward keeps the writer's own scene (a tab save keeps its exact text).
+      sceneOut = fastForward
+        ? sceneObject(branch.template ?? masterScene, {
+            elements: branch.elements,
+            appState: branch.appState === undefined ? result.appState : branch.appState,
+            files: branchFiles === undefined ? result.files : branchFiles,
+          })
+        : sceneObject(masterScene ?? baseScene, result);
+      version = null;
     }
-    const version = text === null ? null : contentHash(text);
+    let text = null;
+    if (version === null) {
+      if (fastForward && branch.rawHash && branch.rawHash === diskAtStart.hash) {
+        // Adopting the file on disk: master keeps its bytes and their hash.
+        version = branch.rawHash;
+      } else {
+        text = await watch.run("serialize", () => canonicalText(sceneOut));
+        version = contentHash(text);
+      }
+    }
     const mermaid = branch.kind === "mermaid" && branch.mermaid
       ? { ...branch.mermaid, author: branch.author, writtenAt: branch.writtenAt, appliedAt: now(), branchId: branch.id, version }
       : board.mermaid;
 
     if (version === board.version) {
-      if (mermaid !== board.mermaid) {
-        board.mermaid = mermaid;
-        await writeState(board);
+      // Every unit of this write lost to a newer edit: master stays, and the losing content is
+      // still kept in history (decision 2), never dropped with the journal file.
+      const lost = result.overwritten.length > 0;
+      if (lost) {
+        await watch.run("history", () => keepUnchangedLosers(board, branch, base, result.overwritten));
       }
-      await archiveBranch(branch);
-      return { status: "unchanged", version, applied: [], overwritten: result.overwritten, unbound: [], masterChanged: false };
+      if (mermaid !== board.mermaid || lost) {
+        board.mermaid = mermaid;
+        await watch.run("state", () => writeState(board));
+      }
+      await watch.run("archive", () => archiveBranch(branch));
+      return { status: "unchanged", version, author: branch.author, applied: [], overwritten: result.overwritten, unbound: [], fastForward, masterChanged: false, scene: masterScene };
     }
 
     const authorInfo = parseAuthorKey(branch.author);
+    const human = authorInfo.kind === "human";
     const committedAt = now();
-    const coalesce = Boolean(board.open && board.open.author === branch.author && authorInfo.kind === "human");
-    if (coalesce) {
-      // The open entry's current version is folded away: keep it as a base while another
-      // queued branch references it (served copies are already in the base store).
-      if ((pendingRefs.get(refKey(board.name, board.version)) ?? 0) > (branch.base === board.version ? 1 : 0)) {
-        await saveBase(board, board.version, masterText);
-      }
-    } else if (board.open) {
-      await closeOpenEntry(board, authorInfo.kind === "human" ? "author" : "agent-merge");
-    }
+    const coalesce = Boolean(board.open && board.open.author === branch.author && human);
     const entry = coalesce ? board.open.entry : `${utcStamp(Math.max(branch.receivedAt, board.lastEntryAt + 1))}-${authorKeySafe(branch.author)}`;
+    // History v2: the entry is a delta against the version it started from, or a full
+    // checkpoint (a board's first entry, every `checkpointEvery` entries, an entry from before
+    // v2, or when the parent version can't be read).
+    let record = "checkpoint";
+    let depth = 0;
+    let parentScene = null;
+    if (coalesce) {
+      if (board.open.record === "delta" && Number.isInteger(board.open.depth) && board.open.parents?.[0]) {
+        const parentVersion = board.open.parents[0];
+        parentScene = board.chainBase?.version === parentVersion
+          ? board.chainBase.scene
+          : (await watch.run("history", () => versionScene(board, parentVersion, { keep: false })))?.scene ?? null;
+        if (parentScene) {
+          record = "delta";
+          depth = board.open.depth;
+        }
+      }
+    } else if (board.version && masterScene && Number.isInteger(board.depth) && board.depth + 1 < checkpointEvery) {
+      record = "delta";
+      depth = board.depth + 1;
+      parentScene = masterScene;
+    }
     const open = coalesce
       ? {
           ...board.open,
@@ -686,6 +1162,8 @@ export function createVersionStore({
           coalescedCount: board.open.coalescedCount + 1,
           lastCommitAt: committedAt,
           lastBranchId: branch.id,
+          record,
+          depth,
         }
       : {
           entry,
@@ -701,10 +1179,37 @@ export function createVersionStore({
           lastCommitAt: committedAt,
           lastBranchId: branch.id,
           kind: branch.kind,
+          record,
+          depth,
         };
-    const files = entryFiles(board.name, entry);
-    await writeFileAtomic(files.content, text);
-    await writeFileAtomic(files.meta, `${JSON.stringify(entryMetaFile(board, open, authorInfo.kind === "human" ? null : "agent-write"), null, 2)}\n`);
+    await watch.run("history", async () => {
+      // Independent files: written in parallel, each a round trip on a bind mount.
+      const writes = [];
+      if (coalesce) {
+        // The open entry's current version is folded away: keep it as a base while another
+        // queued branch references it (served copies are already in the base store).
+        if ((pendingRefs.get(refKey(board.name, board.version)) ?? 0) > (branch.base === board.version ? 1 : 0)) {
+          writes.push(saveBase(board, board.version, masterScene));
+        }
+      } else if (board.open) {
+        writes.push(closeOpenEntry(board, human ? "author" : "agent-merge"));
+      }
+      const files = entryFiles(board.name, entry);
+      const target = record === "delta" ? files.delta : files.checkpoint;
+      const writeRecordFile = record === "delta"
+        ? writeDelta(board.name, target, { version, parent: open.parents[0], depth, parentScene, scene: sceneOut })
+        : writeCheckpoint(board.name, target, version, sceneOut, text);
+      // An open entry that changes record kind (a pre-v2 entry, an unreadable parent) drops its
+      // other file once the new one is written.
+      writes.push(coalesce && board.open.record !== record
+        ? writeRecordFile.then(() => Promise.all([files.delta, files.checkpoint, files.legacy].filter((file) => file !== target).map(unlinkIfExists)))
+        : writeRecordFile);
+      // A human entry stays open: its meta lives in the state until it closes.
+      if (!human) {
+        writes.push(writeAtomic(files.meta, `${JSON.stringify(entryMetaFile(open, authorInfo.kind === "init" ? "init" : "agent-write"), null, 2)}\n`));
+      }
+      await Promise.all(writes);
+    });
     await step("mid-history", { branch, entry });
 
     const previous = board.version;
@@ -713,79 +1218,201 @@ export function createVersionStore({
       version,
       meta: result.meta,
       last: { branchId: branch.id, author: branch.author, entry, previous, writtenAt: branch.writtenAt, committedAt },
-      open: authorInfo.kind === "human" ? open : null,
+      open: human ? open : null,
       mermaid,
       lastEntryAt: coalesce ? board.lastEntryAt : Math.max(branch.receivedAt, board.lastEntryAt + 1),
+      depth,
     };
-    await writeState(next);
+    await watch.run("state", () => writeState(next));
     const index = await historyIndex(board);
     if (coalesce && index.get(previous) === entry) {
       index.delete(previous);
     }
     index.set(version, entry);
-    Object.assign(board, next, { index });
+    const previousSig = board.masterSig;
+    const chainBase = human && record === "delta" ? { version: open.parents[0], scene: parentScene } : null;
+    Object.assign(board, next, { index, cache: { version, scene: sceneOut, text }, chainBase });
+    remember(board, version, sceneOut);
     await step("after-history", { branch, entry });
 
-    const disk = await readMasterFile(board.name);
-    // Master already holds this version when the commit adopted the file itself.
-    const writeMaster = version !== diskAtStart.hash && disk.hash !== version;
-    if (writeMaster && disk.hash !== diskAtStart.hash && disk.hash !== null) {
-      // A direct write landed while this commit ran. Journal it as an external branch on the
-      // version it overwrote (queued right after this commit), then write master.
-      if (previous) {
-        await saveBase(board, previous, masterText);
+    // The commit is durable here (state is the commit point; a crash before master is written
+    // rolls master forward from the history record on start). The answer goes out now; the
+    // board's queue still waits for master and the journal file (`finish`).
+    const writeMaster = version !== diskAtStart.hash;
+    board.masterPending = writeMaster;
+    const finish = async () => {
+      await watch.run("master", () => retryIo(board.name, branch, async () => {
+        // Re-check master by its signature; read it only if it changed during the commit.
+        const signature = await masterSignature(board.name);
+        const disk = signature === diskAtStart.signature && diskAtStart.signature !== undefined ? diskAtStart : { ...(await readMasterFile(board.name)), signature };
+        if (writeMaster && disk.hash !== version && disk.hash !== diskAtStart.hash && disk.hash !== null) {
+          // A direct write landed while this commit ran. Journal it as an external branch on
+          // the version it overwrote (queued right after this commit), then write master.
+          if (previous) {
+            await saveBase(board, previous, masterScene);
+          }
+          await adoptRaced(board, disk, previous);
+        }
+        if (writeMaster && disk.hash !== version) {
+          const written = await writeAtomic(masterPath(board.name), text ?? canonicalText(sceneOut), { stat: true });
+          board.masterSig = `${written.ino}:${written.mtimeMs}:${written.size}`;
+          await onMasterWritten(board.name, written);
+        } else if (disk.hash === version) {
+          board.masterSig = disk.signature ?? previousSig;
+        }
+      }));
+      board.masterPending = false;
+      await step("after-master", { branch, entry });
+      await watch.run("archive", () => archiveBranch(branch));
+      if (board.open) {
+        scheduleIdle(board);
       }
-      await adoptRaced(board, disk, previous);
-    }
-    if (writeMaster) {
-      await writeFileAtomic(masterPath(board.name), text);
-      await onMasterWritten(board.name);
-    }
-    const masterChanged = writeMaster;
-    await step("after-master", { branch, entry });
-    await archiveBranch(branch);
-    if (board.open) {
-      scheduleIdle(board);
-    }
-    await gcBases(board);
+      await dropRedundantBases(board);
+      await gcBases(board);
+    };
     return {
       status: "committed",
       version,
       previous,
       entry,
       author: branch.author,
-      fastForward: result.fastForward,
+      fastForward,
       applied: result.applied,
       overwritten: result.overwritten,
       unbound: result.unbound,
-      masterChanged,
+      masterChanged: writeMaster,
+      scene: sceneOut,
+      finish,
     };
   };
-
   const ensureLoaded = (name) => (boards.has(name) ? Promise.resolve(boards.get(name)) : enqueue(name, () => loadBoard(name)));
 
-  const postCommit = (name, result) => {
-    if (result?.status !== "committed" || result.replayed) {
+  const postCommit = (name, result, log = null) => {
+    // An unchanged write that lost units is still announced (the banner lists its losers).
+    const announce = result?.status === "committed" || (result?.status === "unchanged" && result.overwritten?.length > 0);
+    if (!announce || result.replayed) {
       return Promise.resolve();
     }
-    return Promise.resolve().then(() => onCommitted({ name, ...result })).catch((error) => {
+    let started = performance.now();
+    const { scene: _scene, finished, ...event } = result;
+    // SSE, export and rules see master on disk, so they run once it is written.
+    return Promise.resolve(finished).then(() => {
+      started = performance.now();
+      return onCommitted({ name, ...event });
+    }).catch((error) => {
       console.warn(`post-commit hook failed for ${name}: ${error.message}`);
+    }).finally(() => {
+      if (log) {
+        log.stages.post = performance.now() - started;
+      }
     });
   };
 
-  // The commit job for an ingested (or ingesting) branch. After close() the branch stays in
-  // the journal and is replayed on the next start.
-  const commitJob = (name, ingesting) => enqueue(name, async () => {
+  // The commit job for an ingested (or ingesting) branch. A commit that fails on an I/O error
+  // stays in the journal and is retried with backoff; this board's queue waits, others go on.
+  // After close() the branch stays in the journal and is replayed on the next start.
+  const sleepRetry = (wait) => new Promise((resolve) => {
+    const sleeper = { resolve };
+    sleeper.timer = setTimeout(() => {
+      sleepers.delete(sleeper);
+      resolve();
+    }, wait);
+    sleepers.add(sleeper);
+  });
+
+  // Master must reach the disk before the board's next commit; an I/O error is retried with
+  // the commit backoff (and shown in status) instead of letting the queue run on.
+  const retryIo = async (name, branch, fn) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const value = await fn();
+        failures.delete(name);
+        return value;
+      } catch (error) {
+        if (!isRetryable(error) || closed) {
+          throw error;
+        }
+        const wait = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
+        failures.set(name, { branchId: branch.id, attempts: attempt + 1, error: `${error.code}: ${error.message}`, retrying: true, nextRetryMs: wait, since: failures.get(name)?.since ?? now(), stage: "master" });
+        console.warn(`writing master of ${name} failed (${error.code}: ${error.message}); retry ${attempt + 1} in ${wait} ms`);
+        await sleepRetry(wait);
+      }
+    }
+  };
+
+  const runCommitJob = async (name, ingesting, watch) => {
+    const jobStart = performance.now();
     const ingested = await ingesting;
     if (ingested.error) {
       return { status: "invalid", error: ingested.error };
     }
-    if (closed) {
-      return { status: "queued", branchId: ingested.branch.id };
+    if (ingested.ingestedAt) {
+      watch.add("queue", Math.max(0, jobStart - ingested.ingestedAt));
     }
-    const board = await loadBoard(name);
-    return { ...(await commitBranch(board, ingested.branch)), branchId: ingested.branch.id };
-  });
+    const { branch } = ingested;
+    for (let attempt = 0; ; attempt++) {
+      if (closed) {
+        return { status: "queued", branchId: branch.id };
+      }
+      try {
+        const board = await loadBoard(name);
+        const result = { ...(await commitBranch(board, branch, { watch })), branchId: branch.id };
+        if (failures.delete(name)) {
+          console.warn(`commit for ${name} succeeded after ${attempt} retr${attempt === 1 ? "y" : "ies"}`);
+        }
+        return result;
+      } catch (error) {
+        if (!isRetryable(error)) {
+          failures.set(name, { branchId: branch.id, attempts: attempt + 1, error: error.message, retrying: false, since: failures.get(name)?.since ?? now() });
+          throw error;
+        }
+        // Reload from the durable state on the next attempt, as a replay would.
+        boards.delete(name);
+        const wait = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)];
+        failures.set(name, { branchId: branch.id, attempts: attempt + 1, error: `${error.code}: ${error.message}`, retrying: true, nextRetryMs: wait, since: failures.get(name)?.since ?? now() });
+        console.warn(`commit for ${name} failed (${error.code}: ${error.message}); retry ${attempt + 1} in ${wait} ms, the write stays in the journal`);
+        await new Promise((resolve) => {
+          const sleeper = { resolve };
+          sleeper.timer = setTimeout(() => {
+            sleepers.delete(sleeper);
+            resolve();
+          }, wait);
+          sleepers.add(sleeper);
+        });
+      }
+    }
+  };
+
+  // Answers as soon as master is written; the board's queue still waits for the journal file
+  // removal (`finish`) before the next commit.
+  const commitJob = (name, ingesting, watch = stopwatch(false)) => {
+    let resolveAnswer;
+    let rejectAnswer;
+    const answer = new Promise((resolve, reject) => {
+      resolveAnswer = resolve;
+      rejectAnswer = reject;
+    });
+    void enqueue(name, async () => {
+      let outcome;
+      try {
+        outcome = await runCommitJob(name, ingesting, watch);
+      } catch (error) {
+        rejectAnswer(error);
+        return;
+      }
+      const { finish, ...result } = outcome;
+      let markFinished;
+      result.finished = new Promise((resolve) => {
+        markFinished = resolve;
+      });
+      resolveAnswer(result);
+      if (finish) {
+        await finish().catch((error) => console.warn(`writing master after a commit to ${name} failed (${error.message}); it is rolled forward on the next start`));
+      }
+      markFinished();
+    });
+    return answer;
+  };
 
   // Journal replay: re-queue every unarchived branch, oldest first by writtenAt.
   let replayed = Promise.resolve();
@@ -821,6 +1448,7 @@ export function createVersionStore({
     const runs = [];
     for (const branch of found) {
       addRef(branch.board, branch.base);
+      countPending(branch.board, 1);
       rememberExternal(branch);
       runs.push(commitJob(branch.board, Promise.resolve({ branch })).then(
         (result) => postCommit(branch.board, result),
@@ -831,84 +1459,189 @@ export function createVersionStore({
   };
 
   // Resolves once the journal is queued (not committed), so new submits line up behind it.
+  // With a separate state dir, versions data already under boards/.xcld is copied over once.
+  const migrateStateDir = async () => {
+    if (xcld === defaultStateDir) {
+      return;
+    }
+    const exists = (dir) => fs.stat(dir).then((stat) => stat.isDirectory(), () => false);
+    if (await exists(path.join(xcld, "state")) || !(await exists(path.join(defaultStateDir, "state")))) {
+      return;
+    }
+    for (const folder of ["files", "bases", "history", "state", "branches"]) {
+      if (await exists(path.join(defaultStateDir, folder))) {
+        await fs.cp(path.join(defaultStateDir, folder), path.join(xcld, folder), { recursive: true, force: false, errorOnExist: false });
+      }
+    }
+    console.warn(`copied versions data from ${path.relative(root, defaultStateDir) || ".xcld"} to ${xcld}; the old copy is left in place`);
+  };
+
   const start = () => {
-    started ??= replay();
+    started ??= migrateStateDir().then(replay);
     return started;
   };
 
   /**
-   * Submit a writer's branch: `{ author, base, writtenAt?, kind?: "json" | "mermaid",
-   * elements, appState?, files?, raw?, ops?, mermaid?: { source, hash } }`. Resolves after the
-   * commit with `{ status, version, applied, overwritten, unbound, branchId, post }`; status is
-   * "committed", "unchanged", "unknown-base", "invalid", or "queued" after close(). `post`
-   * resolves when the post-commit hook (SSE, export) has run. `onIngested(branchId)` fires once
-   * the branch is in the journal, i.e. it will not be dropped.
+   * Submit a writer's branch: `{ author, displayName?, base, writtenAt?, kind?: "json" |
+   * "mermaid", elements, appState?, files?, template?, ops?, mermaid?: { source, hash } }`.
+   * Resolves after the commit with `{ status, version, applied, overwritten, unbound,
+   * fastForward, scene, branchId, post, timings? }`; status is "committed", "unchanged",
+   * "unknown-base", "invalid", "stale" (legacy If-Match: *), or "queued" after close().
+   * `post` resolves when the post-commit hook (SSE, export) has run. `onIngested(branchId)`
+   * fires once the branch is in the journal, i.e. it will not be dropped.
    */
-  const submitBranch = async (name, input, { onIngested } = {}) => {
+  const submitBranch = async (name, input, { onIngested, source = "api", receiveMs } = {}) => {
     await start();
-    const ingesting = ingest(name, input).then((ingested) => {
+    const watch = stopwatch(timing);
+    if (receiveMs !== undefined) {
+      watch.add("receive", receiveMs);
+    }
+    const ingesting = ingest(name, input, watch).then((ingested) => {
       if (ingested.branch) {
         onIngested?.(ingested.branch.id);
       }
       return ingested;
     });
-    const result = await commitJob(name, ingesting);
-    return { ...result, post: postCommit(name, result) };
+    const result = await commitJob(name, ingesting, watch);
+    let log = null;
+    if (watch.stages && result.status !== "invalid") {
+      log = {
+        board: name,
+        branchId: result.branchId,
+        author: input.author,
+        writer: parseAuthorKey(input.author)?.kind ?? "unknown",
+        source,
+        elements: Array.isArray(input.elements) ? input.elements.length : 0,
+        status: result.status,
+        at: now(),
+        stages: watch.stages,
+      };
+      timingLog.push(log);
+      if (timingLog.length > TIMING_LOG_LIMIT) {
+        timingLog.splice(0, timingLog.length - TIMING_LOG_LIMIT);
+      }
+    }
+    return { ...result, post: postCommit(name, result, log), ...(log ? { timings: log } : {}) };
   };
 
   const readVersion = (name, version) => enqueue(name, async () => {
     const board = await loadBoard(name);
-    const text = await versionText(board, version);
-    if (text === null) {
+    const found = await versionScene(board, version);
+    if (!found) {
       return null;
     }
-    await pin(board, version, text);
-    return { version, text, scene: parseScene(text) };
+    await pin(board, version, found.scene);
+    return { version, text: found.text ?? canonicalText(found.scene), scene: found.scene };
   });
 
   const readMaster = async (name) => {
-    const board = await ensureLoaded(name);
-    const disk = await readMasterFile(name);
+    await ensureLoaded(name);
+    const cached = await cachedMaster(name);
+    const disk = cached ? { text: cached.text, hash: cached.version } : await readMasterFile(name);
     if (disk.hash === null) {
       return null;
     }
-    await pin(board, disk.hash, disk.text);
+    await noteServed(name, disk.hash, disk.text);
     return { version: disk.hash, text: disk.text, scene: parseScene(disk.text) };
   };
 
   // A version handed to a reader may come back as a base. A version that is a closed history
   // entry stays resolvable anyway; any other (the open entry's, or one not adopted yet) is
   // copied to the base store, which keeps it `baseTtlMs` after the last hand-out.
-  const pin = async (board, version, text) => {
-    if (!version || text === null || contentHash(text) !== version) {
-      return;
-    }
+  const needsPin = async (board, version) => {
     const entry = (await historyIndex(board)).get(version);
-    if (entry && entry !== board.open?.entry) {
-      return;
+    return !(entry && entry !== board.open?.entry);
+  };
+  const pin = async (board, version, scene) => {
+    if (version && scene && await needsPin(board, version)) {
+      await saveBase(board, version, scene);
     }
-    await saveBase(board, version, text);
   };
 
   // GET hands out the master text with its hash as the ETag.
   const noteServed = async (name, version, text) => {
-    await pin(await ensureLoaded(name), version, text);
+    let board = await ensureLoaded(name);
+    if (board.version === null && !board.last && !closed) {
+      // First touch of a board that existed before versions: snapshot it as `init`.
+      board = await enqueue(name, async () => {
+        const current = await loadBoard(name);
+        if (current.version === null && !current.last) {
+          await syncExternal(current);
+        }
+        return current;
+      });
+    }
+    if (version && contentHash(text) === version && await needsPin(board, version)) {
+      await saveBase(board, version, board.cache?.version === version ? board.cache.scene : parseScene(text));
+    }
   };
 
-  const checkpoint = (name) => enqueue(name, async () => {
+  // Master's exact text from memory when the file still is what the last commit wrote: GET
+  // then needs no read (and can't catch a half-replaced file).
+  const cachedMaster = async (name) => {
+    const board = boards.get(name);
+    if (!board?.cache?.text || board.cache.version !== board.version) {
+      return null;
+    }
+    // Committed, master write still on its way: the committed text is the answer.
+    if (board.masterPending) {
+      return { version: board.version, text: board.cache.text };
+    }
+    if (!board.masterSig) {
+      return null;
+    }
+    return (await masterSignature(name)) === board.masterSig ? { version: board.version, text: board.cache.text } : null;
+  };
+
+  // Ctrl+S: closes the open entry. `pin` (a label) also makes the current version's entry a full
+  // checkpoint, so a pinned version never depends on deltas (snapshots as pinned versions).
+  const checkpoint = (name, { pin = null } = {}) => enqueue(name, async () => {
     const board = await loadBoard(name);
     const entry = board.open?.entry ?? null;
     const closedEntry = await closeOpenEntry(board, "checkpoint");
-    if (closedEntry) {
+    const pinned = pin && board.version ? await pinHead(board, String(pin)) : null;
+    if (closedEntry || pinned) {
       await writeState(board);
     }
-    return { closed: closedEntry, entry, version: board.version };
+    await dropRedundantBases(board);
+    return { closed: closedEntry, entry, version: board.version, ...(pinned ? { pinned } : {}) };
   });
+
+  // Rewrites the (closed) entry holding the current version as a checkpoint, if it is a delta,
+  // and labels its meta. Order: checkpoint, meta, then the delta file is removed; both files
+  // rebuild the same version, so a crash in between is harmless.
+  const pinHead = async (board, label) => {
+    const entry = (await historyIndex(board)).get(board.version);
+    if (!entry || entry === board.open?.entry) {
+      return null;
+    }
+    const files = entryFiles(board.name, entry);
+    const meta = await readJson(files.meta);
+    if (!meta || meta.version !== board.version) {
+      return null;
+    }
+    const wasDelta = meta.record === "delta";
+    if (wasDelta) {
+      const found = await versionScene(board, board.version);
+      if (!found) {
+        throw new Error(`current version of ${board.name} is not readable`);
+      }
+      await writeCheckpoint(board.name, files.checkpoint, board.version, found.scene, found.text);
+    }
+    const pinnedAt = now();
+    await writeAtomic(files.meta, `${JSON.stringify({ ...meta, record: wasDelta ? "checkpoint" : meta.record ?? "checkpoint", depth: 0, pinned: label, pinnedAt }, null, 2)}\n`);
+    if (wasDelta) {
+      await unlinkIfExists(files.delta);
+    }
+    board.depth = 0;
+    return { entry, label, pinnedAt };
+  };
 
   // The watcher calls this once a changed master file has settled.
   const adoptExternal = async (name) => {
     await start();
-    return enqueue(name, async () => (closed ? null : (await syncExternal(await loadBoard(name))).result));
+    // A board first seen through a change: the content is that change, not the original.
+    return enqueue(name, async () => (closed ? null : (await syncExternal(await loadBoard(name), null, { firstTouch: "external" })).result));
   };
 
   const readState = (name) => enqueue(name, async () => {
@@ -919,10 +1652,26 @@ export function createVersionStore({
       last: board.last,
       open: board.open,
       mermaid: board.mermaid,
+      depth: board.depth,
     };
   });
 
   const readMermaid = async (name) => (await readState(name)).mermaid;
+
+  // For /api/status: queued writes per board and commits waiting on a retry.
+  const status = () => ({
+    ok: failures.size === 0,
+    pending: Object.fromEntries(pendingCount),
+    failing: Object.fromEntries(failures),
+  });
+
+  const timings = ({ clear = false } = {}) => {
+    const copy = timingLog.slice();
+    if (clear) {
+      timingLog.length = 0;
+    }
+    return copy;
+  };
 
   const whenIdle = async () => {
     await start();
@@ -932,10 +1681,15 @@ export function createVersionStore({
     }
   };
 
-  // Stops timers and new commits (their branches stay in the journal); resolves once the
-  // commit in flight, if any, has finished.
+  // Stops timers, retries and new commits (their branches stay in the journal); resolves once
+  // the commit in flight, if any, has finished.
   const close = async () => {
     closed = true;
+    for (const sleeper of sleepers) {
+      clearTimeout(sleeper.timer);
+      sleeper.resolve();
+    }
+    sleepers.clear();
     for (const name of [...idleTimers.keys()]) {
       clearIdle(name);
     }
@@ -944,5 +1698,5 @@ export function createVersionStore({
     }
   };
 
-  return { start, submitBranch, readVersion, readMaster, readState, readMermaid, noteServed, checkpoint, adoptExternal, whenIdle, close, parseAuthorKey };
+  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, whenIdle, close, parseAuthorKey };
 }

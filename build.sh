@@ -149,12 +149,97 @@ if [ "$dry_run" -eq 0 ] && [ "$target" = runtime ]; then
   env_path="$root/.env"
   keep=""
   [ -f "$env_path" ] && keep="$(grep -Ev '^[[:space:]]*(XCLD_IMAGE|XCLD_TAG|XCLD_UID|XCLD_GID)[[:space:]]*=' "$env_path" || true)"
+  # The canvas's default author name (the server can't see the host user). Seeded once from
+  # git config user.name, else the OS user; edit it in .env, the build never overwrites it.
+  author_name=""
+  if ! printf '%s\n' "$keep" | grep -Eq '^[[:space:]]*XCLD_AUTHOR_NAME[[:space:]]*='; then
+    author_name="$(git -C "$root" config user.name 2>/dev/null || true)"
+    [ -n "$author_name" ] || author_name="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+    author_name="$(printf '%s' "$author_name" | tr '\r\n#=' '    ' | sed 's/^ *//; s/ *$//')"
+  fi
+  # Storage (README, "Where history lives"). XCLD_CACHE_DIR is a host folder (default
+  # ~/.excalidraw) for exports and, with XCLD_HISTORY=cache, history. XCLD_HISTORY (advanced) is
+  # written once and never overwritten: Linux `cache` (bind mounts are native there), macOS
+  # `volume`, the Docker volume xcld-state (Docker Desktop bind mounts fail the write-latency gate).
+  has_line() { printf '%s\n' "$keep" | grep -Eq "^[[:space:]]*$1[[:space:]]*="; }
+  keep_value() { printf '%s\n' "$keep" | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" | tail -n 1 | sed "s/[[:space:]]*\$//; s/^[\"']//; s/[\"']\$//"; }
+  is_folder() { case "$1" in "~"|"~/"*|*/*) return 0 ;; *) return 1 ;; esac; }
+  # Earlier builds wrote XCLD_STATE_DIR (a volume name or a folder) and read XCLD_EXPORT_DIR (a
+  # folder). Compose no longer reads them: map them to the new settings; their lines stay.
+  old_names=""
+  for name in XCLD_STATE_DIR XCLD_EXPORT_DIR; do
+    if has_line "$name"; then old_names="${old_names:+$old_names and }$name"; fi
+  done
+  old_state="$(keep_value XCLD_STATE_DIR)"
+  old_export="$(keep_value XCLD_EXPORT_DIR)"
+  new_history="" new_cache="" mapped=""
+  if ! has_line XCLD_HISTORY; then
+    if [ -n "$old_state" ]; then
+      if is_folder "$old_state"; then new_history=cache; else new_history=volume; fi
+      mapped="XCLD_HISTORY=$new_history"
+    elif [ "$(uname -s)" = Linux ]; then new_history=cache
+    else new_history=volume
+    fi
+  fi
+  if ! has_line XCLD_CACHE_DIR; then
+    if is_folder "$old_export"; then new_cache="$old_export"
+    elif is_folder "$old_state"; then new_cache="$old_state"
+    fi
+    [ -n "$new_cache" ] && mapped="${mapped:+$mapped, }XCLD_CACHE_DIR=$new_cache"
+  fi
   {
     [ -n "$keep" ] && printf '%s\n' "$keep"
     printf 'XCLD_IMAGE=%s\nXCLD_TAG=%s\n' "$image" "$tag"
+    [ -n "$author_name" ] && printf 'XCLD_AUTHOR_NAME=%s\n' "$author_name"
+    [ -n "$new_history" ] && printf 'XCLD_HISTORY=%s\n' "$new_history"
+    [ -n "$new_cache" ] && printf 'XCLD_CACHE_DIR=%s\n' "$new_cache"
     if [ "$(uname -s)" = Linux ]; then printf 'XCLD_UID=%s\nXCLD_GID=%s\n' "$(id -u)" "$(id -g)"; fi
   } > "$env_path.tmp" && mv "$env_path.tmp" "$env_path"
+  # Create the cache folder and the subfolders the container writes now, as you: Docker would
+  # create a missing one owned by root on Linux.
+  env_value() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$env_path" | tail -n 1 | sed "s/[[:space:]]*\$//; s/^[\"']//; s/[\"']\$//"; }
+  host_dir() {
+    case "$1" in
+      "~") printf '%s' "$HOME" ;;
+      "~/"*) printf '%s/%s' "$HOME" "${1:2}" ;;
+      /*) printf '%s' "$1" ;;
+      */*) printf '%s/%s' "$root" "$1" ;;
+      *) return 1 ;;
+    esac
+  }
+  history="$(env_value XCLD_HISTORY)"
+  cache="$(env_value XCLD_CACHE_DIR)"
+  cache="${cache:-~/.excalidraw}"
+  if cache_folder="$(host_dir "$cache")"; then
+    folders=("$cache_folder" "$cache_folder/exports")
+    if [ "$history" = cache ]; then folders+=("$cache_folder/history"); fi
+    for folder in "${folders[@]}"; do
+      if ! mkdir -p "$folder" 2>/dev/null || { [ "$(uname -s)" = Linux ] && [ ! -w "$folder" ]; }; then
+        printf "WARNING: %s is not writable by you (uid %s), so the container can't write it either. Fix: sudo chown -R %s:%s %s\n" "$folder" "$(id -u)" "$(id -u)" "$(id -g)" "$cache_folder" >&2
+        break
+      fi
+    done
+  else
+    printf 'WARNING: XCLD_CACHE_DIR=%s in .env is not a folder path, so Compose would take it as a volume name. Use a path such as ~/.excalidraw.\n' "$cache" >&2
+  fi
   printf '\n.env updated (XCLD_TAG=%s). Start or restart the workspace:\n  docker compose up -d --wait\n' "$tag"
+  if [ -n "$old_names" ]; then
+    if [ -n "$mapped" ]; then
+      printf 'Note: .env has %s, which Compose no longer reads; mapped to %s (added to .env). The old lines stay; delete them when you like.\n' "$old_names" "$mapped"
+    else
+      printf 'Note: .env has %s, which Compose no longer reads (XCLD_HISTORY and XCLD_CACHE_DIR replace them); delete the old lines when you like.\n' "$old_names"
+    fi
+  fi
+  case "$history" in
+    cache)
+      printf 'Version history (XCLD_HISTORY=cache): %s/history. Exports: %s/exports.\n' "${cache%/}" "${cache%/}"
+      [ "$(uname -s)" = Linux ] || echo 'WARNING: XCLD_HISTORY=cache on Docker Desktop is slow: history in a host folder fails the write-latency gate. The default here is XCLD_HISTORY=volume.' >&2
+      ;;
+    volume)
+      printf "Version history (XCLD_HISTORY=volume): Docker volume xcld-state; 'docker compose down -v' deletes it. 'docker exec xcld-collab xcld history export <board>' copies a board's history to %s/exports.\n" "${cache%/}"
+      ;;
+    *) printf "WARNING: XCLD_HISTORY=%s in .env must be volume or cache; the canvas won't start until it is.\n" "$history" >&2 ;;
+  esac
   if printf '%s\n' "$keep" | grep -Eq '^[[:space:]]*COMPOSE_PROFILES[[:space:]]*=.*widget'; then
     echo 'Note: COMPOSE_PROFILES in .env enables the experimental chat widget (loads JS from esm.sh). Builds no longer set it and the default is canvas only; remove "widget" from that line to opt out.'
   else

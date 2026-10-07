@@ -61,13 +61,33 @@ When the user says review is complete:
 
 1. Call `diff` before changing the board.
 2. Summarize and act on every semantic change or ask about ambiguous feedback.
-3. Prefer updating the existing `.excalidraw` board when that capability is available.
+3. Prefer updating the existing board with `write_board` (next section).
 4. If a Mermaid rewrite is necessary, do it only after diffing and incorporating the human
    feedback, because `write_mermaid` replaces the whole board.
 5. Verify with `read_board`, then `snapshot` the next review baseline.
 
 Never rewrite Mermaid merely to export the current board. `read_board` returns Mermaid, and
 the CLI `xcld to-mermaid` or automatic exports are the non-destructive export paths.
+
+## Editing a board in parallel
+
+The server merges writes; the human may be drawing on the same board while you write.
+
+1. Call `read_board` with `format: "json"` and keep its `version`.
+2. Change the elements: keep every element id, keep bound text with its container
+   (`containerId`) and arrows bound with `startBinding`/`endBinding`.
+3. Call `write_board` with the **whole board** and `base` = that `version`. Elements you leave
+   out are deleted; elements others added after your `version` are kept.
+4. Read the result. `overwritten` lists units you and someone else both changed: the later
+   write won. If it says someone else's edit won, tell the user rather than redoing it.
+   `queued` means the merge took longer than 5 s; the write is safe. Read the board again
+   before writing on top of it.
+5. For your next write, use the returned `version` as `base`. If a write is refused with an
+   unknown base, call `read_board` again.
+
+Never write `boards/<path>.excalidraw` directly with file tools: it works (the server adopts it
+as an `external` write), but it carries no author and no base, so concurrent edits can't be
+attributed.
 
 ## Design rules
 

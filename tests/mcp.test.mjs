@@ -15,6 +15,9 @@ const startServer = (boardsDir) => {
       ...process.env,
       XCLD_BOARDS_DIR: boardsDir,
       XCLD_PUBLIC_URL: "http://127.0.0.1:3131",
+      // No board server in this test: reads fall back to the file. Never the default port,
+      // which may be a real workspace.
+      XCLD_API_URL: "http://127.0.0.1:1",
       XCLD_AUTO_EXPORT: "snapshot",
       XCLD_MCP_CHECKPOINTS: path.join(boardsDir, ".xcld", "mcp-checkpoints", "excalidraw-mcp-checkpoints"),
     },
@@ -98,7 +101,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(listedTools.error, undefined, JSON.stringify(listedTools));
     assert.deepEqual(
       listedTools.result.tools.map((tool) => tool.name).sort(),
-      ["board_url", "check_board", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_mermaid"],
+      ["board_url", "check_board", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_board", "write_mermaid"],
     );
     for (const tool of listedTools.result.tools) {
       assert.match(tool.description, /real newline inside the quoted label/, `${tool.name} should carry the label newline convention`);
@@ -143,6 +146,8 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
 
     const read = await callTool(server, "read_board", { board: "p/flow", format: "mermaid" });
     assert.match(read.content[0].text, /^flowchart TD/);
+    assert.match(read.content[0].text, /version: [0-9a-f]{64} \(pass it as base to write_board\)/);
+    assert.match(read.structuredContent.warning, /not reachable/, "without a board server the read falls back to the file and says so");
     assert.match(read.content[0].text, /Design rules/);
 
     const check = await callTool(server, "check_board", { board: "p/flow" });

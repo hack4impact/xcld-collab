@@ -46,28 +46,30 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **Live sync.** The browser saves debounced edits through `PUT /api/board/:name`. A file
   watcher pushes on-disk (agent) changes to the browser over SSE.
   Each side ignores its own echoes by content hash.
-  - **Stale-save guard** (an interim step before versions + merge). `GET` returns the sha256
-    of the file as an `ETag`; the tab sends the hash its scene is based on as `If-Match`
-    (`If-None-Match: *` for a new board). The server re-hashes the file on disk at `PUT` time,
-    so a direct agent write counts too, and answers `409 {error:"stale-save", currentHash}`
-    when it moved. The board's commit queue makes check-and-write atomic between tabs, and
-    every save is committed through the versions pipeline (history, journal); see
-    [Versions storage and commit pipeline](#versions-storage-and-commit-pipeline). `PUT` without
-    either header is unguarded (last write wins) for scripts.
-  - On 409 the tab fetches the board, re-applies its unsaved edits per element id against
-    the base it last loaded or saved (`app/src/reconcile.mjs`): a side that changed an element
-    since the base wins; if both changed it, the higher Excalidraw `version` wins and a tie
-    goes to the tab; an untouched element the other side removed stays removed. It shows
-    "Board changed elsewhere; your edits were re-applied" and saves again, up to 3 retries,
-    then reports an error. A reload that arrives while the tab has unsaved edits merges the
-    same way, and the debounced save reads the latest canvas. This closes the old window
-    where a pending autosave wrote the pre-reload scene over an agent's write.
+  - **Saves merge** (versions and merge, slice 3). `GET` returns the board's version (the
+    sha256 of the file) as the `ETag`. The tab sends the version its scene is based on as
+    `If-Match` (`If-None-Match: *` for a new board). The server commits every save through the
+    [versions pipeline](#versions-storage-and-commit-pipeline):
+    - a save based on the current version is a fast-forward;
+    - one based on an older version the server knows is **merged** with what was written since
+      ([rules](#merge-rules)), and the merged board comes back in the answer (`merged: true`,
+      `master`);
+    - only an unknown base is 409.
+
+    The board's commit queue serializes saves. `PUT` without either header is unguarded (the
+    last write wins) for scripts.
+  - On a merged answer, the tab shows the merged board. It re-applies edits made since the save
+    was sent (`app/src/reconcile.mjs`, against the scene it sent) and says "Board changed
+    elsewhere; the server merged your edits". Slice 5 adds the banner listing applied and
+    overwritten changes.
+  - On 409 (an unknown base), the tab fetches the board and re-applies its unsaved edits per
+    element id against the base it last loaded or saved. A side that changed an element since
+    the base wins; if both did, the higher Excalidraw `version` wins and a tie goes to the tab.
+    Then it saves again, up to 3 retries. A reload that arrives while the tab has unsaved edits
+    merges the same way.
   - Not Excalidraw's `reconcileElements`: it has no base, so an agent edit that doesn't bump
     `version` loses to the tab's untouched copy, and an element left out of the file comes
-    back. Agents writing JSON rarely bump versions.
-  - Still upcoming: true parallel editing (every save a version, merges you can inspect).
-    Two edits of the same element still keep only one of them.
-  - **verified (2026-10-02):** `fs.watch` (inotify) gets **no events for host-side writes**
+    back. Agents writing JSON rarely bump versions.  - **verified (2026-10-02):** `fs.watch` (inotify) gets **no events for host-side writes**
     through a Docker Desktop bind mount from Windows. Writes made inside the container do
     fire.
   - So the server also polls the mtime and size of each board file every
@@ -253,6 +255,9 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 
 ## Data boundary
 
+- Version data (history, journal, images) stays local: in `~/.excalidraw/history/` on Linux,
+  in the `xcld-state` Docker volume on Windows/macOS (`XCLD_HISTORY`), or `boards/.xcld/`
+  without compose. Nothing is sent anywhere.
 - Ports are published as `127.0.0.1:<port>` only. Inside the container, servers bind
   `0.0.0.0` so the published port can reach them.
 - `excalidraw-mcp`'s `export_to_excalidraw` (POST to `json.excalidraw.com`) is removed
@@ -356,10 +361,10 @@ structured `%% xcld:` comments carry annotations through Mermaid.
 
 ## Merge rules
 
-**Status (2026-10-07):** the merge module `tools/merge.mjs` and the server's commit pipeline
-(next section) are built. Every master write already goes through the pipeline, but the tab
-still saves with the stale-save guard (409) and agents still write files. The write API with
-identities, the tab's side and the concurrency test come next.
+**Status (2026-10-07):** the merge module `tools/merge.mjs`, the server's commit pipeline and
+the write API are built: tab saves, `POST /api/branch` (MCP `write_board`, `xcld write`) and
+direct file writes all merge. The tab's banner and identity overlay (slice 5) and the
+concurrency test come next.
 
 Every writer (tab, MCP, CLI, a direct file write) produces a branch: its full scene plus the
 master version it started from (the base) and when it was written. One merge runs at a time
@@ -446,49 +451,160 @@ still converts `.mmd`, until the versions write API runs them.
 
 ## Versions storage and commit pipeline
 
-**Status (2026-10-07):** built (`app/server/versions.mjs`) and wired into the server. Every
-write that reaches master goes through it. `PUT /api/board` keeps its stale-save semantics
-for now; the write API with identities (`POST /api/branch`, a stale save that merges) is the
-next step.
+**Status (2026-10-07):** built (`app/server/versions.mjs`) and wired into the server, with the
+write API (`POST /api/branch`), tab saves that merge, identities, MCP/CLI writes through
+the server, and history v2 (change-only entries). Still to come: the tab's side (slice 5:
+author overlay, banner, save before reload) and the 50-seed concurrency test.
 
-Everything lives under `boards/.xcld/`. That's a dot folder, so the watcher, the board list
-and the exports ignore it.
+**Where it lives** (lead, 2026-10-07: one setting). The user-facing setting is the cache
+folder, `XCLD_CACHE_DIR`, a host path (default `~/.excalidraw`) that compose bind-mounts at
+`/xcld-cache`. `xcld history export` always writes `<cache>/exports/<board>/`. Where the
+versions data (the "state dir" below) lives is the advanced `XCLD_HISTORY`, which the build
+writes for the OS into `.env` once and never overwrites:
+
+| Host | Default `XCLD_HISTORY` | History folder | Why |
+|---|---|---|---|
+| Linux | `cache` | `<cache>/history/` (in the container `/xcld-cache/history`) | Bind mounts are native and fast. The build creates `<cache>`, `exports/` and `history/` as you and sets `XCLD_UID`/`XCLD_GID`, so the container can write them; the server warns at start when it can't. |
+| Windows, macOS (Docker Desktop) | `volume` | the named Docker volume `xcld-state` (`/xcld-state`) | Every file operation on a Docker Desktop bind mount is a slow round trip. Measured on Windows with history on a bind mount: the gate **fails** (p95 6.5 s / 4.2 s, 71 errors; a journal write p50 about 180 ms vs 5–11 ms on the volume). `docker compose down -v` deletes the volume. |
+
+Compose can't pick a mount by value, so it mounts both the cache folder and the volume (the
+volume stays empty with `cache`) and passes `XCLD_HISTORY`; the server and `xcld` resolve the
+state dir from it (`tools/storage.mjs`). `tests/compose-state.test.mjs` checks both modes with
+`docker compose config`. The state dir has the layout below, so on Linux a board's entries are
+in `<cache>/history/history/<path>/`. Without `XCLD_HISTORY` (a server run outside compose) it
+is `boards/.xcld/`, a dot folder that the watcher, the board list and the exports ignore. On the
+first start with another state dir, data under `boards/.xcld/` is copied over once (the old
+copy stays; a large history takes a while, during which writes wait). `xcld history export`
+copies a board's history out (below).
+
+An earlier development build used `XCLD_STATE_DIR` (a volume name or a host folder) and
+`XCLD_EXPORT_DIR` (the export folder). Compose no longer reads them; the build keeps their
+lines, prints a one-line notice and adds the mapped settings when they're missing: a folder
+`XCLD_STATE_DIR` gives `XCLD_HISTORY=cache` in that folder, a volume name `volume`, and
+`XCLD_EXPORT_DIR` (else a folder `XCLD_STATE_DIR`) gives `XCLD_CACHE_DIR`
+(`tests/build-env.test.mjs`).
 
 | Path | Holds |
 |---|---|
-| `branches/<path>/<authorKeySafe>.<id>.json` | The journal: one file per write not yet committed. `{ id, board, author, displayName, base, writtenAt, receivedAt, kind: "json" \| "mermaid", elements, appState?, files?, raw?, ops?, mermaid? }`. `id` sorts by arrival time. |
-| `history/<path>/<UTC>-<authorKeySafe>.excalidraw` + `.meta.json` | One entry per author turn: the master text after the turn, and `{ version, author, displayName, base, parents, applied, overwritten, coalescedCount, closedBy, openedAt, lastCommitAt, lastBranchId, kind }`. |
-| `state/<path>.json` | Per board, the commit point: the committed `version`, `masterMeta` (element id → `{ writtenAt, author }`, fed to `mergeBoard`), `last` (the last commit), `open` (the open history entry), `mermaid` (the last applied Mermaid source). |
-| `bases/<path>/<version>.excalidraw` | The base store: versions that left the server and could otherwise be folded away. |
+| `branches/<path>/<authorKeySafe>.<id>.json` | The journal: one file per write not yet committed. `{ id, board, author, displayName, base, writtenAt, receivedAt, kind: "json" \| "mermaid", elements, appState?, fileRefs?, template?, ops?, mermaid?, legacy? }`. `id` sorts by arrival time. |
+| `history/<path>/<UTC>-<authorKeySafe>.delta.json.gz` | One entry per author turn, as a **delta** against the version the entry started from (history v2, below). |
+| `history/<path>/<…>.excalidraw.gz` | Or the entry as a full **checkpoint** record. |
+| `history/<path>/<…>.excalidraw` | An entry written before history v2: a full record, read as a checkpoint. |
+| `history/<path>/<…>.meta.json` | `{ version, author, displayName, base, parents, applied, overwritten, coalescedCount, closedBy, openedAt, lastCommitAt, lastBranchId, kind, record, depth, pinned?, pinnedAt? }`. An open (human) entry's meta lives in the state until it closes. `record: "none"` marks a meta-only entry (below). |
+| `state/<path>.json` | Per board, the commit point: the committed `version`, `masterMeta` (element id → `{ writtenAt, author }`, fed to `mergeBoard`), `last` (the last commit), `open` (the open entry's meta), `mermaid` (the last applied Mermaid source), `records` (record format), `depth` (deltas from the nearest checkpoint to the current version's entry). |
+| `bases/<path>/<version>.excalidraw` | The base store: versions that left the server and could otherwise be folded away (full records). |
+| `files/<path>/<fileId>.<hash16>.json` | Images (`files` entries), stored once per board. |
 
-Master stays `boards/<path>.excalidraw`. **A version id is the sha256 of master's bytes**, the
-same hash the `ETag` already carries.
+- **History v2: change-only entries** (lead, 2026-10-07; `tools/history.mjs`).
+  - A **delta** stores what the turn changed against its parent, the version the entry
+    started from (the entry before it): the added and changed elements, deletions as
+    tombstones (`deleted` ids), the element order as runs of the parent's elements plus the
+    new ones, `appState` only when it changed, and the scene's other top-level fields. A
+    coalesced human entry rewrites its delta against the same parent each save.
+  - A **checkpoint** is the whole board. One is written for a board's first entry, every 20
+    entries (`checkpointEvery`), for an entry whose parent can't be read, and when a version
+    is pinned (`checkpoint(board, { pin: label })` rewrites the current entry as a
+    checkpoint; snapshots as pinned versions will call it). So a version is rebuilt from the
+    nearest checkpoint plus **at most 19 deltas**.
+  - Both are gzipped JSON. Rebuilt versions are byte-identical to what was committed (they
+    hash to their id); the property test checks that for every version.
+  - **Migration:** entries from slices 2 and 3 are full records and stay valid as
+    checkpoints. A state without `depth` makes the next entry a checkpoint. An open pre-v2
+    entry is rewritten as a checkpoint on its next save.
+  - **Size, measured** (`node tests/history-size.mjs`: 100 turns at 1,500 elements with
+    Excalidraw-like random ids and seeds, about 5 changed elements per turn, human turns of two
+    coalesced saves and agent turns that read first): **history 140 MB before, 1.11 MB
+    after** (six checkpoints 0.69 MB, 95 deltas 0.11 MB, metas 0.31 MB); bases 69 MB before,
+    0 after. With the merge-test fixture elements (fixed seeds, short ids): 130 MB → 0.56 MB.
+- **Records.** A base record (and a pre-v2 history record) is the scene with `files` emptied
+  plus `"xcld": { schema: 2, version, files: [[fileId, key]] }`; v2 history records carry
+  `"xcld": { schema: 3, record, version, parent?, depth, files }`. Images are restored from
+  `files/` on read. Ten saves of a board with a 1 MB image add about 1 MB, not 10 MB
+  (tested).
+- Slice-2 records embedded images. On load, records over 32 KB are migrated (each one is
+  replaced atomically, and both layouts stay readable).
+- Master stays `boards/<path>.excalidraw`, with images inline.
+- **A version id is the sha256 of master's bytes**, the same hash the `ETag` already carries.
+  The commit step writes master in Excalidraw's own layout (two-space JSON), so a tab save
+  keeps its exact text and hash.
+- **Losers stay in history only** (lead, 2026-10-07). An overwritten unit's losing elements
+  are kept in the entry meta's `overwritten`, surfaced by the `merged` SSE event (summary, for
+  the banner) and by `xcld history export`. Nothing re-applies them: the merge only reports
+  them, records hold only committed versions, and a loser never gets a version id, so it
+  can't be opened as a canvas version. A write whose every change lost leaves master as it
+  is; its losers fold into the author's open entry, or go into a **meta-only entry**
+  (`record: "none"`, `closedBy: "unchanged"`, the version it lost against, no record file),
+  and the `merged` event still goes out. Tested: random sessions never bring a loser back
+  unless a writer sends it again.
+- **`xcld history export <board> [--to <dir>] [--full]`** reads the state dir directly
+  (`XCLD_HISTORY`), next to a running server. The default writes the records as stored,
+  decompressed (`<entry>.checkpoint.json`, `<entry>.delta.json`, `<entry>.meta.json`,
+  `files/`); `--full` writes every entry rebuilt as `<entry>.excalidraw` (images inline).
+  Both write `index.json`. The default destination is `<cache>/exports/<board>`: compose
+  mounts the host's cache folder (`XCLD_CACHE_DIR`) at `/xcld-cache` and passes its host path,
+  so `docker exec xcld-collab xcld history export <board>` lands in
+  `~/.excalidraw/exports/<board>/` on the host and says so. It refuses any destination in the
+  state dir (also through a second path to the same folder).
 
-**Author keys** (lead, 2026-10-06): `human:<name>#<tabId>`, `agent:<clientName>#<processId>`,
-`cli:<XCLD_AUTHOR>`, `external`. Equal write times go to the greater key. Until the write API
-adds identities, tab saves through `PUT` share `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`.
+**Author keys** (lead, 2026-10-06/07):
+
+| Key | Who |
+|---|---|
+| `human:<name>#<tabId>` | A tab, from its `X-Xcld-Author-Name` and `X-Xcld-Tab` headers. Without them: `human:<XCLD_AUTHOR_NAME or anonymous>#legacy` |
+| `agent:<clientName>#<processId>` | `xcld mcp`: MCP `clientInfo.name`, plus 6 hex chars generated once per process, so two sessions of one client differ |
+| `cli:<XCLD_AUTHOR>` | `xcld write`; default `cli:cli`. `POST /api/branch` without an author is `cli:api` |
+| `external` | A direct write to the master file |
+| `init` | The first snapshot of a board that existed before versions, taken on its first read or write |
+
+Equal write times go to the greater key.
 
 The pipeline, per write:
 
-1. **Ingest (Hook 0).** Check the author key, kind, and element ids. Stamp `receivedAt` (and
-   `writtenAt`, if the writer didn't send one). Then write the branch file atomically, with an
-   fsync. From here the write is never dropped.
+1. **Ingest (Hook 0).** Check the board path, author key, kind, element ids and files. Stamp
+   `receivedAt` (and `writtenAt`, if the writer didn't send one). Store new images, then write
+   the branch file atomically, with an fsync. From here the write is never dropped.
 2. **Per-board FIFO queue.** One commit runs per board at a time, in submit order. Different
    boards commit in parallel.
 3. **Commit (Hook 2), the only writer of master.**
-   - First, adopt any direct write to master (see below).
+   - First, adopt any direct write to master (see below). Master's signature (inode, mtime,
+     size) tells whether it changed, without reading it.
    - Then fast-forward if master still equals the branch's base; otherwise run `mergeBoard`
-     against the base. A fast-forward keeps the writer's exact bytes.
-   - A base that no longer resolves returns `unknown-base` (409 in the coming write API).
-     Identical content returns `unchanged` and writes nothing.
-   - **Write order:** the history entry, then `state/<path>.json` (fsync, the commit point),
-     then master, then the branch file is deleted. Branches aren't archived: their content is
-     the history entry, and an overwritten loser's elements are kept in the entry's
-     `overwritten`.
-4. **Post-commit (Hook 3), asynchronous.**
+     against the base. A fast-forward keeps the writer's own scene.
+   - A base that doesn't resolve returns `unknown-base` (409). So does a base on a board that
+     was deleted since. Identical content returns `unchanged` and writes nothing.
+   - **Write order:**
+     1. the history record and meta, in parallel;
+     2. `state/<path>.json`, with an fsync: **the commit point, and the writer gets its
+        answer here**;
+     3. master;
+     4. the branch file is deleted.
+
+     The board's queue waits for steps 3 and 4 before the next commit, and GET serves the
+     committed text meanwhile. Branches aren't archived: their content is the history record,
+     and an overwritten loser's elements are kept in the entry's `overwritten`.
+   - **I/O errors are retried**, the commit and the master write alike, with backoff: 0.5, 1,
+     2 and 4 s, then every 10 s. The write stays in the journal, the board's queue waits, and
+     other boards carry on. `GET /api/status` shows `pending` per board and `failing`
+     commits.
+4. **Post-commit (Hook 3), after master is written.**
    - An SSE `merged` event `{ name, version, author, applied, overwritten, unbound }`, without
      the loser elements.
    - If master's bytes changed: the usual `board` event and the export and rules hooks.
+
+**Write API** (`app/server/api.mjs`):
+- **`POST /api/branch/<path>`** waits up to `WRITE_WAIT_MS` (5 s; `writeWaitMs` in tests) for
+  the commit. It answers 200 `merged`, or 202 `queued` with the branch id once the write is
+  journaled (never before).
+- **`PUT /api/board/<path>`**, the tab, has these semantics (lead Q1):
+  - `If-Match` naming the current version: a fast-forward.
+  - `If-Match` naming an older version the server knows: **merges**, and returns 200 with
+    `merged: true` and the merged master. The tab applies it (it rebases edits made since
+    the save, or shows the master as is for an inbox conversion).
+  - An unknown base: 409.
+  - `If-None-Match: *` starts from an empty board.
+  - No header: unguarded.
+- `GET /api/config` exposes `XCLD_AUTHOR_NAME`, which the build seeds from
+  `git config user.name` (or the OS user) and never overwrites.
 
 **Coalescing (lead Q2).**
 - A human's consecutive commits fold into the open entry; `coalescedCount` counts them.
@@ -499,8 +615,7 @@ The pipeline, per write:
   - `checkpoint(board)` is called (`checkpoint`, for Ctrl+S);
   - the board file is deleted (`deleted`).
 - Agent, CLI and external writes never coalesce: each is its own entry, closed at once
-  (`agent-write`). This matches "every agent write is a version" and "close before an agent
-  merge".
+  (`agent-write`, or `init`).
 - On restart, an open entry past the idle limit is closed.
 
 **Base retention.**
@@ -508,23 +623,30 @@ The pipeline, per write:
   version it held would vanish. Versions in closed entries stay resolvable from history.
 - A version is copied into the base store when:
   - it is read through `GET /api/board` (its ETag), `readMaster` or `readVersion` while it
-    isn't a closed entry;
+    isn't a closed entry. MCP `read_board` and `xcld read` read through GET;
   - or a fold would drop it while another queued branch references it. Queued branches
     hold a reference count, from ingest until their commit.
-- The writer's own commit response doesn't need a copy: only that author's next commit can
-  fold it, and that commit uses it as its own base.
 - Copies are kept 24 hours after the last hand-out (`baseTtlMs`), never while referenced or
-  current. The GC runs on load and at most every 10 minutes per board.
+  current. A copy of a version that becomes a closed history entry is dropped as soon as the
+  closing state is durable: history resolves it. The GC runs on load and at most every 10
+  minutes per board.
+- Base copies are full, uncompressed records (choice, 2026-10-07): they are written on the GET
+  path and short-lived, so no delta or gzip work is added there.
+- The last 8 versions per board are also kept in memory. That is a bonus, not a guarantee:
+  after a restart only the disk counts.
 - This is not history pruning (#23).
 
 **Crash recovery (D2).** The branch files are the journal.
 - On start, every remaining branch is re-queued, oldest `writtenAt` first.
 - A branch whose id is `state.last.branchId` already committed: it is only deleted. If master
   doesn't match the committed version while that branch file still exists, master is rolled
-  forward from the history entry.
+  forward from the history record.
 - A crash before the state write replays the commit from the same state, to the same entry
   name, so nothing is applied twice.
-- `tests/versions.test.mjs` kills a real process at each step, with and without coalescing.
+- `tests/versions.test.mjs` kills a real process at each step, for a new delta entry, a
+  coalesced delta entry and a commit on a checkpoint boundary, then checks that every version
+  still rebuilds. The steps are: after ingest, mid-history, after the state write (the answer),
+  after master, and before the journal removal.
 
 **External writes.**
 - When the watcher sees a settled master that differs from the last committed version, it
@@ -537,18 +659,121 @@ The pipeline, per write:
 - A deleted master leaves history in place, and the next write starts a new board.
 - Files that don't parse, or have elements without ids, aren't adopted. They are logged and
   replaced by the next commit.
+- A master read on a Docker Desktop bind mount right after the file was replaced can come back
+  short (seen under load). Reads retry until the JSON parses.
 
-**Internal API for the write API and server-side Mermaid** (`api.versions`):
-- `submitBranch(board, { author, base, writtenAt?, kind?, elements, appState?, files?, raw?, ops?, mermaid? }, { onIngested? })`
-  resolves to `{ status, version, applied, overwritten, unbound, branchId, post }`.
-  - `onIngested(branchId)` fires once the write is journaled.
-  - `kind: "mermaid"` with `mermaid: { source, hash }` records the applied source per board.
-    `elements: null` records it without changing master.
-- `readVersion(board, version)` and `readMaster(board)` return `{ version, text, scene }`, or
-  null.
-- Also: `readState(board)`, `readMermaid(board)`, `checkpoint(board)`, `adoptExternal(board)`,
-  and `whenIdle()`.
+**Interfaces for server-side Mermaid (slice 4b)** (`api.versions`, stable):
+- `submitBranch(board, { author, displayName?, base, writtenAt?, kind?: "json" | "mermaid", elements | null, appState?, files?, template?, ops?, mermaid?: { source, hash } }, { onIngested?, source? })`
+  resolves to `{ status, version, fastForward, applied, overwritten, unbound, scene, branchId, finished, post, timings? }`.
+  - `status` is `committed`, `unchanged`, `unknown-base`, `invalid`, or `queued` after
+    `close()`.
+  - `onIngested(branchId)` fires once the write is journaled. `finished` resolves when
+    master is on disk; `post` when SSE and export ran.
+  - `kind: "mermaid"` with `mermaid: { source, hash }` records the applied source per board
+    (`readMermaid`). `elements: null` records it without changing master.
+  - `writtenAt` should be when the `.mmd` was written, not when it was applied (D8).
+- `readVersion(board, version)` → `{ version, text, scene }` (pins the version);
+  `readMaster(board)` → the same for the current master; `readMermaid(board)` →
+  `{ source, hash, author, writtenAt, appliedAt, branchId, version }` or null.
+- Also: `readState(board)` (now with `depth`), `checkpoint(board, { pin? })` (a `pin` label
+  makes the current version a full checkpoint and labels its meta), `adoptExternal(board)`,
+  `status()`, `timings()`, `whenIdle()`.
+- A `status: "unchanged"` result can carry `overwritten` (every change lost); its `post`
+  still sends the `merged` event.
 
+## Performance
+
+**Gate (lead, slice 3, release-blocking):** with one board, a simulated tab saving through
+`PUT` about once a second, and three agents writing through `POST /api/branch` every 1–3 s
+(some on the same units), the end-to-end write latency (submit to merged answer, over HTTP
+against the running container) has **p95 ≤ 450 ms** at both 50 and 1,500 elements. The lead
+wants it near 250 ms for now and eventually 100 ms.
+
+Reproduce it with `XCLD_TIMING=1 docker compose up -d --wait`, then
+`node tests/versions-load.mjs --url http://127.0.0.1:3100`. The script runs 2 minutes and at
+least 300 writes per size, prints p50/p95/p99 per writer and per-stage timings, and exits 1
+above the gate. It is not part of `node --test tests`.
+
+Measured on a Windows 11 host with Docker Desktop (WSL 2): 300 writes per size, 2 min each,
+p50 / p95 / p99 in ms.
+
+| Step | 50 elements | 1,500 elements |
+|---|---|---|
+| Before tuning (all versions files on the bind mount) | 336 / 1273 / 1592 | 739 / 1265 / 1453 |
+| Fewer file operations (mkdir cache, master signature, meta at close, journal removal after the answer, recent versions in memory) | 202 / 933 / 1221 | 429 / 941 / 1470 |
+| Answer at the commit point, history files in parallel | 139 / 648 / 810 | 291 / 773 / 1410 |
+| Same code, versions data on a named volume (compose default) | **40 / 108 / 142** | **141 / 326 / 457** |
+
+**History v2 re-run** (2026-10-07, image `037755c`, volume storage, same host and scenario).
+The host was slower on fsync that day than in the runs above (journal p50 about 19 ms at 50
+elements vs 6), so the old image was re-measured in between, on the same day:
+
+| Run | 50 elements | 1,500 elements | Gate |
+|---|---|---|---|
+| v2, run 1 | 63 / 408 / 1565 | 136 / 336 / 1072 | pass |
+| v2, run 2 | 62 / 139 / 229 | 132 / 239 / 294 | pass |
+| Slice 3 without v2 (`70451ec`), same day | 58 / 103 / 191 | 139 / **511** / 1300 | **fail** (journal p95 up to 426 ms) |
+| v2, run 3 (final image) | **61 / 109 / 176** | **126 / 228 / 296** | pass |
+
+The history stage at 1,500 elements is unchanged within noise (p50 / p95 ms): 3.7–4.4 /
+10.1–10.8 in run 3, against 4.8 / 10.2 before v2 and 4.4–4.7 / 8.5–13.4 for the old image the
+same day. A delta replaces a 1.3 MB write with a few KB, but on the volume that write was cheap
+already; computing it costs about 0.3 ms when the merge kept master's element objects and 2.8 ms
+when every element is a freshly parsed object (a fast-forward), and gzipping a checkpoint (every
+20th entry) about 7 ms. The tails come from the journal and state fsyncs, which v2 keeps (#30).
+History on a Docker Desktop **bind mount** fails the gate (measured: p95 6.5 s / 4.2 s, 71
+errors), hence the per-OS default.
+
+Final run, per writer (p50 / p95 / p99 ms):
+
+| Size | Tab (PUT) | Agents (POST) |
+|---|---|---|
+| 50 | 42 / 106 / 149 | 38 / 108 / 142 |
+| 1,500 | 150 / 318 / 435 | 133 / 395 / 466 |
+
+**Where the time goes**, at 1,500 elements, final run, p50 / p95 ms:
+- **Before the answer:**
+  - CPU: receive (upload and `JSON.parse` of the request) 20–30 / 48–86; merge 23 / 42;
+    serialize 6 / 17; respond 4 / 7.
+  - I/O: journal 14–16 / 40–44; history 7 / 23–32; state 7 / 13–16; master signature 3.5 / 8.
+  - Queue wait 0 / 94–185.
+  - Merge share of the server time before the answer: 18.5% (4% at 50 elements).
+- **After the answer:** master write 64 / 151–181 (the bind mount); journal removal 1; SSE
+  and export 2.5 / 6.
+- At 50 elements the time before the answer is mostly I/O: about 16 of 20 ms p50.
+
+**CPU profile** (`node --cpu-prof` of a second server process inside the container, with the
+load client in the same container; profiles kept out of git):
+
+| Size | Wall | Idle (waiting on I/O and timers) | GC | Top self time |
+|---|---|---|---|---|
+| 50 | 122 s | 96.9% | 0.1% | fs calls (open, write, close, rename, stat): no function above 0.2% |
+| 1,500 | 130 s | 77.8% | 1.3% | `canonicalText` (`JSON.stringify` of the board) 2.4%, merge `sameFields` 2.0%, request `JSON.parse` in `handle` 1.9%, `mergeBoard` 1.7%, sha256 `update` 1.4% |
+
+By total time at 1,500: `commitBranch` 10.0%, `mergeBoard` 6.2% (`changedIds` 3.1%),
+`writeFileAtomic` 2.5%, `canonicalText` 2.4%. That is about 95 ms of server CPU per write,
+including agents' GETs.
+
+**Optimizations, ranked by measured effect.** Done in this slice:
+
+| # | Change | Effect | Risk |
+|---|---|---|---|
+| 1 | Versions data on a named volume (`XCLD_HISTORY=volume`) | p95 648 → 108 (50), 773 → 326 (1,500) | `docker compose down -v` deletes it. Since history v2 the default is per OS: `<cache>/history/` on Linux, the volume on Docker Desktop |
+| 2 | Answer at the commit point; master, journal removal, SSE and export after | Takes the master write (p50 30–64, p95 106–181 ms) out of the answer | A file reader may see the previous master for tens of ms; GET serves the committed text. Durability unchanged (D2) |
+| 3 | Fewer file operations: mkdir cache, master signature instead of two reads, open entry meta at close, history files in parallel, stat from the write handle | p95 1270 → 933 → 648 on the bind mount (with #2) | Low |
+| 4 | Recent versions and master in memory; GET from memory while master is unchanged | Stale-base reads 45 → 0 ms p50 at 1,500; no half-written reads | Low |
+
+Next steps toward 250 ms, then 100 ms (not done):
+
+| # | Idea | Expected saving | Risk |
+|---|---|---|---|
+| 5 | Delta writes: send `base` plus the changed elements, not the whole board | Receive 20–30 ms p50, 50–86 p95; a smaller journal; half the merge compare. The largest step toward 100 ms | Medium: a new request shape; the journal keeps the delta |
+| 6 | Group commit: merge all writes queued for a board in memory, and write one state and one master | The queue-wait tail (p95 94–185 ms) | Medium: per-write failure handling |
+| 7 | `masterMeta` as an append log instead of rewriting the map in the state | 2–3 ms, less GC | Low |
+| 8 | Tab merge responses carry the changed elements, not the whole master | Respond 4–7 ms plus the tab's parse | Low (slice 5) |
+| 9 | Skip the journal fsync, or share one fsync with the state write | 5–10 ms at 1,500 | **Durability on power loss** (not on a process kill): needs the lead's call |
+| — | Skipping the content compare when `version`/`versionNonce` match the base | — | Rejected: agents don't bump versions, so their edits would be lost |
+| — | A cheaper version id than sha256 of the whole master | 6 ms | Rejected: the ETag contract |
 ## Annotation convention — free-form by default, local design rules
 
 **Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`

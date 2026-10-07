@@ -168,10 +168,101 @@ if (-not $DryRun -and $Target -eq 'runtime') {
   if (Test-Path $envPath) {
     $lines = @(Get-Content $envPath | Where-Object { $_ -notmatch '^\s*(XCLD_IMAGE|XCLD_TAG)\s*=' })
   }
+  # The canvas's default author name (the server can't see the host user). Seeded once from
+  # git config user.name, else the OS user; edit it in .env, the build never overwrites it.
+  if (-not ($lines | Where-Object { $_ -match '^\s*XCLD_AUTHOR_NAME\s*=' })) {
+    $authorName = ''
+    try { $authorName = [string](& git -C $root config user.name 2>$null) } catch {}
+    if (-not $authorName.Trim()) { $authorName = [Environment]::UserName }
+    $authorName = ($authorName -replace '[\r\n#=]', ' ').Trim()
+    if ($authorName) { $settings['XCLD_AUTHOR_NAME'] = $authorName }
+  }
+  # Storage (README, "Where history lives"). XCLD_CACHE_DIR is a host folder (default
+  # ~/.excalidraw) for exports and, with XCLD_HISTORY=cache, history. XCLD_HISTORY (advanced) is
+  # written once and never overwritten: Linux `cache` (bind mounts are native there),
+  # Windows/macOS `volume`, the Docker volume xcld-state (Docker Desktop bind mounts fail the
+  # write-latency gate).
+  $onLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
+  $hasLine = { param($name) [bool]($lines | Where-Object { $_ -match "^\s*$name\s*=" }) }
+  $envValue = {
+    param($name)
+    $line = $lines | Where-Object { $_ -match "^\s*$name\s*=" } | Select-Object -Last 1
+    if ($line) { ($line -replace "^\s*$name\s*=\s*", '').Trim().Trim('"', "'") }
+  }
+  $isFolder = { param($value) [bool]($value -and $value -match '[\\/]|^~') }
+  # Earlier builds wrote XCLD_STATE_DIR (a volume name or a folder) and read XCLD_EXPORT_DIR (a
+  # folder). Compose no longer reads them: map them to the new settings; their lines stay.
+  $oldNames = @('XCLD_STATE_DIR', 'XCLD_EXPORT_DIR' | Where-Object { & $hasLine $_ })
+  $oldState = & $envValue 'XCLD_STATE_DIR'
+  $oldExport = & $envValue 'XCLD_EXPORT_DIR'
+  $mapped = @()
+  if (-not (& $hasLine 'XCLD_HISTORY')) {
+    if ($oldState) {
+      $settings['XCLD_HISTORY'] = if (& $isFolder $oldState) { 'cache' } else { 'volume' }
+      $mapped += "XCLD_HISTORY=$($settings['XCLD_HISTORY'])"
+    } else {
+      $settings['XCLD_HISTORY'] = if ($onLinux) { 'cache' } else { 'volume' }
+    }
+  }
+  if (-not (& $hasLine 'XCLD_CACHE_DIR')) {
+    $oldCache = if (& $isFolder $oldExport) { $oldExport } elseif (& $isFolder $oldState) { $oldState }
+    if ($oldCache) {
+      $settings['XCLD_CACHE_DIR'] = $oldCache
+      $mapped += "XCLD_CACHE_DIR=$oldCache"
+    }
+  }
+  if ($onLinux) {
+    # Bind-mounted folders must be writable by the container user: your uid/gid (as build.sh).
+    $lines = @($lines | Where-Object { $_ -notmatch '^\s*(XCLD_UID|XCLD_GID)\s*=' })
+    $settings['XCLD_UID'] = (& id -u).Trim()
+    $settings['XCLD_GID'] = (& id -g).Trim()
+  }
   $lines += $settings.Keys | ForEach-Object { "$_=$($settings[$_])" }
   [System.IO.File]::WriteAllText($envPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+  # Create the cache folder and the subfolders the container writes now, as you: Docker would
+  # create a missing one owned by root on Linux.
+  $history = & $envValue 'XCLD_HISTORY'
+  $cache = & $envValue 'XCLD_CACHE_DIR'
+  if (-not $cache) { $cache = '~/.excalidraw' }
+  $separator = if ($cache -match '\\' -and $cache -notmatch '/') { '\' } else { '/' }
+  $cacheSub = { param($name) $cache.TrimEnd('\', '/') + $separator + $name }
+  if (-not (& $isFolder $cache)) {
+    Write-Warning "XCLD_CACHE_DIR=$cache in .env is not a folder path, so Compose would take it as a volume name. Use a path such as ~/.excalidraw."
+  } else {
+    $cacheFolder = if ($cache -match '^~(?=$|[\\/])') { Join-Path $HOME $cache.Substring(1).TrimStart('\', '/') } elseif ([System.IO.Path]::IsPathRooted($cache)) { $cache } else { Join-Path $root $cache }
+    $folders = @($cacheFolder, (Join-Path $cacheFolder 'exports'))
+    if ($history -eq 'cache') { $folders += Join-Path $cacheFolder 'history' }
+    foreach ($folder in $folders) {
+      $writable = $true
+      try { New-Item -ItemType Directory -Force -Path $folder -ErrorAction Stop | Out-Null } catch { $writable = $false }
+      if ($writable -and $onLinux) { & test -w $folder; $writable = $LASTEXITCODE -eq 0 }
+      if (-not $writable) {
+        $fix = if ($onLinux) { " (uid $($settings['XCLD_UID'])), so the container can't write it either. Fix: sudo chown -R $($settings['XCLD_UID']):$($settings['XCLD_GID']) $cacheFolder" } else { '' }
+        Write-Warning "$folder is not writable by you$fix"
+        break
+      }
+    }
+  }
   Write-Host "`n.env updated (XCLD_TAG=$tag). Start or restart the workspace:"
   Write-Host '  docker compose up -d --wait'
+  if ($oldNames) {
+    $old = $oldNames -join ' and '
+    if ($mapped) {
+      Write-Host "Note: .env has $old, which Compose no longer reads; mapped to $($mapped -join ', ') (added to .env). The old lines stay; delete them when you like."
+    } else {
+      Write-Host "Note: .env has $old, which Compose no longer reads (XCLD_HISTORY and XCLD_CACHE_DIR replace them); delete the old lines when you like."
+    }
+  }
+  switch ($history) {
+    'cache' {
+      Write-Host "Version history (XCLD_HISTORY=cache): $(& $cacheSub 'history'). Exports: $(& $cacheSub 'exports')."
+      if (-not $onLinux) { Write-Warning 'XCLD_HISTORY=cache on Docker Desktop is slow: history in a host folder fails the write-latency gate. The default here is XCLD_HISTORY=volume.' }
+    }
+    'volume' {
+      Write-Host "Version history (XCLD_HISTORY=volume): Docker volume xcld-state; 'docker compose down -v' deletes it. 'docker exec xcld-collab xcld history export <board>' copies a board's history to $(& $cacheSub 'exports')."
+    }
+    default { Write-Warning "XCLD_HISTORY=$history in .env must be volume or cache; the canvas won't start until it is." }
+  }
   if ($lines | Where-Object { $_ -match '^\s*COMPOSE_PROFILES\s*=.*\bwidget\b' }) {
     Write-Host 'Note: COMPOSE_PROFILES in .env enables the experimental chat widget (loads JS from esm.sh). Builds no longer set it and the default is canvas only; remove "widget" from that line to opt out.'
   } else {

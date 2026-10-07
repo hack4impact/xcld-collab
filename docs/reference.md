@@ -15,6 +15,10 @@ docker exec xcld-collab xcld <command> [args]      # or: docker compose exec can
   `./boards` folder. A path can include folders, for example `myproject/demo`.
 - **File paths** are container paths (`/boards/...`).
 - **Exit codes:** 0 on success, 1 on any error. Errors print one line to stderr.
+- **Writing:** `xcld write` (and MCP `write_board`) goes through the server at `XCLD_API_URL`
+  (default `http://127.0.0.1:3100`, the canvas inside the same container). Name yourself with
+  `docker exec -e XCLD_AUTHOR=docs-bot xcld-collab xcld write ...`; history then shows
+  `cli:docs-bot`.
 
 Engineers with Node 22 can skip Docker and run the same tools on the host:
 `XCLD_BOARDS_DIR=boards node tools/cli.mjs <command>`. In PowerShell, set
@@ -335,6 +339,50 @@ flowchart TD
 Free-text notes come out as comments, e.g.
 `%% Free text note_schema near n_valid (108px): Human note: validate schema edge`.
 
+### `xcld read <board>`
+
+Reads the board through the running server (`XCLD_API_URL`, default
+`http://127.0.0.1:3100`) and prints `{ board, version, scene }`. Pass `version` as `--base`
+to `xcld write`. If the server isn't reachable it reads the file and says so (`warning`);
+that version may then be refused as an unknown base.
+
+### `xcld write <board> <file.excalidraw|-> --base <version|none> [--json]`
+
+Writes a board through `POST /api/branch`, so the server merges it with everything written
+since `--base` instead of overwriting (`none` for a new board). The file (or stdin with `-`)
+is an `.excalidraw` scene or a bare element array, and it is the **whole board**. The author is
+`cli:<XCLD_AUTHOR>` (default `cli:cli`). Prints what was merged and overwritten, or that the
+write was queued (safe, lands later); exits 1 when nothing was written (bad input, unknown
+base, server down).
+
+### `xcld history export <board> [--to <dir>] [--full] [--json]`
+
+Copies a board's version history out of the history folder (`XCLD_HISTORY`: the `xcld-state`
+volume on Windows/macOS, `~/.excalidraw/history/` on Linux). It reads the files directly, so it
+works while the server runs, and with the server stopped.
+
+- **Default:** the history as stored, decompressed: `<entry>.checkpoint.json` (a full board),
+  `<entry>.delta.json` (what that turn changed: `added`, `modified`, `deleted`), the images
+  under `files/`.
+- **`--full`:** every entry rebuilt as `<entry>.excalidraw`, a board you can open in
+  Excalidraw (images inline).
+- Both write `<entry>.meta.json` (author, times, `applied`, and `overwritten`: the edits that
+  lost, with their elements) and `index.json` (entries in order).
+- **Where:** `--to <dir>` (a path as `xcld` sees it), else `<cache>/exports/<board>`. Compose
+  mounts the host's cache folder (`XCLD_CACHE_DIR`, default `~/.excalidraw`) at `/xcld-cache`,
+  so from the host:
+
+```text
+> docker exec xcld-collab xcld history export sandbox/demo
+Exported 12 history entries of sandbox/demo (1 checkpoint, 11 deltas) to /xcld-cache/exports/sandbox/demo
+On the host: ~/.excalidraw/exports/sandbox/demo
+```
+
+  Running the image without that mount, the export stays in the container's `/xcld-cache`;
+  copy it out with `docker cp xcld-collab:/xcld-cache/exports/sandbox/demo ./demo-history`.
+- It refuses a destination in the history folder, also when reached through another path.
+  Exits 1 when the board has no history.
+
 ### `xcld open-in-canvas <checkpointId> <board> [--overwrite]`
 
 Bridges a drawing from the Excalidraw MCP Apps chat widget into the persistent canvas. It
@@ -425,9 +473,9 @@ Prints usage.
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.excalidraw` | Snapshots from `xcld snapshot`; flat boards still use `boards/.snapshots/<name>.<timestamp>.excalidraw` |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.mmd` | The snapshot's Mermaid twin. Written unless `XCLD_AUTO_EXPORT=off` |
 | `boards/.exports/<path>.mmd` | Always-current Mermaid of each board. Only with `XCLD_AUTO_EXPORT=save` |
-| `boards/.xcld/history/<path>/` | Version history the server keeps for every board change: one `<UTC>-<author>.excalidraw` plus `.meta.json` per author turn (a person's consecutive saves fold into one entry until someone else writes, 3 minutes pass or a checkpoint). Read-only for you; see [DESIGN](DESIGN.md#versions-storage-and-commit-pipeline) |
-| `boards/.xcld/branches/`, `state/`, `bases/` | The server's write journal, per-board commit state and kept base versions. Don't edit them |
-| `.env` | Written by the build (`XCLD_IMAGE`, `XCLD_TAG`; `XCLD_UID`/`XCLD_GID` on Linux). Your settings go here too |
+| History folder: `~/.excalidraw/history/` on Linux (`XCLD_HISTORY=cache`), the `xcld-state` Docker volume on Windows/macOS (`XCLD_HISTORY=volume`) | Version data the server keeps: `history/<path>/` (one entry per author turn: a person's consecutive saves fold into one entry until someone else writes, 3 minutes pass or a checkpoint; each entry is a gzipped delta of what changed, `<UTC>-<author>.delta.json.gz`, or every 20th a full checkpoint, `.excalidraw.gz`, plus `.meta.json`), `files/<path>/` (images, stored once), and the write journal, commit state and kept bases (`branches/`, `state/`, `bases/`). Don't edit it; read it with `xcld history export`. On Windows/macOS `docker compose down -v` deletes it. Without `XCLD_HISTORY` (running the server outside compose) it is `boards/.xcld/` |
+| `~/.excalidraw/exports/<board>/` (`XCLD_CACHE_DIR`, mounted at `/xcld-cache`) | Where `xcld history export` writes |
+| `.env` | Written by the build (`XCLD_IMAGE`, `XCLD_TAG`; `XCLD_AUTHOR_NAME` and `XCLD_HISTORY` once; `XCLD_UID`/`XCLD_GID` on Linux). Your settings go here too. An older `XCLD_STATE_DIR` / `XCLD_EXPORT_DIR` line is no longer read: the build maps it to `XCLD_HISTORY` / `XCLD_CACHE_DIR` and leaves it in place |
 
 **Board paths:** one or more segments joined by `/`. Each segment uses letters, digits, `.`,
 `_` and `-`, starts with a letter or digit, and is at most 100 characters. Empty segments,
@@ -439,38 +487,69 @@ levels.
 
 - `GET /api/boards` returns `{ boards, folders }` with board paths, folder/leaf names, board,
   Mermaid and view-inbox presence, pending states and last modified time.
-- `GET /api/board/<path>` returns the board JSON with `ETag: "<sha256 of the file on disk>"`,
-  or 404 `{"error":"board-not-found"}`.
-- `PUT /api/board/<path>` (`Content-Type: application/json`) writes the board and returns
-  `{ ok: true, hash }` plus the new `ETag`. Saves based on an old board are rejected:
+- `GET /api/board/<path>` returns the board JSON with `ETag: "<version>"`, or 404
+  `{"error":"board-not-found"}`. A **version** is the sha256 of master's bytes. The server
+  keeps a version it handed out resolvable as a base (24 h after the last read), so read
+  through it before you write.
+- `POST /api/branch/<path>` (`Content-Type: application/json`) is how agents and scripts
+  write: `{ author?, displayName?, base, writtenAt?, kind: "json", elements, appState?, files? }`.
+  Send the **whole board** you want; elements you leave out are deleted, unless they were
+  added after your `base`. `base` is the version you read (`null` for a new board). The
+  server merges your write with everything committed since `base`
+  ([rules](DESIGN.md#merge-rules)) and waits up to 5 s for the commit:
 
-  | Header | Saves when | Otherwise |
+  | Status | Body | Meaning |
   |---|---|---|
-  | `If-Match: "<hash>"` | the file on disk still hashes to `<hash>` | 409 |
-  | `If-None-Match: *` | the board doesn't exist yet | 409 |
-  | neither | always: **unguarded**, the last write wins (kept for scripts) | — |
+  | 200 | `{ status: "merged", version, fastForward, applied, overwritten, unbound, branchId }` | Committed. Use `version` as your next `base` |
+  | 202 | `{ status: "queued", branchId, base }` | Safely in the journal, committed later; never dropped |
+  | 400 | `{ error }`, e.g. `base-required`, `invalid-author`, `invalid-elements` | Not written |
+  | 409 | `{ error: "unknown-base", base, currentVersion }` | The server doesn't know `base` (expired, or never read through it). Read again |
 
-  The server hashes the file on disk at save time, so direct file writes by agents count, not
-  just API saves. A 409 body is `{"error":"stale-save","currentHash":"<sha256>"}`
-  (`currentHash` is `null` when the board is gone). Weak `W/` tags never match; a bare hash
-  without quotes is accepted. The canvas always sends one of the two headers; on 409 it
-  re-applies your unsaved edits to the newer board and saves again (see
-  [Design](DESIGN.md)).
+  `author` is an author key: `agent:<client>#<id>`, `cli:<name>` (default `cli:api`), or
+  `human:<name>#<tab>`. `overwritten` lists units both sides changed, with `winner` and
+  `loser` (`side`, `author`, `writtenAt`); the losing version stays in history.
 
   ```text
-  > curl -si http://127.0.0.1:3100/api/board/sandbox/guard
-  HTTP/1.1 200 OK
-  ETag: "b6747c4c3549441bcc2c69173d47b35af6f24d8e745a97c6b470552ffb9dd342"
-  > # an agent rewrites boards/sandbox/guard.excalidraw, then:
-  > curl -si -X PUT -H "Content-Type: application/json" -H 'If-Match: "b6747c4c…"' --data-binary @board.json http://127.0.0.1:3100/api/board/sandbox/guard
-  HTTP/1.1 409 Conflict
-  ETag: "fe99bb1e46997e8d9a4afbaaebc7fc9c9f6c3a2f26c639ab721cc3e2314b50fd"
-  {"error":"stale-save","currentHash":"fe99bb1e46997e8d9a4afbaaebc7fc9c9f6c3a2f26c639ab721cc3e2314b50fd"}
+  > curl -s -X POST -H "Content-Type: application/json" --data-binary @post.json http://127.0.0.1:3100/api/branch/sandbox/guard
+  {"status":"merged","version":"448894bb02a9…","fastForward":true,"applied":[{"unitId":"b","label":"ellipse b","kind":"added","elementIds":["b"]}],"overwritten":[],"unbound":[],"branchId":"01M4ASRFXA00RZMK0DQ02F"}
   ```
 
-- `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
+- `PUT /api/board/<path>` (`Content-Type: application/json`) is the canvas's save. It sends
+  the version it started from:
+
+  | Header | Result |
+  |---|---|
+  | `If-Match: "<version>"`, the current version | Saved as sent (a fast-forward): 200 `{ ok, hash, version, merged: false, applied, overwritten, unbound }` |
+  | `If-Match: "<version>"`, an older version the server knows | **Merged** with what was written since: 200 with `merged: true` and the merged board in `master`, which the tab shows |
+  | `If-Match` with a version the server doesn't know (or only weak `W/` tags) | 409 `{"error":"unknown-base","currentHash":"<version>"}`; also when the board was deleted since (`currentHash: null`) |
+  | `If-None-Match: *` | Starts from an empty board: creates it, or merges into a board created meanwhile |
+  | neither | **Unguarded**: overwrites whatever master is (kept for scripts). Prefer `POST /api/branch` |
+
+  `hash` and the `ETag` are the new version. The canvas identifies itself with
+  `X-Xcld-Author-Name` (percent-encoded UTF-8) and `X-Xcld-Tab` (`[A-Za-z0-9_-]`); without
+  them a save is authored `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`.
+
+  ```text
+  > curl -si -X PUT -H "Content-Type: application/json" -H 'If-Match: "6ca666afdf75…"' -H "X-Xcld-Author-Name: Ada%20Lovelace" -H "X-Xcld-Tab: tab1" --data-binary @board.json http://127.0.0.1:3100/api/board/sandbox/guard
+  HTTP/1.1 200 OK
+  ETag: "7e05b8e2f8ded474f2e6358733db7b896e6d931548f074dbb41e6cb1f9e72a20"
+  {"ok":true,"hash":"7e05b8e2f8de…","version":"7e05b8e2f8de…","merged":true,"applied":[{"unitId":"a","label":"rectangle a","kind":"changed","elementIds":["a"]}],"overwritten":[],"unbound":[],"master":{"type":"excalidraw",…}}
+  > curl -si -X PUT -H "Content-Type: application/json" -H 'If-Match: "0000"' --data-binary @board.json http://127.0.0.1:3100/api/board/sandbox/guard
+  HTTP/1.1 409 Conflict
+  {"error":"unknown-base","currentHash":"7e05b8e2f8ded474f2e6358733db7b896e6d931548f074dbb41e6cb1f9e72a20"}
+  ```
+
+- `GET /api/config` returns `{ authorName, writeWaitMs, timing }` (`authorName` is
+  `XCLD_AUTHOR_NAME`, for the canvas).
+- `GET /api/status` returns `{ ok, pending, failing }`: writes waiting in the journal per
+  board, and commits waiting on a retry after a disk error (retried with backoff 0.5, 1, 2, 4,
+  then every 10 s; the board's other writes wait, other boards don't).
+- `GET /api/timings[?clear=1]` (only with `XCLD_TIMING=1`) returns per-stage timings of recent
+  commits.- `GET /api/view/<path>` returns the raw `boards/<path>.view.json` inbox.
 - `GET /api/events` publishes `event: board` with `kind: "board"`, `"mermaid"`, `"view"` or
-  `"deleted"`.
+  `"deleted"`, and `event: merged` `{ name, version, author, applied, overwritten, unbound }`
+  after every commit, also after a write whose every change lost (`applied` empty, master
+  unchanged, `overwritten` lists what lost).
 
 ## MCP
 
@@ -500,7 +579,8 @@ label, never `<br/>`.
 | Tool | Inputs | Output |
 |---|---|---|
 | `list_boards` | optional `folder` | Same JSON shape as `xcld list --json`: `{ boards, folders }` |
-| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Mermaid text, Excalidraw JSON, or both, plus the effective design-rules briefing |
+| `read_board` | `board`, optional `format` = `mermaid` (default), `json` or `both` | Reads through the board server: Mermaid text, Excalidraw JSON, or both, the board's `version` (pass it as `base` to `write_board`), and the effective design-rules briefing. Falls back to the file with a `warning` when the server is down |
+| `write_board` | `board`, `base` (version from `read_board`, `null` for a new board), `elements` (the whole board), optional `appState`, `files` | Writes through `POST /api/branch` as `agent:<MCP client name>#<process id>`; returns `status` (`merged` or `queued`), `version`, `applied`, `overwritten`. Errors (unknown base, bad input) are tool errors |
 | `write_mermaid` | `board`, `mermaid` | Writes `boards/<path>.mmd`, creates folders, returns the file path, browser URL, replacement reminder and design-rules briefing; snapshots first when `snapshot,on-agent-write` is on |
 | `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
 | `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings |
@@ -680,7 +760,7 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 | My notes disappeared | The `.mmd` was rewritten, which replaces the board | Restore from `boards/.snapshots/` (copy the latest over `boards/<board>.excalidraw`). See the warning in the [user guide](user-guide.md#the-loop) |
 | The top bar says "Board changed elsewhere; your edits were re-applied" | An agent or another tab saved the board while you had unsaved edits | Nothing to do: your edits were merged onto the newer board and saved. Check the shapes you both touched |
 | "Save failed: the board kept changing elsewhere (3 retries)" | Something rewrites the board faster than the tab can merge | Stop the other writer, then make any edit to retry; your edits are still in the tab |
-| A script's `PUT /api/board/...` gets 409 `stale-save` | Its `If-Match` hash is not the file on disk any more | `GET` the board again and resend with the new `ETag`, or drop `If-Match` for an unguarded write |
+| A write gets 409 `unknown-base` | Its base version isn't known to the server: it expired (24 h after the last read), it was never read through the server, or the board was deleted | Read the board again (`GET /api/board`, MCP `read_board`, `xcld read`) and resend with that version as base |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
 | I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |
 | The browser shows an invalid-board banner | The `?board=` path is invalid | Fix the path in the URL or open <http://127.0.0.1:3100/> and choose a board |

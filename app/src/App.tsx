@@ -56,6 +56,7 @@ type Status = {
 const SAVE_DEBOUNCE_MS = 1000;
 const MAX_STALE_RETRIES = 3;
 const REAPPLIED_TEXT = "Board changed elsewhere; your edits were re-applied";
+const MERGED_TEXT = "Board changed elsewhere; the server merged your edits";
 const DEFAULT_APP_STATE: Partial<AppState> = {
   viewBackgroundColor: "#ffffff",
 };
@@ -318,6 +319,8 @@ const BoardView = ({ boardName }: { boardName: string }) => {
   // null hash = the board doesn't exist yet (sent as If-None-Match: *).
   const baseHashRef = useRef<string | null>(null);
   const baseElementsRef = useRef<readonly ExcalidrawElement[]>([]);
+  // True when the last save was merged by the server and the merged board is already shown.
+  const lastSaveMergedRef = useRef(false);
   // Loads, saves and conversions run one at a time so a reload can't interleave with a save.
   const queueRef = useRef<Promise<unknown>>(Promise.resolve());
 
@@ -415,9 +418,10 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     return currentSceneRef.current;
   }, [applyScene, setBase]);
 
-  // Saves with If-Match (or If-None-Match: * for a new board). On 409 the board changed
-  // elsewhere: "rebase" re-applies this tab's edits on the newer board and retries;
-  // "replace" (inbox conversions, which replace the board by design) just retries on the new base.
+  // Saves with If-Match (or If-None-Match: * for a new board). A save from an older base is
+  // merged by the server (200, merged: true, the merged master in the body). A 409 means the
+  // server doesn't know the base: "rebase" re-applies this tab's edits on the newer board and
+  // retries; "replace" (inbox conversions) just retries on the new base.
   const saveScene = useCallback(
     async (
       input: SceneState,
@@ -426,6 +430,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     ) => {
       let scene = input;
       let reapplied = false;
+      lastSaveMergedRef.current = false;
       for (let attempt = 0; ; attempt++) {
         const text = persistedSceneText(scene.elements, scene.appState, scene.files);
         const hash = textHash(text);
@@ -440,7 +445,26 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         }
         const response = await fetch(boardApiPath("board", boardName), { method: "PUT", headers, body: text });
         if (response.ok) {
-          const saved = await response.json() as { hash?: string };
+          const saved = await response.json() as { hash?: string; merged?: boolean; master?: SceneFile };
+          if (saved.merged && saved.master) {
+            // The server merged this save with changes made elsewhere: show the merged board.
+            // An autosave keeps edits made in this tab since the save was sent; an inbox
+            // conversion (which isn't on the canvas yet) just shows the merged board.
+            const masterHash = saved.hash ?? etagHash(response);
+            const masterText = `${JSON.stringify(saved.master, null, 2)}\n`;
+            const masterScene = sceneFromText(masterText);
+            if (onStale === "replace") {
+              applyScene(masterScene, textHash(masterText), true);
+              setBase(masterHash, masterScene.elements);
+            } else {
+              setBase(masterHash, scene.elements);
+              rebaseOnto({ hash: masterHash, text: masterText, scene: masterScene });
+            }
+            lastSaveMergedRef.current = true;
+            lastSavedHashRef.current = textHash(masterText);
+            setStatus({ level: "ok", text: `${MERGED_TEXT}; saved ${boardName}.excalidraw` });
+            return lastSavedHashRef.current;
+          }
           setBase(saved.hash ?? etagHash(response), scene.elements);
           lastSavedHashRef.current = hash;
           lastLoadedHashRef.current = hash;
@@ -492,7 +516,9 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       "converted view inbox",
       { onStale: "replace" },
     );
-    applyScene(scene, hash, true);
+    if (!lastSaveMergedRef.current) {
+      applyScene(scene, hash, true);
+    }
     return true;
   }, [applyScene, boardName, saveScene]);
 
@@ -530,7 +556,9 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       "converted Mermaid inbox",
       { onStale: "replace" },
     );
-    applyScene(scene, hash, true);
+    if (!lastSaveMergedRef.current) {
+      applyScene(scene, hash, true);
+    }
     if (isImageFallback) {
       setStatus({
         level: "warn",

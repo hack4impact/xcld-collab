@@ -179,11 +179,14 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   (e.g. `auth-flow`, `v2.data-model`).
 - **Snapshot at every hand-off.** Each agent → human → agent switch is a natural point.
   Snapshots are cheap, and `diff` always compares against the latest one.
-- **Don't edit the same board at the same moment as an agent.** If the board changes while
-  you have unsaved edits, the canvas no longer overwrites it: it re-applies your edits on top
-  and says "Board changed elsewhere; your edits were re-applied". If you and the agent changed
-  the same shape, only one of the two changes is kept (usually yours). Real merging with
-  versions is coming.
+- **Editing the same board as an agent works.** Your saves and the agent's writes are merged
+  by the server: different shapes never clash, and when you both changed the same shape (or
+  its label), the later change wins and the other one stays in version history. Agents should
+  write with `write_board` (or `xcld write`), which reports what was overwritten. The canvas
+  doesn't show a banner for merges yet; it shows "Board changed elsewhere; the server merged
+  your edits" in the status line. To look at the history, copy it out with
+  `docker exec xcld-collab xcld history export <board> --full` (every version as a file in
+  `~/.excalidraw/exports/<board>/`).
 
 ## What doesn't work yet
 
@@ -194,5 +197,5 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 - Some Mermaid shapes. A cylinder `[(DB)]` and other special shapes arrive as plain
   rectangles. Rectangles, diamonds `{}` and circles `(())` are kept.
 - Diagram direction. `to-mermaid` always writes `flowchart TD`.
-- Version history and merge on re-import: see
+- Browsing version history in the canvas, and merge on Mermaid re-import: see
   [Coming soon](../README.md#coming-soon).

@@ -5,25 +5,50 @@ import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/b
 import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
 import { effectiveExportMode } from "../../tools/rules.mjs";
-import { contentHash, createVersionStore, parseAuthorKey, staleSaveCheck } from "./versions.mjs";
+import { stateDirFromEnv } from "../../tools/storage.mjs";
+import { contentHash, createVersionStore, parseAuthorKey, parseEntityTags, readSettledJsonText, staleSaveCheck } from "./versions.mjs";
 
 export { contentHash, staleSaveCheck };
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
+// How long POST /api/branch waits for the commit before answering 202 `queued`.
+export const WRITE_WAIT_MS = 5000;
 
-// Slice 2: tab saves through PUT carry no identity yet, so they share one human author.
+// Tab saves without identity headers (older tabs, scripts) share one human author.
 const legacyAuthor = () => {
   const key = `human:${String(process.env.XCLD_AUTHOR_NAME ?? "").trim() || "anonymous"}#legacy`;
   return parseAuthorKey(key) ? key : "human:anonymous#legacy";
 };
 
-// SSE `merged` payloads leave out the overwritten elements (they are in history).
+const headerValue = (value) => (Array.isArray(value) ? value[0] : value);
+
+// A tab identifies itself with X-Xcld-Author-Name (percent-encoded UTF-8) and X-Xcld-Tab.
+// Returns null when the request is malformed.
+export const tabAuthor = (headers) => {
+  const rawName = headerValue(headers["x-xcld-author-name"]);
+  const tab = headerValue(headers["x-xcld-tab"]);
+  if (rawName === undefined && tab === undefined) {
+    return legacyAuthor();
+  }
+  let name;
+  try {
+    name = decodeURIComponent(String(rawName ?? "")).trim();
+  } catch {
+    return null;
+  }
+  const key = `human:${name}#${String(tab ?? "").trim()}`;
+  return parseAuthorKey(key)?.kind === "human" ? key : null;
+};
+
+// Responses and SSE leave out the overwritten elements (they are in history).
+const overwrittenSummary = (overwritten = []) => overwritten.map(({ loser, ...rest }) => ({ ...rest, loser: { side: loser.side, author: loser.author, writtenAt: loser.writtenAt } }));
+
 const mergedEvent = ({ name, version, author, applied, overwritten, unbound }) => ({
   name,
   version,
   author,
   applied,
-  overwritten: overwritten.map(({ loser, ...rest }) => ({ ...rest, loser: { side: loser.side, author: loser.author, writtenAt: loser.writtenAt } })),
+  overwritten: overwrittenSummary(overwritten),
   unbound,
 });
 
@@ -47,15 +72,8 @@ export const validateBoardName = (name) => validateBoardPath(name, { maxDepth: m
 const etagFor = (hash) => `"${hash}"`;
 
 const readCurrent = async (filePath) => {
-  try {
-    const content = await fs.readFile(filePath);
-    return { content, hash: contentHash(content) };
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return { content: null, hash: null };
-    }
-    throw error;
-  }
+  const text = await readSettledJsonText(filePath);
+  return text === null ? { text: null, hash: null } : { text, hash: contentHash(text) };
 };
 
 const send = (res, status, contentType, body) => {
@@ -71,6 +89,16 @@ const send = (res, status, contentType, body) => {
 
 const sendJson = (res, status, data) => {
   send(res, status, "application/json; charset=utf-8", `${JSON.stringify(data)}\n`);
+};
+
+// sendJson that records the response serialization in the commit's timings (XCLD_TIMING=1).
+const sendTimedJson = (res, status, data, timings) => {
+  const started = performance.now();
+  const body = `${JSON.stringify(data)}\n`;
+  if (timings?.stages) {
+    timings.stages.respond = performance.now() - started;
+  }
+  send(res, status, "application/json; charset=utf-8", body);
 };
 
 const sendError = (res, status, error, extra = {}) => {
@@ -135,6 +163,8 @@ export function createBoardApi({
   autoExport = autoExportFromEnv(),
   deleteDebounceMs = 300,
   settleMs = Math.min(Number.isFinite(pollMs) && pollMs > 0 ? pollMs : 100, 100),
+  writeWaitMs = WRITE_WAIT_MS,
+  versionOptions = {},
 }) {
   const root = path.resolve(boardsDir);
   mkdirSync(root, { recursive: true });
@@ -169,10 +199,12 @@ export function createBoardApi({
   // The commit pipeline is the only writer of master. Its writes update the watcher's
   // signature so they aren't re-published or re-adopted as external writes.
   const versions = createVersionStore({
+    stateDir: stateDirFromEnv(process.env, root),
+    ...versionOptions,
     boardsDir: root,
-    onMasterWritten: async (name) => {
+    onMasterWritten: async (name, written) => {
       try {
-        const stat = await fs.stat(path.join(root, ...`${name}.excalidraw`.split("/")));
+        const stat = written ?? await fs.stat(path.join(root, ...`${name}.excalidraw`.split("/")));
         signatures.set(`${name}.excalidraw`, `${stat.mtimeMs}:${stat.size}`);
       } catch {}
     },
@@ -436,6 +468,70 @@ export function createBoardApi({
       });
   }
 
+  // POST /api/branch: wait up to writeWaitMs for the commit. A write that is journaled but not
+  // committed by then answers 202 `queued`; it is committed later and never dropped.
+  const respondToBranchWrite = async (res, name, input, receiveMs) => {
+    const TIMEOUT = Symbol("timeout");
+    let branchId = null;
+    let markIngested;
+    const ingested = new Promise((resolve) => {
+      markIngested = resolve;
+    });
+    const submitted = versions.submitBranch(name, input, {
+      source: "post",
+      receiveMs,
+      onIngested: (id) => {
+        branchId = id;
+        markIngested();
+      },
+    });
+    submitted.catch((error) => {
+      if (branchId) {
+        console.warn(`write ${branchId} to ${name} is journaled but its commit failed (${error.message}); it is replayed on the next start`);
+      }
+    });
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(TIMEOUT), writeWaitMs);
+    });
+    let result;
+    try {
+      result = await Promise.race([submitted, timeout]);
+      if (result === TIMEOUT) {
+        // Only promise "queued" once the write is in the journal.
+        result = await Promise.race([submitted, ingested.then(() => TIMEOUT)]);
+      }
+    } catch (error) {
+      if (!branchId) {
+        throw error;
+      }
+      result = TIMEOUT;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (result === TIMEOUT || result.status === "queued") {
+      sendJson(res, 202, { status: "queued", branchId, base: input.base ?? null });
+      return;
+    }
+    if (result.status === "invalid") {
+      sendError(res, 400, result.error ?? "invalid-branch");
+      return;
+    }
+    if (result.status === "unknown-base") {
+      sendJson(res, 409, { error: "unknown-base", base: input.base, currentVersion: result.version ?? null });
+      return;
+    }
+    sendTimedJson(res, 200, {
+      status: "merged",
+      version: result.version,
+      fastForward: result.fastForward,
+      applied: result.applied,
+      overwritten: overwrittenSummary(result.overwritten),
+      unbound: result.unbound,
+      branchId: result.branchId,
+    }, result.timings);
+  };
+
   const handle = async (req, res) => {
     if (!isAllowedHostHeader(req.headers.host)) {
       sendError(res, 403, "forbidden-host");
@@ -478,17 +574,18 @@ export function createBoardApi({
         const filePath = filePathFor(root, name, ".excalidraw");
 
         if (req.method === "GET") {
-          const current = await readCurrent(filePath);
+          const current = await versions.cachedMaster(name) ?? await readCurrent(filePath);
           if (current.hash === null) {
             sendError(res, 404, "board-not-found", { name });
             return true;
           }
+          const version = current.version ?? current.hash;
           // The ETag may come back as a base; keep that version resolvable.
-          await versions.noteServed(name, current.hash, current.content.toString("utf8")).catch((error) => {
+          await versions.noteServed(name, version, current.text).catch((error) => {
             console.warn(`pinning served version of ${name} failed: ${error.message}`);
           });
-          res.setHeader("ETag", etagFor(current.hash));
-          send(res, 200, "application/json; charset=utf-8", current.content);
+          res.setHeader("ETag", etagFor(version));
+          send(res, 200, "application/json; charset=utf-8", current.text);
           return true;
         }
 
@@ -497,6 +594,7 @@ export function createBoardApi({
             sendError(res, 415, "content-type-must-be-application-json");
             return true;
           }
+          const receiveStart = performance.now();
           const body = await readRequestBody(req);
           let parsed;
           try {
@@ -505,47 +603,140 @@ export function createBoardApi({
             sendError(res, 400, "invalid-json");
             return true;
           }
+          const receiveMs = performance.now() - receiveStart;
           if (parsed?.type !== "excalidraw" || !Array.isArray(parsed.elements)) {
             sendError(res, 400, "invalid-excalidraw-json");
             return true;
           }
-          const persisted = body.endsWith("\n") ? body : `${body}\n`;
-          // Goes through the commit pipeline as a branch. The If-Match / If-None-Match check
-          // runs in the board's queue against master on disk (after adopting any direct write),
-          // so a stale save is still a 409 and check-and-write stays atomic. Slice 3 turns a
-          // stale save into a merge.
-          const result = await versions.submitBranch(name, {
-            author: legacyAuthor(),
-            base: null,
+          // Goes through the commit pipeline as the tab's branch. `If-Match` names the version
+          // the tab started from: current means a fast-forward, an older known version merges
+          // (200, merged master in the body), an unknown one is 409. `If-None-Match: *` starts
+          // from an empty board and merges into one that appeared meanwhile. No header is an
+          // unguarded write over whatever master is (kept for scripts).
+          const author = tabAuthor(req.headers);
+          if (!author) {
+            sendError(res, 400, "invalid-author", { hint: "X-Xcld-Author-Name (percent-encoded) and X-Xcld-Tab ([A-Za-z0-9_-]) go together" });
+            return true;
+          }
+          const ifMatch = parseEntityTags(req.headers["if-match"]);
+          const ifNoneMatch = parseEntityTags(req.headers["if-none-match"]);
+          const input = {
+            author,
             kind: "json",
             elements: parsed.elements,
             appState: parsed.appState,
             files: parsed.files,
-            raw: persisted,
-            legacy: { ifMatch: req.headers["if-match"], ifNoneMatch: req.headers["if-none-match"] },
-          });
-          if (result.status === "stale") {
+            template: parsed,
+          };
+          if (ifMatch?.includes("*")) {
+            Object.assign(input, { base: null, legacy: { ifMatch: "*" } });
+          } else if (ifMatch) {
+            const strong = ifMatch.filter((tag) => !tag.startsWith("W/"));
+            if (!strong.length) {
+              sendError(res, 409, "unknown-base");
+              return true;
+            }
+            input.base = strong[0];
+          } else if (ifNoneMatch?.includes("*")) {
+            input.base = null;
+          } else {
+            Object.assign(input, { base: null, legacy: {} });
+          }
+          const result = await versions.submitBranch(name, input, { source: "put", receiveMs });
+          if (result.status === "stale" || result.status === "unknown-base") {
             if (result.version) {
               res.setHeader("ETag", etagFor(result.version));
             }
-            sendJson(res, 409, { error: "stale-save", currentHash: result.version ?? null });
+            sendJson(res, 409, { error: result.status === "stale" ? "stale-save" : "unknown-base", currentHash: result.version ?? null });
             return true;
           }
           if (result.status === "invalid") {
-            sendError(res, 400, "invalid-excalidraw-json");
+            sendError(res, 400, "invalid-excalidraw-json", { reason: result.error });
             return true;
           }
           if (result.status !== "committed" && result.status !== "unchanged") {
             sendError(res, 503, "not-committed", { status: result.status });
             return true;
           }
-          await result.post;
+          // Master, SSE, export and rules follow the answer (the commit is already durable).
+          const merged = !result.fastForward;
           res.setHeader("ETag", etagFor(result.version));
-          sendJson(res, 200, { ok: true, hash: result.version });
+          sendTimedJson(res, 200, {
+            ok: true,
+            hash: result.version,
+            version: result.version,
+            merged,
+            applied: result.applied,
+            overwritten: overwrittenSummary(result.overwritten),
+            unbound: result.unbound,
+            ...(merged ? { master: result.scene } : {}),
+          }, result.timings);
           return true;
         }
 
         sendError(res, 405, "method-not-allowed");
+        return true;
+      }
+
+      const branchPrefix = "/api/branch/";
+      if (rawPathname.startsWith(branchPrefix)) {
+        if (req.method !== "POST") {
+          sendError(res, 405, "method-not-allowed");
+          return true;
+        }
+        const name = decodeURIComponent(rawPathname.slice(branchPrefix.length));
+        filePathFor(root, name, ".excalidraw");
+        if (!isJsonRequest(req)) {
+          sendError(res, 415, "content-type-must-be-application-json");
+          return true;
+        }
+        const receiveStart = performance.now();
+        let parsed;
+        try {
+          parsed = JSON.parse(await readRequestBody(req));
+        } catch {
+          sendError(res, 400, "invalid-json");
+          return true;
+        }
+        const receiveMs = performance.now() - receiveStart;
+        if (!parsed || typeof parsed !== "object" || !("base" in parsed)) {
+          sendError(res, 400, "base-required", { hint: "send the version you read (ETag / read_board version), or null for a new board" });
+          return true;
+        }
+        if ((parsed.kind ?? "json") !== "json") {
+          sendError(res, 400, "invalid-kind");
+          return true;
+        }
+        const input = {
+          author: parsed.author ?? "cli:api",
+          displayName: parsed.displayName,
+          base: parsed.base,
+          writtenAt: parsed.writtenAt,
+          kind: "json",
+          elements: parsed.elements,
+          appState: parsed.appState,
+          files: parsed.files,
+        };
+        await respondToBranchWrite(res, name, input, receiveMs);
+        return true;
+      }
+
+      if (rawPathname === "/api/config" && req.method === "GET") {
+        sendJson(res, 200, { authorName: String(process.env.XCLD_AUTHOR_NAME ?? "").trim() || null, writeWaitMs, timing: versions.timingEnabled });
+        return true;
+      }
+
+      if (rawPathname === "/api/status" && req.method === "GET") {
+        sendJson(res, 200, versions.status());
+        return true;
+      }
+
+      if (rawPathname === "/api/timings" && req.method === "GET") {
+        if (!versions.timingEnabled) {
+          sendError(res, 404, "timing-disabled", { hint: "start the server with XCLD_TIMING=1" });
+          return true;
+        }
+        sendJson(res, 200, { timings: versions.timings({ clear: url.searchParams.get("clear") === "1" }) });
         return true;
       }
 

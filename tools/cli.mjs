@@ -5,13 +5,18 @@ import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } from "./board-path.mjs";
 import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
+import { exportHistory } from "./history.mjs";
 import { mermaidSourceHash } from "./mermaid-hash.mjs";
 import { checkBoardRules, effectiveRulesBriefing, formatCheckResult, formatRulesCheckDiagnostics, validateApplicableRules } from "./rules.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { exportRoot, hostPathOf, stateDirFromEnv } from "./storage.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
+import { describeWrite, readBoardVersion, writeBoardBranch } from "./board-client.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
+// Versions data and the export root, as the server sees them (tools/storage.mjs).
+const stateDir = () => stateDirFromEnv(process.env, boardsDir());
 const helpText = `xcld - local Excalidraw workspace tools
 
 Usage:
@@ -24,6 +29,11 @@ Usage:
   xcld rules check [board]
   xcld list [folder] [--json]
   xcld open-in-canvas <checkpointId> <board> [--overwrite]
+  xcld read <board>                  (JSON with the version to pass as --base)
+  xcld write <board> <file.excalidraw|-> --base <version|none> [--json]
+  xcld history export <board> [--to <dir>] [--full] [--json]
+                                     (default --to: <cache>/exports/<board>, the host's ~/.excalidraw/exports/<board>
+                                      unless XCLD_CACHE_DIR says otherwise; --full: every version as .excalidraw)
   xcld mermaid-apply --dry-run <board|file> <file.mmd> [--json]
   xcld mcp
   xcld help
@@ -161,6 +171,57 @@ const run = async (argv) => {
     if (names.length !== 2) throw new Error("Usage: xcld open-in-canvas <checkpointId> <board> [--overwrite]");
     const result = await openInCanvas({ checkpointId: names[0], board: names[1], overwrite });
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (command === "read") {
+    if (args.length !== 1) throw new Error("Usage: xcld read <board>");
+    const read = await readBoardVersion(args[0], { file: boardPath(args[0]) });
+    if (!read.exists) throw new Error(`Board not found: ${args[0]}${read.warning ? ` (${read.warning})` : ""}`);
+    console.log(JSON.stringify({ board: args[0], version: read.version, ...(read.warning ? { warning: read.warning } : {}), scene: read.scene }, null, 2));
+    return;
+  }
+  if (command === "write") {
+    const jsonMode = args.includes("--json");
+    const baseAt = args.indexOf("--base");
+    const base = baseAt >= 0 ? args[baseAt + 1] : undefined;
+    const names = args.filter((arg, index) => arg !== "--json" && index !== baseAt && index !== baseAt + 1);
+    if (names.length !== 2 || base === undefined) throw new Error("Usage: xcld write <board> <file.excalidraw|-> --base <version|none> [--json]   (get the version from xcld read)");
+    if (!validateBoardName(names[0])) throw new Error(`Invalid board name: ${names[0]}`);
+    const text = names[1] === "-" ? await new Promise((resolve, reject) => {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { data += chunk; });
+      process.stdin.on("end", () => resolve(data));
+      process.stdin.on("error", reject);
+    }) : await readFile(names[1], "utf8");
+    const parsed = JSON.parse(text);
+    const scene = Array.isArray(parsed) ? { elements: parsed } : parsed;
+    const author = `cli:${String(process.env.XCLD_AUTHOR ?? "").trim() || "cli"}`;
+    const result = await writeBoardBranch(names[0], { author, base: base === "none" ? null : base, elements: scene.elements, appState: scene.appState, files: scene.files });
+    console.log(jsonMode ? JSON.stringify(result, null, 2) : describeWrite(names[0], result));
+    if (result.status !== "merged" && result.status !== "queued") process.exitCode = 1;
+    return;
+  }
+  if (command === "history") {
+    const usage = "Usage: xcld history export <board> [--to <dir>] [--full] [--json]";
+    const jsonMode = args.includes("--json");
+    const full = args.includes("--full");
+    const toAt = args.indexOf("--to");
+    if (toAt >= 0 && (args[toAt + 1] === undefined || args[toAt + 1].startsWith("--"))) throw new Error(usage);
+    const names = args.filter((arg, index) => !["--json", "--full"].includes(arg) && index !== toAt && (toAt < 0 || index !== toAt + 1));
+    if (names[0] !== "export" || names.length !== 2) throw new Error(usage);
+    const board = names[1];
+    if (!validateBoardName(board)) throw new Error(`Invalid board name: ${board}`);
+    const to = toAt >= 0 ? path.resolve(args[toAt + 1]) : path.join(exportRoot(), ...splitBoardPath(board));
+    const result = await exportHistory({ stateDir: stateDir(), board, to, full });
+    // In the container, name the folder as the host sees it too (compose passes the host path).
+    const hostPath = hostPathOf(result.to);
+    if (jsonMode) {
+      console.log(JSON.stringify({ ...result, ...(hostPath ? { hostPath } : {}) }, null, 2));
+      return;
+    }
+    const kinds = full ? `${result.entries} full version${result.entries === 1 ? "" : "s"}` : `${result.checkpoint} checkpoint${result.checkpoint === 1 ? "" : "s"}, ${result.delta} delta${result.delta === 1 ? "" : "s"}`;
+    console.log(`Exported ${result.entries} history entr${result.entries === 1 ? "y" : "ies"} of ${board} (${kinds}${result.none ? `, ${result.none} with only overwritten edits` : ""}${result.skipped ? `, ${result.skipped} skipped` : ""}) to ${result.to}${hostPath ? `\nOn the host: ${hostPath}` : ""}`);
     return;
   }
   if (command === "diff") {

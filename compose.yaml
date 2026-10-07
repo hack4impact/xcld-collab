@@ -16,6 +16,14 @@
 #   XCLD_MAX_DEPTH=0                # nested folder limit; 0 is unlimited
 #   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
 #   XCLD_DESIGN_RULES=...           # optional default rules CSV path; folder design-rules.csv overrides it
+#   XCLD_AUTHOR_NAME=Your Name      # the canvas's default author; the build seeds it from git config user.name
+#   XCLD_TIMING=1                   # record per-stage commit timings at GET /api/timings (profiling)
+#   XCLD_CACHE_DIR=~/.excalidraw    # host folder for `xcld history export` (<cache>/exports/<board>/)
+#                                   # and, with XCLD_HISTORY=cache, version history (<cache>/history/).
+#                                   # On Linux it must be writable by XCLD_UID (the build creates it as you).
+#   XCLD_HISTORY=volume             # advanced: where version history lives, `volume` (the Docker volume
+#                                   # xcld-state) or `cache` (<cache>/history/). The build writes the
+#                                   # default for your OS once: Linux cache, Windows/macOS volume.
 #   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
 #   COMPOSE_PROFILES=widget         # opt in to the EXPERIMENTAL chat widget (service "mcp", below).
 #                                   # Off by default: it loads JS from esm.sh and has known font
@@ -30,13 +38,32 @@ services:
       - "127.0.0.1:${XCLD_PORT:-3100}:3100"
     volumes:
       - "${XCLD_BOARDS:-./boards}:/boards"
+      # The cache folder, XCLD_CACHE_DIR on the host (default ~/.excalidraw): `xcld history
+      # export` writes <cache>/exports/<board>/, and with XCLD_HISTORY=cache the server keeps
+      # version history (journal, history, images) in <cache>/history/.
+      - "${XCLD_CACHE_DIR:-~/.excalidraw}:/xcld-cache"
+      # Version history with XCLD_HISTORY=volume (the Windows/macOS default): Docker Desktop bind
+      # mounts make every file operation a slow round trip, see docs/DESIGN.md#performance.
+      # Mounted in both modes so one file serves both; it stays empty with XCLD_HISTORY=cache.
+      - "xcld-state:/xcld-state"
     user: "${XCLD_UID:-1000}:${XCLD_GID:-1000}"
     environment:
+      # The server and `xcld` resolve the history folder from these (tools/storage.mjs):
+      # XCLD_HISTORY=cache -> /xcld-cache/history, volume -> XCLD_HISTORY_VOLUME_DIR.
+      XCLD_HISTORY: "${XCLD_HISTORY:-volume}"
+      XCLD_CACHE_DIR: "/xcld-cache"
+      XCLD_HISTORY_VOLUME_DIR: "/xcld-state"
+      # Shown by `xcld history export` so the output names the folder as the host sees it.
+      XCLD_CACHE_HOST_DIR: "${XCLD_CACHE_DIR:-~/.excalidraw}"
       XCLD_WATCH_POLL_MS: "${XCLD_WATCH_POLL_MS:-1000}"
       XCLD_MAX_DEPTH: "${XCLD_MAX_DEPTH:-0}"
       XCLD_AUTO_EXPORT: "${XCLD_AUTO_EXPORT:-snapshot}"
       XCLD_DESIGN_RULES: "${XCLD_DESIGN_RULES:-}"
       XCLD_PUBLIC_URL: "http://127.0.0.1:${XCLD_PORT:-3100}"
+      # Default author name for the canvas (seeded by the build from git config user.name).
+      XCLD_AUTHOR_NAME: "${XCLD_AUTHOR_NAME:-}"
+      # 1 = record per-stage commit timings (GET /api/timings); off by default.
+      XCLD_TIMING: "${XCLD_TIMING:-}"
     restart: unless-stopped
 
   # EXPERIMENTAL, opt-in: the upstream Excalidraw MCP Apps chat widget. Only starts with
@@ -63,3 +90,8 @@ services:
       start_period: 10s
       retries: 3
     restart: unless-stopped
+
+volumes:
+  # Version history with XCLD_HISTORY=volume (the Windows/macOS default).
+  # `docker compose down` keeps it; `docker compose down -v` deletes it, history included.
+  xcld-state:

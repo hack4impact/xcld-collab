@@ -1,5 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,9 +10,18 @@ import { boardFilePath, maxDepthFromEnv, splitBoardPath, validateBoardPath } fro
 import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
 import { checkBoardRules, effectiveRulesBriefing, effectiveSnapshotMode, formatCheckResult } from "./rules.mjs";
-import { fileToMermaid } from "./to-mermaid.mjs";
+import { sceneToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
+import { describeWrite, readBoardVersion, writeBoardBranch } from "./board-client.mjs";
+
+// Author key for this process's writes: agent:<MCP clientInfo.name>#<id>. The id is new for
+// every `xcld mcp` process, so two sessions of the same client never share a branch.
+export const PROCESS_ID = randomBytes(3).toString("hex");
+export const agentAuthor = (clientName) => {
+  const name = String(clientName ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 100) || "mcp";
+  return `agent:${name}#${PROCESS_ID}`;
+};
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 const maxDepth = () => maxDepthFromEnv();
@@ -113,7 +123,7 @@ export const createXcldMcpServer = () => {
     server,
     "read_board",
     {
-      description: `Read a board as Mermaid, raw Excalidraw JSON, or both. ${conventions}`,
+      description: `Read a board as Mermaid, raw Excalidraw JSON, or both, through the board server. Returns "version": pass it as "base" to write_board, so the server merges your write with anything written since. ${conventions}`,
       inputSchema: {
         board: z.string().describe("Board path without extension, for example examples/demo."),
         format: z.enum(["mermaid", "json", "both"]).default("mermaid").describe("Output format. Default: mermaid."),
@@ -121,13 +131,47 @@ export const createXcldMcpServer = () => {
       annotations: { readOnlyHint: true },
     },
     async ({ board, format }) => {
-      const file = resolveBoardOrFile(board);
+      if (!validateBoardName(board)) {
+        throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
+      }
+      const read = await readBoardVersion(board, { file: boardPath(board) });
+      if (!read.exists) {
+        throw new Error(`Board not found: ${board}. Open ${boardUrl(board)} to create it, or call write_board with base null.${read.warning ? ` ${read.warning}` : ""}`);
+      }
       const outputFormat = format ?? "mermaid";
-      const result = {};
-      if (outputFormat === "mermaid" || outputFormat === "both") result.mermaid = await fileToMermaid(file);
-      if (outputFormat === "json" || outputFormat === "both") result.json = JSON.parse(await readFile(file, "utf8"));
+      const result = { board, version: read.version };
+      if (outputFormat === "mermaid" || outputFormat === "both") result.mermaid = sceneToMermaid(read.scene);
+      if (outputFormat === "json" || outputFormat === "both") result.json = read.scene;
+      if (read.warning) result.warning = read.warning;
       result.briefing = await briefingFor(board);
-      return okText(outputFormat === "json" ? JSON.stringify(result, null, 2) : outputFormat === "mermaid" ? `${result.mermaid}\n\n${result.briefing}` : JSON.stringify(result, null, 2), result);
+      const versionLine = `version: ${read.version} (pass it as base to write_board)${read.warning ? `\nwarning: ${read.warning}` : ""}`;
+      return okText(outputFormat === "mermaid" ? `${result.mermaid}\n\n${versionLine}\n\n${result.briefing}` : JSON.stringify(result, null, 2), result);
+    },
+  );
+
+  registerTool(
+    server,
+    "write_board",
+    {
+      description: `Write Excalidraw elements to a board through the board server, which merges them with edits made since your base (the human's tab, other agents). Send the whole board as you want it: elements you leave out are deleted. Pass base = the "version" from read_board (null only for a new board). A unit (a shape and its label) changed on both sides goes to the later write; the result lists what was applied and overwritten. If the merge takes longer than 5 s the write is queued: it is safe and will land. ${conventions}`,
+      inputSchema: {
+        board: z.string().describe("Board path without extension."),
+        base: z.string().nullable().describe('The "version" read_board returned for this board; null for a new board.'),
+        elements: z.array(z.object({ id: z.string() }).passthrough()).describe("Excalidraw elements: the full board you want. Keep element ids stable; keep bound text with its container (containerId) and arrows bound by startBinding/endBinding."),
+        appState: z.record(z.string(), z.any()).optional().describe("Optional Excalidraw appState (e.g. viewBackgroundColor)."),
+        files: z.record(z.string(), z.any()).optional().describe("Optional image files keyed by fileId, as in an .excalidraw file."),
+      },
+    },
+    async ({ board, base, elements, appState, files }) => {
+      if (!validateBoardName(board)) {
+        throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
+      }
+      const result = await writeBoardBranch(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, elements, appState, files });
+      const message = describeWrite(board, result);
+      if (result.status !== "merged" && result.status !== "queued") {
+        return toolError(message);
+      }
+      return okText(message, { ...result, url: boardUrl(board) });
     },
   );
 

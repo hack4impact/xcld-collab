@@ -45,7 +45,7 @@ test("XCLD_AUTO_EXPORT=save exports browser saves and on-disk edits to boards/.e
     });
     assert.equal(put.status, 200);
     const exported = path.join(boardsDir, ".exports", "proj", "flow.mmd");
-    assert.equal(existsSync(exported), true, "PUT should write the export");
+    assert.equal(await waitFor(() => existsSync(exported)), true, "a PUT is exported right after the commit");
     assert.match(await readFile(exported, "utf8"), /Valid\{"Valid\?"\}/);
     assert.equal(existsSync(path.join(boardsDir, "proj", "flow.mmd")), false, "the inbox must never be written");
 

@@ -1,10 +1,13 @@
 // `node --test tests` runs this file only. Import every *.test.mjs here, or it is silently skipped.
 import "./api.test.mjs";
 import "./board-path.test.mjs";
+import "./build-env.test.mjs";
 import "./cli.test.mjs";
+import "./compose-state.test.mjs";
 import "./deleted-events.test.mjs";
 import "./diff.test.mjs";
 import "./export.test.mjs";
+import "./history.test.mjs";
 import "./ids.test.mjs";
 import "./lockfile.test.mjs";
 import "./mcp.test.mjs";
@@ -21,3 +24,4 @@ import "./to-mermaid.test.mjs";
 import "./versions.test.mjs";
 import "./view-inbox.test.mjs";
 import "./widget-default.test.mjs";
+import "./write-api.test.mjs";

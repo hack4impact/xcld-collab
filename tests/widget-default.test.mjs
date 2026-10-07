@@ -18,7 +18,7 @@ test("build scripts never write COMPOSE_PROFILES into .env", async () => {
 
 test("compose starts only the canvas unless the widget profile is enabled", async () => {
   const compose = await read("compose.yaml");
-  const services = compose.split(/^services:\s*$/m)[1];
+  const services = compose.split(/^services:\s*$/m)[1].split(/^\S/m)[0];
   const blocks = services.split(/^ {2}(?=[a-z][\w-]*:\s*$)/m).filter((block) => block.trim());
   const byName = Object.fromEntries(blocks.map((block) => [block.match(/^([\w-]+):/)[1], block]));
   assert.deepEqual(Object.keys(byName).sort(), ["canvas", "mcp"]);

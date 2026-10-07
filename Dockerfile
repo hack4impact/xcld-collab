@@ -189,7 +189,8 @@ LABEL org.opencontainers.image.title="xcld-collab" \
 ENV NODE_ENV=production \
     XCLD_HOST=0.0.0.0 \
     XCLD_PORT=3100 \
-    XCLD_BOARDS_DIR=/boards
+    XCLD_BOARDS_DIR=/boards \
+    XCLD_CACHE_DIR=/xcld-cache
 WORKDIR /opt/xcld-collab
 # The canvas is a pre-bundled SPA and the server/tools use only Node built-ins plus
 # esbuild bundles built in the app stage (tools/mcp.bundle.mjs, and
@@ -206,8 +207,13 @@ RUN printf '{\n  "tag": "%s",\n  "xcld-collab": "%s",\n  "excalidraw": "%s",\n  
       "$BUILD_TAG" "$OURS_SHA" "$EXCALIDRAW_SHA" "$M2E_SHA" "$MCP_SHA" > manifest.json \
  && printf '#!/bin/sh\nexec node /opt/xcld-collab/tools/cli.mjs "$@"\n' > /usr/local/bin/xcld \
  && chmod 0755 /usr/local/bin/xcld \
- && mkdir -p /boards \
- && chown node:node /boards
+ && mkdir -p /boards /xcld-state /xcld-cache \
+ && chown node:node /boards /xcld-state /xcld-cache \
+ && chmod 1777 /xcld-state /xcld-cache
+# /xcld-state is where compose mounts the xcld-state volume (version history with
+# XCLD_HISTORY=volume); 1777 so a new volume is writable whatever XCLD_UID is. /xcld-cache is
+# where compose mounts the host's cache folder (XCLD_CACHE_DIR, default ~/.excalidraw):
+# `xcld history export` writes exports/ there, and XCLD_HISTORY=cache keeps history/ there.
 USER node
 VOLUME ["/boards"]
 EXPOSE 3100

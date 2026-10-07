@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import { createServer } from "node:http";
 import path from "node:path";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { createBoardApi } from "../app/server/api.mjs";
 import { authorKeySafe, contentHash, createVersionStore, parseAuthorKey } from "../app/server/versions.mjs";
 
@@ -38,10 +39,16 @@ const withStore = (options, fn) => withDir(async (dir) => {
 });
 
 const masterOf = async (dir, board) => JSON.parse(await readFile(path.join(dir, ...`${board}.excalidraw`.split("/")), "utf8"));
+// Closed entries have a .meta.json; the open (human) entry's meta lives in state/<board>.json
+// until it closes.
 const historyOf = async (dir, board) => {
   const folder = path.join(dir, ".xcld", "history", ...board.split("/"));
   const names = (await readdir(folder).catch(() => [])).filter((name) => name.endsWith(".meta.json")).sort();
-  return Promise.all(names.map(async (name) => ({ entry: name.slice(0, -".meta.json".length), ...JSON.parse(await readFile(path.join(folder, name), "utf8")) })));
+  const closed = await Promise.all(names.map(async (name) => ({ entry: name.slice(0, -".meta.json".length), ...JSON.parse(await readFile(path.join(folder, name), "utf8")) })));
+  const statePath = path.join(dir, ".xcld", "state", ...`${board}.json`.split("/"));
+  const open = JSON.parse(await readFile(statePath, "utf8").catch(() => "null"))?.open;
+  if (!open) return closed;
+  return [...closed.filter((item) => item.entry !== open.entry), { ...open, closedBy: null }].sort((left, right) => (left.entry < right.entry ? -1 : 1));
 };
 const branchesOf = async (dir, board) => (await readdir(path.join(dir, ".xcld", "branches", ...board.split("/"))).catch(() => [])).filter((name) => name.endsWith(".json"));
 
@@ -61,6 +68,7 @@ test("a commit writes history, then state with masterMeta, then master, and arch
   await withStore({ now: () => 5000 }, async (store, dir) => {
     const result = await store.submitBranch("p/demo", { author: HUMAN, base: null, writtenAt: 4000, elements: [el("a"), el("b")] });
     assert.equal(result.status, "committed");
+    await store.whenIdle();
     const master = await readFile(path.join(dir, "p", "demo.excalidraw"), "utf8");
     assert.equal(result.version, contentHash(master), "the version id is the sha256 of master's bytes (the ETag)");
     assert.deepEqual(JSON.parse(master).elements.map((element) => element.id), ["a", "b"]);
@@ -74,7 +82,10 @@ test("a commit writes history, then state with masterMeta, then master, and arch
     assert.deepEqual(entry.parents, []);
     assert.equal(entry.coalescedCount, 1);
     assert.equal(entry.closedBy, null, "a human entry stays open for coalescing");
-    assert.equal(await readFile(path.join(dir, ".xcld", "history", "p", "demo", `${entry.entry}.excalidraw`), "utf8"), master);
+    const record = JSON.parse(gunzipSync(await readFile(path.join(dir, ".xcld", "history", "p", "demo", `${entry.entry}.excalidraw.gz`))).toString("utf8"));
+    assert.equal(record.xcld.version, result.version, "a history record names its version");
+    assert.equal(record.xcld.record, "checkpoint", "a board's first entry is a full checkpoint");
+    assert.deepEqual(record.elements, JSON.parse(master).elements);
     assert.deepEqual(await branchesOf(dir, "p/demo"), []);
     assert.equal((await store.readVersion("p/demo", result.version)).scene.elements.length, 2);
   });
@@ -239,15 +250,31 @@ test("bases stay resolvable under coalescing while served or referenced, and exp
     const queued = store.submitBranch("k", { author: AGENT2, base: v3.version, elements: [el("a", { x: 6 }), el("b", { x: 9 }), el("c")] });
     assert.equal((await fold).status, "committed");
     assert.equal((await queued).status, "committed", "the referenced base survived the fold");
+    assert.ok((await stat(path.join(dir, ".xcld", "bases", "k", `${v3.version}.excalidraw`))).isFile(), "kept in the base store, not just in memory");
     const v5 = await store.submitBranch("k", { author: HUMAN, base: (await queued).version, elements: [el("a", { x: 8 }), el("b", { x: 9 }), el("c")] });
     const v6 = await store.submitBranch("k", { author: HUMAN, base: v5.version, elements: [el("a", { x: 9 }), el("b", { x: 9 }), el("c")] });
-    assert.equal(await store.readVersion("k", v5.version), null, "a version nobody was handed out or references is folded away");
-    assert.equal((await store.submitBranch("k", { author: AGENT, base: v5.version, elements: [el("z")] })).status, "unknown-base");
+    await store.whenIdle();
 
-    // The served copy of v1 expires after the TTL (GC runs on load and every 10 minutes).
-    clock += 11 * 60_000;
-    await store.submitBranch("k", { author: AGENT, base: v6.version, elements: [el("a", { x: 9 }), el("b", { x: 9 }), el("c"), el("d")] });
-    assert.equal(await store.readVersion("k", v1.version), null);
+    // A fresh store (a restart) only knows what is on disk; recent versions are also kept in
+    // memory, which is a bonus, not a guarantee.
+    const fresh = createVersionStore({ boardsDir: dir, now: () => clock, baseTtlMs: 60_000 });
+    try {
+      assert.equal(await fresh.readVersion("k", v5.version), null, "a version nobody was handed out or references is folded away");
+      assert.equal((await fresh.submitBranch("k", { author: AGENT, base: v5.version, elements: [el("z")] })).status, "unknown-base");
+      assert.ok(await fresh.readVersion("k", v1.version), "the served v1 is in the base store");
+      // The served copy of v1 expires after the TTL (GC runs on load and every 10 minutes).
+      clock += 11 * 60_000;
+      await fresh.submitBranch("k", { author: AGENT, base: v6.version, elements: [el("a", { x: 9 }), el("b", { x: 9 }), el("c"), el("d")] });
+      await fresh.whenIdle();
+    } finally {
+      await fresh.close();
+    }
+    const third = createVersionStore({ boardsDir: dir, now: () => clock, baseTtlMs: 60_000 });
+    try {
+      assert.equal(await third.readVersion("k", v1.version), null);
+    } finally {
+      await third.close();
+    }
     assert.equal(v2.status, "committed");
   });
 });
@@ -255,6 +282,7 @@ test("bases stay resolvable under coalescing while served or referenced, and exp
 test("a direct write to master is adopted as an external branch and merges with queued writes", async () => {
   await withStore({}, async (store, dir) => {
     const v1 = await store.submitBranch("x", { author: HUMAN, base: null, elements: [el("a"), el("b")] });
+    await store.whenIdle();
     const file = path.join(dir, "x.excalidraw");
     const direct = sceneText([el("a", { strokeColor: "#e03131" }), el("b")]);
     await writeFile(file, direct, "utf8");
@@ -272,6 +300,7 @@ test("a direct write to master is adopted as an external branch and merges with 
 
     // A tab that still holds v1 saves a disjoint edit: both survive.
     const tab = await store.submitBranch("x", { author: HUMAN, base: v1.version, elements: [el("a"), el("b", { x: 40 })] });
+    await store.whenIdle();
     const master = await masterOf(dir, "x");
     assert.deepEqual([find(master, "a").strokeColor, find(master, "b").x], ["#e03131", 40]);
     assert.equal(tab.status, "committed");
@@ -344,7 +373,7 @@ test("the board watcher adopts a settled direct write and publishes a merged eve
   });
 });
 
-test("PUT /api/board commits through the pipeline and keeps its 409 semantics", async () => {
+test("PUT /api/board commits through the pipeline; an unknown base is 409", async () => {
   await withDir(async (dir) => {
     const api = createBoardApi({ boardsDir: dir, pollMs: 0, useFsWatch: false });
     const server = createServer((req, res) => {
@@ -356,16 +385,174 @@ test("PUT /api/board commits through the pipeline and keeps its 409 semantics", 
       const body = sceneText([el("a")]);
       const created = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json", "If-None-Match": "*" }, body });
       assert.equal(created.status, 200);
-      assert.equal(created.headers.get("etag"), `"${contentHash(body)}"`);
+      await api.versions.whenIdle();
+      const master = await readFile(path.join(dir, "put.excalidraw"), "utf8");
+      assert.equal(created.headers.get("etag"), `"${contentHash(master)}"`, "the ETag is the hash of master's bytes");
       const stale = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"0000"' }, body: sceneText([el("b")]) });
       assert.equal(stale.status, 409);
       const history = await historyOf(dir, "put");
-      assert.deepEqual(history.map((entry) => [entry.author, entry.version]), [["human:anonymous#legacy", contentHash(body)]]);
+      assert.deepEqual(history.map((entry) => [entry.author, entry.version]), [["human:anonymous#legacy", contentHash(master)]]);
       assert.deepEqual(await branchesOf(dir, "put"), [], "the rejected save left no branch behind");
     } finally {
       await api.close();
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("a board that existed before versions is snapshotted as init on first read; later direct writes are external", async () => {
+  await withStore({}, async (store, dir) => {
+    await writeFile(path.join(dir, "old.excalidraw"), sceneText([el("a")]), "utf8");
+    const read = await store.readMaster("old");
+    assert.equal(read.version, contentHash(sceneText([el("a")])));
+    await writeFile(path.join(dir, "old.excalidraw"), sceneText([el("a"), el("b")]), "utf8");
+    await store.adoptExternal("old");
+    assert.deepEqual((await historyOf(dir, "old")).map((entry) => [entry.author, entry.closedBy]), [["init", "init"], ["external", "agent-write"]]);
+    assert.ok(await store.readVersion("old", read.version), "the init version stays resolvable as a base");
+  });
+});
+
+test("a commit that fails on an I/O error is retried with backoff and lands once; other boards carry on", async () => {
+  let failuresLeft = 2;
+  const statuses = [];
+  let store;
+  const onStep = async (step, { branch }) => {
+    if (step === "mid-history" && branch.board === "flaky" && branch.author === AGENT && failuresLeft > 0) {
+      failuresLeft -= 1;
+      statuses.push(store.status());
+      throw Object.assign(new Error("injected disk error"), { code: "EIO" });
+    }
+  };
+  await withDir(async (dir) => {
+    store = createVersionStore({ boardsDir: dir, retryDelaysMs: [30, 60], testHooks: { onStep } });
+    try {
+      const v1 = await store.submitBranch("flaky", { author: HUMAN, base: null, elements: [el("a")] });
+      const flaky = store.submitBranch("flaky", { author: AGENT, base: v1.version, elements: [el("a", { x: 9 })] });
+      const other = await store.submitBranch("calm", { author: AGENT, base: null, elements: [el("z")] });
+      assert.equal(other.status, "committed", "another board is not held up");
+      const result = await flaky;
+      assert.equal(result.status, "committed");
+      await store.whenIdle();
+      assert.equal(find(await masterOf(dir, "flaky"), "a").x, 9);
+      assert.deepEqual((await historyOf(dir, "flaky")).map((entry) => entry.author), [HUMAN, AGENT], "retried, not duplicated");
+      assert.deepEqual(await branchesOf(dir, "flaky"), []);
+      assert.equal(statuses.length, 2);
+      const failing = store.status();
+      assert.equal(failing.ok, true, "recovered");
+      assert.deepEqual(store.status().pending, {});
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+test("status reports a commit waiting on a retry", async () => {
+  await withDir(async (dir) => {
+    const onStep = async (step, { branch }) => {
+      if (step === "commit-start" && branch.author === AGENT) {
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      }
+    };
+    const store = createVersionStore({ boardsDir: dir, retryDelaysMs: [10_000], testHooks: { onStep } });
+    try {
+      void store.submitBranch("s", { author: AGENT, base: null, elements: [el("a")] }).catch(() => {});
+      let status;
+      // Up to 5 s on a slow host; the loop ends as soon as the retry shows.
+      for (let attempt = 0; attempt < 250; attempt++) {
+        status = store.status();
+        if (!status.ok) break;
+        await delay(20);
+      }
+      assert.equal(status.ok, false);
+      assert.equal(status.failing.s.retrying, true);
+      assert.match(status.failing.s.error, /ENOSPC/);
+      assert.equal(status.pending.s, 1, "the write is still journaled");
+      assert.equal((await branchesOf(dir, "s")).length, 1);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+test("images are stored once per board: ten saves of a board with a 1 MB image add about 1 MB", async () => {
+  await withStore({}, async (store, dir) => {
+    const image = { mimeType: "image/png", id: "img1", dataURL: `data:image/png;base64,${"A".repeat(1024 * 1024)}`, created: 1 };
+    let version = null;
+    for (let n = 0; n < 10; n++) {
+      const result = await store.submitBranch("pic", {
+        author: `agent:bot#p${n}`,
+        base: version,
+        elements: [el("photo", { type: "image", fileId: "img1" }), el(`note${n}`)],
+        files: { img1: image },
+      });
+      assert.equal(result.status, "committed");
+      version = result.version;
+    }
+    const sizeOf = async (folder) => {
+      let total = 0;
+      for (const name of await readdir(folder, { recursive: true })) {
+        const info = await stat(path.join(folder, name));
+        if (info.isFile()) total += info.size;
+      }
+      return total;
+    };
+    await store.whenIdle();
+    const xcldBytes = await sizeOf(path.join(dir, ".xcld"));
+    assert.ok(xcldBytes < 1.5 * 1024 * 1024, `.xcld holds ${(xcldBytes / 1024 / 1024).toFixed(2)} MB after 10 saves`);
+    assert.equal((await historyOf(dir, "pic")).length, 10);
+    const first = (await historyOf(dir, "pic"))[0].version;
+    const restored = await store.readVersion("pic", first);
+    assert.equal(restored.scene.files.img1.dataURL, image.dataURL, "images are restored on read");
+    await store.whenIdle();
+    assert.equal((await masterOf(dir, "pic")).files.img1.dataURL, image.dataURL, "master keeps its images");
+  });
+});
+
+test("slice-2 records with embedded images are migrated to the file store on load", async () => {
+  await withDir(async (dir) => {
+    const image = { mimeType: "image/png", id: "img1", dataURL: `data:image/png;base64,${"B".repeat(64 * 1024)}`, created: 1 };
+    const text = `${JSON.stringify({ type: "excalidraw", version: 2, source: "test", elements: [el("photo", { type: "image", fileId: "img1" })], appState: {}, files: { img1: image } }, null, 2)}\n`;
+    const version = contentHash(text);
+    await writeFile(path.join(dir, "old.excalidraw"), text, "utf8");
+    const history = path.join(dir, ".xcld", "history", "old");
+    await mkdir(history, { recursive: true });
+    await writeFile(path.join(history, "20261006T000000.000Z-human_A_t.excalidraw"), text, "utf8");
+    await writeFile(path.join(history, "20261006T000000.000Z-human_A_t.meta.json"), JSON.stringify({ version, author: "human:A#t", closedBy: "idle" }), "utf8");
+    await mkdir(path.join(dir, ".xcld", "state"), { recursive: true });
+    await writeFile(path.join(dir, ".xcld", "state", "old.json"), JSON.stringify({ schema: 1, board: "old", version, masterMeta: {}, last: { branchId: "x", author: "human:A#t", entry: "20261006T000000.000Z-human_A_t", previous: null }, open: null, mermaid: null, lastEntryAt: 1 }), "utf8");
+    const store = createVersionStore({ boardsDir: dir });
+    try {
+      const read = await store.readVersion("old", version);
+      assert.equal(read.scene.files.img1.dataURL, image.dataURL);
+      const record = JSON.parse(await readFile(path.join(history, "20261006T000000.000Z-human_A_t.excalidraw"), "utf8"));
+      assert.equal(record.xcld.version, version);
+      assert.deepEqual(record.files, {}, "the record no longer embeds the image");
+      assert.equal((await readdir(path.join(dir, ".xcld", "files", "old"))).length, 1);
+      const state = JSON.parse(await readFile(path.join(dir, ".xcld", "state", "old.json"), "utf8"));
+      assert.equal(state.records, 2);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+test("with a separate state dir, versions data under boards/.xcld is copied over once", async () => {
+  await withDir(async (dir) => {
+    const before = createVersionStore({ boardsDir: dir });
+    const v1 = await before.submitBranch("moved", { author: AGENT, base: null, elements: [el("a")] });
+    await before.close();
+    const stateDir = path.join(dir, "state-volume");
+    const after = createVersionStore({ boardsDir: dir, stateDir });
+    try {
+      assert.equal((await after.readVersion("moved", v1.version)).scene.elements[0].id, "a");
+      const v2 = await after.submitBranch("moved", { author: AGENT2, base: v1.version, elements: [el("a"), el("b")] });
+      assert.equal(v2.status, "committed");
+      await after.whenIdle();
+      assert.ok((await stat(path.join(stateDir, "state", "moved.json"))).isFile());
+      assert.equal((await readdir(path.join(stateDir, "history", "moved"))).filter((name) => name.endsWith(".meta.json")).length, 2);
+    } finally {
+      await after.close();
     }
   });
 });
@@ -385,45 +572,68 @@ test("Mermaid writes record their source, also when no element changed", async (
 });
 
 // D2: a real process is killed (SIGKILL) at each step of a commit, then a new store replays
-// the journal. Nothing is lost, nothing is applied twice.
-const runChild = (dir, step, board, branch) => new Promise((resolve) => {
-  execFile(process.execPath, [path.resolve("tests", "versions-crash-child.mjs"), dir, step, board, JSON.stringify(branch)], (error) => {
+// the journal. Nothing is lost, nothing is applied twice, and every version still rebuilds from
+// history. Variants: a new delta entry, a coalesced delta entry, and a commit that lands on a
+// checkpoint boundary (checkpointEvery 2).
+const runChild = (dir, step, board, branch, options = {}) => new Promise((resolve) => {
+  execFile(process.execPath, [path.resolve("tests", "versions-crash-child.mjs"), dir, step, board, JSON.stringify(branch), JSON.stringify(options)], (error) => {
     resolve(error?.code ?? error?.signal ?? 0);
   });
 });
 
+const D2_VARIANTS = [
+  { name: "", author: AGENT, options: {}, record: "delta" },
+  { name: " (coalescing commit)", author: HUMAN, options: {}, record: "delta" },
+  { name: " (checkpoint boundary)", author: AGENT, options: { checkpointEvery: 2 }, record: "checkpoint" },
+];
 for (const crashAt of ["after-ingest", "mid-history", "after-history", "after-master", "before-archive"]) {
-  for (const coalesce of [false, true]) {
-    test(`D2: killed ${crashAt}${coalesce ? " (coalescing commit)" : ""}, the restart replays it exactly once`, async () => {
+  for (const variant of D2_VARIANTS) {
+    test(`D2: killed ${crashAt}${variant.name}, the restart replays it exactly once`, async () => {
       await withDir(async (dir) => {
-        const setup = createVersionStore({ boardsDir: dir });
-        const v1 = await setup.submitBranch("d2", { author: HUMAN, base: null, writtenAt: 1000, elements: [el("a"), el("b")] });
+        const setup = createVersionStore({ boardsDir: dir, ...variant.options });
+        // v0 is the board's first entry (a checkpoint); v1 opens a human entry (a delta).
+        const v0 = await setup.submitBranch("d2", { author: AGENT2, base: null, writtenAt: 500, elements: [el("a"), el("b"), el("c")] });
+        const v1 = await setup.submitBranch("d2", { author: HUMAN, base: v0.version, writtenAt: 1000, elements: [el("a"), el("b")] });
         await setup.close();
-        const author = coalesce ? HUMAN : AGENT;
-        const exit = await runChild(dir, crashAt, "d2", { author, base: v1.version, writtenAt: 2000, elements: [el("a", { x: 77 }), el("b")] });
+        const { author } = variant;
+        const exit = await runChild(dir, crashAt, "d2", { author, base: v1.version, writtenAt: 2000, elements: [el("a", { x: 77 }), el("b")] }, variant.options);
         assert.notEqual(exit, 3, "the child reached the crash step");
         assert.notEqual(exit, 0);
 
-        const store = createVersionStore({ boardsDir: dir });
+        const store = createVersionStore({ boardsDir: dir, ...variant.options });
         try {
           await store.whenIdle();
           const master = await masterOf(dir, "d2");
           assert.equal(find(master, "a").x, 77, "the write is in master");
+          const masterText = await readFile(path.join(dir, "d2.excalidraw"), "utf8");
           const state = await store.readState("d2");
-          assert.equal(state.version, contentHash(await readFile(path.join(dir, "d2.excalidraw"), "utf8")));
+          assert.equal(state.version, contentHash(masterText));
           assert.deepEqual(state.masterMeta.a, { writtenAt: 2000, author });
           const history = await historyOf(dir, "d2");
-          if (coalesce) {
-            assert.deepEqual(history.map((entry) => [entry.author, entry.coalescedCount]), [[HUMAN, 2]], "folded once");
+          if (author === HUMAN) {
+            assert.deepEqual(history.map((entry) => [entry.author, entry.coalescedCount]), [[AGENT2, 1], [HUMAN, 2]], "folded once");
           } else {
-            assert.deepEqual(history.map((entry) => entry.author), [HUMAN, AGENT], "one entry per commit, no duplicate");
+            assert.deepEqual(history.map((entry) => entry.author), [AGENT2, HUMAN, AGENT], "one entry per commit, no duplicate");
           }
           assert.equal(history.at(-1).version, state.version);
+          assert.equal(history.at(-1).record, variant.record);
           assert.deepEqual(await branchesOf(dir, "d2"), [], "the journal is empty");
           const leftovers = (await readdir(dir, { recursive: true })).filter((name) => name.endsWith(".tmp"));
           assert.deepEqual(leftovers, []);
         } finally {
           await store.close();
+        }
+        // A fresh process rebuilds every version history keeps, byte for byte.
+        const fresh = createVersionStore({ boardsDir: dir, ...variant.options });
+        try {
+          const kept = [v0, ...(author === HUMAN ? [] : [v1])];
+          for (const result of kept) {
+            assert.equal((await fresh.readVersion("d2", result.version)).text, `${JSON.stringify(result.scene, null, 2)}\n`);
+          }
+          const head = await fresh.readVersion("d2", (await fresh.readState("d2")).version);
+          assert.equal(find(head.scene, "a").x, 77);
+        } finally {
+          await fresh.close();
         }
       });
     });

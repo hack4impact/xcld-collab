@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
-import { createReadStream } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { createReadStream, constants } from "node:fs";
+import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { exportRoot, historyMode, stateDirFromEnv } from "../../tools/storage.mjs";
 import { createBoardApi, isAllowedHostHeader } from "./api.mjs";
 
 const DIRNAME = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +70,19 @@ const streamFile = async (res, filePath, cacheControl = "no-store") => {
 };
 
 await mkdir(BOARDS_DIR, { recursive: true });
+// Compose: the cache folder (XCLD_CACHE_DIR) is a host bind mount, which on Linux must be
+// writable by the container user (XCLD_UID). Say so at start, not on the first save or export.
+const STATE_DIR = stateDirFromEnv(process.env, BOARDS_DIR);
+if (historyMode()) {
+  for (const dir of [STATE_DIR, exportRoot()]) {
+    try {
+      await mkdir(dir, { recursive: true });
+      await access(dir, constants.W_OK);
+    } catch (error) {
+      console.error(`${dir} is not writable by uid ${process.getuid?.() ?? "?"} (${error.code ?? error.message}). On Linux the host folder XCLD_CACHE_DIR (default ~/.excalidraw) and its subfolders must belong to XCLD_UID: rerun build.sh, or chown them.`);
+    }
+  }
+}
 const api = createBoardApi({ boardsDir: BOARDS_DIR });
 
 const server = createServer(async (req, res) => {
@@ -147,4 +161,5 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 server.listen(PORT, HOST, () => {
   console.log(`xcld-collab listening on http://${HOST}:${PORT}`);
   console.log(`boards: ${BOARDS_DIR}`);
+  console.log(`history: ${STATE_DIR}${historyMode() ? ` (XCLD_HISTORY=${historyMode()})` : ""}`);
 });
