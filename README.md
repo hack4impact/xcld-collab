@@ -36,10 +36,8 @@ The build ends with `.env updated (XCLD_TAG=...)`; that's how Compose knows whic
 docker compose up -d --wait
 ```
 
-`--wait` returns once the workspace is healthy. By default this starts the canvas **and** the
-Excalidraw MCP Apps chat widget (the build writes `COMPOSE_PROFILES=widget` to `.env` once).
-The widget loads React/Excalidraw from esm.sh when it renders (#9). To run the canvas only,
-with no outside requests, set `COMPOSE_PROFILES=` (empty) in `.env`.
+`--wait` returns once the workspace is healthy. This starts the canvas only, with no outside
+requests. The chat widget is [experimental and opt-in](#chat-widget-experimental).
 
 ### 3. Draw something
 
@@ -70,18 +68,40 @@ docker exec xcld-collab xcld open-in-canvas <checkpointId> sandbox/from-chat
 docker exec -i xcld-collab xcld mcp                    # optional: MCP tools over stdio
 ```
 
-Opening this repo in VS Code offers both MCP servers from `.vscode/mcp.json`: `xcld` (tools)
-and `excalidraw` (the chat widget). For Copilot CLI, Claude Code, Codex and OpenCode, see the
+Opening this repo in VS Code offers the `xcld` tools server from `.vscode/mcp.json`. For
+Copilot CLI, Claude Code, Codex and OpenCode, see the
 [client configs in the reference](docs/reference.md).
 
 That's the whole default loop. Your agent runs those same commands; `xcld mcp` is the stdio
-tools server inside the canvas container and does not require the chat widget profile.
+tools server inside the canvas container and does not need the chat widget.
 
-When the `widget` profile is enabled, the image also runs the upstream Excalidraw MCP Apps UI
-as a second Compose service at <http://127.0.0.1:3001/mcp> for hosts that render MCP Apps.
+### Chat widget (experimental)
+
+The image also contains the upstream Excalidraw MCP Apps chat widget, which draws diagrams
+inside chat in hosts that render MCP Apps, such as VS Code. It is **experimental and off by
+default**:
+
+- **It sends requests outside your machine.** When it renders, the widget loads React,
+  React DOM, Excalidraw 0.18.0 and morphdom, plus Excalidraw's CSS and some fonts, from
+  `https://esm.sh`. Attempts to serve that JavaScript locally rendered a blank diagram in VS
+  Code ([#9](../../issues/9)).
+- **Known font errors.** The VS Code webview console can show font Content-Security-Policy
+  errors; affected UI text falls back to a system font
+  ([#7](../../issues/7)).
+
+To opt in:
+
+1. Add `COMPOSE_PROFILES=widget` to `.env` and run `docker compose up -d --wait`. This
+   starts a second service, `mcp`, at <http://127.0.0.1:3001/mcp>.
+2. Add the widget server to `.vscode/mcp.json` (or your user `mcp.json`) next to `xcld`:
+   `"excalidraw": { "type": "http", "url": "http://127.0.0.1:3001/mcp" }`.
+
 If a host cannot open the widget editor, the widget shows its checkpoint id; use
 `open-in-canvas` (or MCP `open_in_canvas`) with an explicit board path to move the drawing
 into the persistent canvas.
+
+To opt out again, remove `widget` from `COMPOSE_PROFILES` in `.env`, then run
+`docker compose --profile widget down` followed by `docker compose up -d --wait`.
 
 ### Stop
 
@@ -91,7 +111,8 @@ docker compose down
 
 Boards stay in `./boards`. Only `boards/examples/` is tracked in git; everything else you
 create there is gitignored. Nothing leaves your machine: the canvas is served from
-`127.0.0.1` only, and fonts and assets come from the container.
+`127.0.0.1` only, and fonts and assets come from the container. The one exception is the
+[experimental chat widget](#chat-widget-experimental), which is off unless you opt in.
 
 ### Environment Settings
 
@@ -99,16 +120,16 @@ create there is gitignored. Nothing leaves your machine: the canvas is served fr
 | Setting | Default | What it does |
 |---|---|---|
 | `XCLD_PORT` | `3100` | Port on `127.0.0.1` |
-| `XCLD_MCP_PORT` | `3001` | Host port for the Excalidraw MCP Apps UI service at `/mcp` |
+| `XCLD_MCP_PORT` | `3001` | Host port for the experimental chat widget service at `/mcp` (only with `COMPOSE_PROFILES=widget`) |
 | `XCLD_CONTAINER` | `xcld-collab` | Canvas container name. Override when running multiple Compose projects side by side |
-| `XCLD_MCP_CONTAINER` | `xcld-mcp` | MCP UI service container name |
+| `XCLD_MCP_CONTAINER` | `xcld-mcp` | Chat widget service container name |
 | `XCLD_BOARDS` | `./boards` | Boards folder. Relative paths are relative to `compose.yaml`, so use an absolute path for a folder in another repo |
 | `XCLD_WATCH_POLL_MS` | `1000` | How often the server checks for file changes |
 | `XCLD_MAX_DEPTH` | `0` | Nested board folder limit; `0` means unlimited |
 | `XCLD_AUTO_EXPORT` | `snapshot` | When Mermaid is written for you: `off`, `snapshot` (each `xcld snapshot` also writes a `.mmd`) or `save` (also keeps `boards/.exports/<path>.mmd` current). See the [decision tree](docs/reference.md#saving-and-exporting) |
 | `XCLD_DESIGN_RULES` | `<boards>/design-rules.csv` | Optional path to the default design rules CSV (inside Docker, use `/boards/...`). A folder's own `design-rules.csv` still replaces the inherited defaults for boards below it |
 | `XCLD_PUBLIC_URL` | `http://127.0.0.1:${XCLD_PORT}` | URL returned by MCP `board_url`; Compose sets this for the canvas service |
-| `COMPOSE_PROFILES` | `widget` (seeded by the build) | `widget` starts the Excalidraw MCP Apps chat widget with the canvas; set it empty (`COMPOSE_PROFILES=`) for canvas only, with no outside requests. The build never overwrites an existing value |
+| `COMPOSE_PROFILES` | unset (canvas only, no outside requests) | `widget` also starts the [experimental chat widget](#chat-widget-experimental), which loads JavaScript from esm.sh. The build never writes or changes this line; builds before the widget became opt-in added `COMPOSE_PROFILES=widget`, and the build prints a notice while it is there |
 
 Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wait` again.
 

@@ -6,7 +6,8 @@ description: Create and revise persistent xcld-collab architecture diagrams thro
 # xcld-collab
 
 Use `xcld-probe` for persistent human-agent diagram collaboration. Use
-`excalidraw-probe` only for a transient diagram rendered inside chat.
+`excalidraw-probe` only for a transient diagram rendered inside chat. That chat widget is
+experimental and off by default; if its tools are not available, use `xcld-probe`.
 
 ## New board
 

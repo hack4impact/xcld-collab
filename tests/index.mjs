@@ -13,3 +13,4 @@ import "./snapshot.test.mjs";
 import "./stale-save.test.mjs";
 import "./to-mermaid.test.mjs";
 import "./view-inbox.test.mjs";
+import "./widget-default.test.mjs";

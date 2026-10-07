@@ -419,10 +419,11 @@ There are two MCP entry points in the image:
 1. **`xcld mcp`** is the primary agent tools server. It speaks MCP over stdio, so clients
    launch it with `docker exec -i xcld-collab xcld mcp`. It adds no port and uses the same
    board volume as the canvas. It is enabled by default.
-2. **`excalidraw-mcp`** is the optional MCP Apps chat-widget UI service. Compose serves it
-   only when the `widget` profile is enabled, at `http://127.0.0.1:3001/mcp`, for hosts that
-   render MCP Apps widgets, such as VS Code and Claude Desktop. Its `export_to_excalidraw`
-   upload flow and Excalidraw Plus menu link are patched out at build time.
+2. **`excalidraw-mcp`** is the **experimental**, opt-in MCP Apps chat-widget UI service. It
+   is off by default. Compose serves it only when the `widget` profile is enabled, at
+   `http://127.0.0.1:3001/mcp`, for hosts that render MCP Apps widgets, such as VS Code and
+   Claude Desktop. Its `export_to_excalidraw` upload flow and Excalidraw Plus menu link are
+   patched out at build time. See [the widget section](#excalidraw-mcp-apps-ui-service-experimental).
 
 ### `xcld mcp` tools
 
@@ -536,9 +537,10 @@ installed here.
 }
 ```
 
-**VS Code**: verified in a real VS Code chat (2026-10-02/03). The widget renders, and the `xcld`
-tools work. The repo ships this file as `.vscode/mcp.json`, so opening the repo in VS Code
-offers both servers. To use them in every window, add the same entries to your user `mcp.json`.
+**VS Code**: verified in a real VS Code chat (2026-10-02/03): the `xcld` tools work, and the
+experimental widget rendered with the profile enabled. The repo ships `.vscode/mcp.json` with
+the `xcld` tools server only, so opening the repo in VS Code offers it without starting
+anything extra. To use it in every window, add the same entry to your user `mcp.json`.
 
 `.vscode/mcp.json`:
 
@@ -549,22 +551,41 @@ offers both servers. To use them in every window, add the same entries to your u
       "type": "stdio",
       "command": "docker",
       "args": ["exec", "-i", "xcld-collab", "xcld", "mcp"]
-    },
-    "excalidraw": {
-      "type": "http",
-      "url": "http://127.0.0.1:3001/mcp"
     }
   }
 }
 ```
 
-### Excalidraw MCP Apps UI service
+The `excalidraw` widget server is not in the shipped file because its service is off by
+default, and VS Code would report a failed connection for it. After you opt in to the
+[experimental widget](#excalidraw-mcp-apps-ui-service-experimental), add it next to `xcld`:
 
-The chat widget starts by default: it's the second service, named `mcp`, from the same image,
-under the `widget` Compose profile, which the build seeds as `COMPOSE_PROFILES=widget` in `.env`.
-When it renders, the widget loads React/Excalidraw from esm.sh (#9). For canvas only, with no
-outside requests, set `COMPOSE_PROFILES=` (empty) in `.env` and run `docker compose up -d --wait`. The primary `xcld mcp` stdio tools still run through `docker exec -i
-xcld-collab xcld mcp` in the canvas container.
+```json
+    "excalidraw": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp"
+    }
+```
+
+### Excalidraw MCP Apps UI service (experimental)
+
+The chat widget is **experimental and off by default**. It's the second service, named `mcp`,
+from the same image, under the `widget` Compose profile. Known issues:
+
+- When it renders, the widget loads React, React DOM, Excalidraw 0.18.0 and morphdom from
+  `https://esm.sh`, so enabling it adds runtime egress
+  ([#9](../../../issues/9)).
+- The VS Code webview console can show font Content-Security-Policy errors; affected UI text
+  falls back to a system font ([#7](../../../issues/7)).
+
+To opt in, add `COMPOSE_PROFILES=widget` to `.env`, run `docker compose up -d --wait`, and add
+the `excalidraw` server to your `mcp.json` (above). The build never writes or changes
+`COMPOSE_PROFILES`. Builds from before the widget became opt-in seeded
+`COMPOSE_PROFILES=widget`; while that line is there the build prints a notice, and you can
+remove `widget` from it to go back to canvas only. To stop a running widget service, run
+`docker compose --profile widget down`, then `docker compose up -d --wait`. The primary
+`xcld mcp` stdio tools don't need the widget; they run through `docker exec -i xcld-collab
+xcld mcp` in the canvas container.
 
 When enabled, the service is:
 

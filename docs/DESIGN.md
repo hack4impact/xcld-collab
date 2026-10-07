@@ -13,8 +13,9 @@ edit the same diagram, and every change can be read back as a precise, semantic 
 - Mermaid flowchart → Excalidraw → human/agent edits → semantic diff → Mermaid flowchart.
 - Works from Copilot CLI (terminal), VS Code, and a plain browser.
 - No runtime egress for the canvas and `xcld` tools. Nothing is uploaded to excalidraw.com.
-  **Exception:** the optional `excalidraw-mcp` widget still loads React/Excalidraw from
-  `esm.sh`; resolving that is the part 3c network spike.
+  **Exception:** the optional, experimental `excalidraw-mcp` widget (off by default) still
+  loads React/Excalidraw from `esm.sh` when enabled; resolving that is the part 3c network
+  spike (issue #9).
 
 **Out of scope for v1:** sequence, class, ER and state diagrams (next), multi-user
 collaboration, and hosted deployment.
@@ -158,10 +159,12 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **Running:** `compose.yaml` (lead decision, 2026-10-02) replaced the per-OS start
   scripts. The build scripts compute the tag and write `XCLD_IMAGE`/`XCLD_TAG` to a
   gitignored `.env`, plus `XCLD_UID`/`XCLD_GID` on Linux. `docker compose up -d --wait`
-  reads them. The `excalidraw-mcp` MCP Apps chat widget is under the `widget` profile. The build
-  scripts seed `COMPOSE_PROFILES=widget` in `.env` once, so the widget starts **by default**
-  (lead decision, 2026-10-03). An existing value is never overwritten; `COMPOSE_PROFILES=`
-  (empty) runs the canvas only, with zero runtime egress.
+  reads them. The `excalidraw-mcp` MCP Apps chat widget is under the `widget` profile and is
+  **experimental and off by default** (lead decision, 2026-10-06; it was seeded on by the
+  build from 2026-10-03). The build scripts no longer write `COMPOSE_PROFILES`; the default is
+  canvas only, with zero runtime egress. Opt in with `COMPOSE_PROFILES=widget` in `.env`. A
+  line seeded by an earlier build is left alone (the build never rewrites a user's choice) and
+  the build prints a one-line notice while it enables the widget.
   `container_name` is overridable (`XCLD_CONTAINER`, `XCLD_MCP_CONTAINER`) so parallel smoke
   projects do not collide with the default `xcld-collab` container.
 - **User docs:** `README.md` (getting started, coming soon), `docs/user-guide.md`
@@ -190,10 +193,12 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
 - **Part 3a (built):** `xcld mcp`, the primary tools server for Copilot CLI, Claude Code,
   Codex and OpenCode. It is bundled at build time with esbuild and runs over stdio, usually
   as `docker exec -i xcld-collab xcld mcp`.
-- **Part 3b (built, on by default):** `excalidraw-mcp` at its pinned SHA as a second HTTP
-  service for MCP Apps hosts. It is profile-gated (`widget`), and the build seeds that profile,
-  so it runs by default (lead, 2026-10-03; it was opt-in on 2026-10-02). Opting out is one line
-  in `.env`. Issue #9 (moving the widget's JS off esm.sh) is still open. Its
+- **Part 3b (built, experimental, opt-in):** `excalidraw-mcp` at its pinned SHA as a second HTTP
+  service for MCP Apps hosts. It is profile-gated (`widget`) and off by default (lead,
+  2026-10-06; opt-in on 2026-10-02, seeded on by the build 2026-10-03 to 2026-10-06). The
+  shipped `.vscode/mcp.json` lists only `xcld`, because an `excalidraw` entry fails to connect
+  while the profile is off. Issues #9 (moving the widget's JS off esm.sh) and #7 (font CSP
+  errors) are still open. Its
   upload/export flow is patched out; checkpoints persist under the boards volume through
   `TMPDIR=/boards/.xcld/mcp-checkpoints`.
 - **Part 3b bridge (built):** `open_in_canvas(checkpointId, board, overwrite=false)` and
@@ -225,7 +230,7 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   Excalidraw 0.18.0 out of its bundle and loads them from `https://esm.sh` at runtime
   (`vite.config.ts` externals; CSP `resourceDomains` in `server.ts:650`).
   - **Decision (lead, 2026-10-02):** leave this as upstream for parts 3a/3b, with the
-    service behind the `widget` Compose profile (on by default since 2026-10-03). Part 3c / issue #9 will later
+    service behind the `widget` Compose profile (experimental and off by default since 2026-10-06). Part 3c / issue #9 will later
     decide between serving those dependencies from our container and inlining them into the
     widget. The exact switch points are a new patch under `patches/excalidraw-mcp/` that
     changes `vite.config.ts` (`rollupOptions.external` / `output.paths`) and `src/server.ts`

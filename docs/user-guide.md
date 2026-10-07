@@ -64,7 +64,8 @@ blank canvas. Reload once if the watcher misses the update.
 
 Use this when the `excalidraw-probe` chat widget made a useful drawing, but you want the
 persistent localhost canvas for review, or the widget says the host cannot open fullscreen
-editing.
+editing. The chat widget is experimental and off by default; see
+[Chat widget (experimental)](../README.md#chat-widget-experimental) to opt in.
 
 1. Ask the agent to copy the widget checkpoint id from the widget response or hint.
 2. Choose an explicit destination board, for example `myproject/chat-architecture`.

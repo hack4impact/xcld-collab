@@ -1,13 +1,12 @@
 # Run the workspace. Build first with build.ps1 / build.sh: they compute the
 # image tag from the exact source commits and write it to .env as XCLD_TAG.
 #
-#   docker compose up -d --wait     # start; returns once the healthcheck passes
-#   (the chat widget starts too: the build seeds COMPOSE_PROFILES=widget in .env)
+#   docker compose up -d --wait     # start the canvas; returns once the healthcheck passes
 #   docker compose down             # stop; boards stay on disk
 #
 # Optional overrides in .env (or your shell):
 #   XCLD_PORT=3100                  # host port, always bound to 127.0.0.1
-#   XCLD_MCP_PORT=3001              # host port for the excalidraw-mcp UI service
+#   XCLD_MCP_PORT=3001              # host port for the chat widget service (widget profile only)
 #   XCLD_CONTAINER=xcld-collab      # canvas container name; override for parallel smokes
 #   XCLD_MCP_CONTAINER=xcld-mcp     # MCP UI service container name
 #   XCLD_BOARDS=./boards            # boards folder, relative to this file
@@ -15,7 +14,9 @@
 #   XCLD_AUTO_EXPORT=snapshot       # off | snapshot | save (also keeps boards/.exports/<path>.mmd)
 #   XCLD_DESIGN_RULES=...           # optional default rules CSV path; folder design-rules.csv overrides it
 #   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
-#   COMPOSE_PROFILES=widget         # default (seeded by the build); set empty for canvas only
+#   COMPOSE_PROFILES=widget         # opt in to the EXPERIMENTAL chat widget (service "mcp", below).
+#                                   # Off by default: it loads JS from esm.sh and has known font
+#                                   # CSP errors (issues #9, #7). Unset = canvas only, zero egress.
 name: xcld-collab
 
 services:
@@ -35,6 +36,8 @@ services:
       XCLD_PUBLIC_URL: "http://127.0.0.1:${XCLD_PORT:-3100}"
     restart: unless-stopped
 
+  # EXPERIMENTAL, opt-in: the upstream Excalidraw MCP Apps chat widget. Only starts with
+  # COMPOSE_PROFILES=widget; the widget loads React/Excalidraw from https://esm.sh (#9).
   mcp:
     profiles: ["widget"]
     image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first}
