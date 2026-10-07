@@ -185,6 +185,10 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     on private ones), pushes by digest, and publishes one multi-arch index as
     `ghcr.io/hack4impact/xcld-collab:<tag>` and `:latest`. `XCLD_ARM64_BUILD=qemu` (repository
     variable) switches arm64 to QEMU on an x64 runner, which is several times slower.
+  - The repository allows only GitHub-owned actions, so `image.yml` drives buildx, `docker login`
+    and QEMU (Ubuntu's `qemu-user-static`) from the runner's CLI. Its layer cache lives in the
+    same package as `:buildcache-amd64` / `:buildcache-arm64`; images carry no provenance or SBOM
+    attestations, so build arguments never reach published metadata.
 - **Linux bind mounts:** the container runs as `node` (uid 1000). The build scripts print a
   `docker run -u $(id -u):$(id -g)` command so boards stay writable. Docker Desktop on
   Windows/macOS doesn't need this.
