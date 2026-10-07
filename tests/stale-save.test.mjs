@@ -28,7 +28,7 @@ const withServer = async (fn) => {
   try {
     await fn({ boardsDir, url, put, file: path.join(boardsDir, "p", "demo.excalidraw") });
   } finally {
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });

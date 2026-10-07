@@ -53,7 +53,7 @@ const withApiServer = async (options, fn) => {
   try {
     await fn({ boardsDir, port });
   } finally {
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });

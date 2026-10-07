@@ -50,7 +50,9 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     of the file as an `ETag`; the tab sends the hash its scene is based on as `If-Match`
     (`If-None-Match: *` for a new board). The server re-hashes the file on disk at `PUT` time,
     so a direct agent write counts too, and answers `409 {error:"stale-save", currentHash}`
-    when it moved. A per-board lock makes check-and-write atomic between tabs. `PUT` without
+    when it moved. The board's commit queue makes check-and-write atomic between tabs, and
+    every save is committed through the versions pipeline (history, journal); see
+    [Versions storage and commit pipeline](#versions-storage-and-commit-pipeline). `PUT` without
     either header is unguarded (last write wins) for scripts.
   - On 409 the tab fetches the board, re-applies its unsaved edits per element id against
     the base it last loaded or saved (`app/src/reconcile.mjs`): a side that changed an element
@@ -354,10 +356,10 @@ structured `%% xcld:` comments carry annotations through Mermaid.
 
 ## Merge rules
 
-**Status (2026-10-06):** the merge module `tools/merge.mjs` is built and tested; the server
-doesn't call it yet. The branch store, per-board queue and commit pipeline come next, then
-the write API, the tab and the concurrency test. Today the board is still turn-taking with the
-stale-save guard.
+**Status (2026-10-07):** the merge module `tools/merge.mjs` and the server's commit pipeline
+(next section) are built. Every master write already goes through the pipeline, but the tab
+still saves with the stale-save guard (409) and agents still write files. The write API with
+identities, the tab's side and the concurrency test come next.
 
 Every writer (tab, MCP, CLI, a direct file write) produces a branch: its full scene plus the
 master version it started from (the base) and when it was written. One merge runs at a time
@@ -386,6 +388,15 @@ tab-like (version bumps, tombstones, unbinding on delete) and one agent-like (no
 deletion by omission). It checks that repeated runs and shuffled input arrays give identical
 results, that merging A then B equals B then A, and that every change is either in the result
 or reported as overwritten. `node tests/merge-bench.mjs` measures D5.
+
+**D5 budget (lead, 2026-10-06):** the merge step alone stays at **p95 ≤ 250 ms** for a
+1,500-element board. Measured at about 20–35 ms median and 35–75 ms p95 on a loaded machine.
+The test guard in `tests/merge.test.mjs` stays generous (2 s for one run).
+
+**Known limitation:** moving a shape in Excalidraw also rewrites its bound arrows' points,
+but an arrow is its own unit. When the shape's move wins and a newer edit of the arrow (say,
+its label) also wins, the arrow keeps its old points and can look detached until someone
+touches it. It is reported as overwritten. Tracked in issue #27.
 
 ### Server-side Mermaid apply
 
@@ -432,6 +443,111 @@ still converts `.mmd`, until the versions write API runs them.
 - **Conventions are tested against the real converter.** `tests/fixtures/mermaid-apply-*.excalidraw`
   are tab conversions captured in headless Chromium (`tests/browser`, `--app`). The tests
   compare every field that decides rendering, except position and size.
+
+## Versions storage and commit pipeline
+
+**Status (2026-10-07):** built (`app/server/versions.mjs`) and wired into the server. Every
+write that reaches master goes through it. `PUT /api/board` keeps its stale-save semantics
+for now; the write API with identities (`POST /api/branch`, a stale save that merges) is the
+next step.
+
+Everything lives under `boards/.xcld/`. That's a dot folder, so the watcher, the board list
+and the exports ignore it.
+
+| Path | Holds |
+|---|---|
+| `branches/<path>/<authorKeySafe>.<id>.json` | The journal: one file per write not yet committed. `{ id, board, author, displayName, base, writtenAt, receivedAt, kind: "json" \| "mermaid", elements, appState?, files?, raw?, ops?, mermaid? }`. `id` sorts by arrival time. |
+| `history/<path>/<UTC>-<authorKeySafe>.excalidraw` + `.meta.json` | One entry per author turn: the master text after the turn, and `{ version, author, displayName, base, parents, applied, overwritten, coalescedCount, closedBy, openedAt, lastCommitAt, lastBranchId, kind }`. |
+| `state/<path>.json` | Per board, the commit point: the committed `version`, `masterMeta` (element id → `{ writtenAt, author }`, fed to `mergeBoard`), `last` (the last commit), `open` (the open history entry), `mermaid` (the last applied Mermaid source). |
+| `bases/<path>/<version>.excalidraw` | The base store: versions that left the server and could otherwise be folded away. |
+
+Master stays `boards/<path>.excalidraw`. **A version id is the sha256 of master's bytes**, the
+same hash the `ETag` already carries.
+
+**Author keys** (lead, 2026-10-06): `human:<name>#<tabId>`, `agent:<clientName>#<processId>`,
+`cli:<XCLD_AUTHOR>`, `external`. Equal write times go to the greater key. Until the write API
+adds identities, tab saves through `PUT` share `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`.
+
+The pipeline, per write:
+
+1. **Ingest (Hook 0).** Check the author key, kind, and element ids. Stamp `receivedAt` (and
+   `writtenAt`, if the writer didn't send one). Then write the branch file atomically, with an
+   fsync. From here the write is never dropped.
+2. **Per-board FIFO queue.** One commit runs per board at a time, in submit order. Different
+   boards commit in parallel.
+3. **Commit (Hook 2), the only writer of master.**
+   - First, adopt any direct write to master (see below).
+   - Then fast-forward if master still equals the branch's base; otherwise run `mergeBoard`
+     against the base. A fast-forward keeps the writer's exact bytes.
+   - A base that no longer resolves returns `unknown-base` (409 in the coming write API).
+     Identical content returns `unchanged` and writes nothing.
+   - **Write order:** the history entry, then `state/<path>.json` (fsync, the commit point),
+     then master, then the branch file is deleted. Branches aren't archived: their content is
+     the history entry, and an overwritten loser's elements are kept in the entry's
+     `overwritten`.
+4. **Post-commit (Hook 3), asynchronous.**
+   - An SSE `merged` event `{ name, version, author, applied, overwritten, unbound }`, without
+     the loser elements.
+   - If master's bytes changed: the usual `board` event and the export and rules hooks.
+
+**Coalescing (lead Q2).**
+- A human's consecutive commits fold into the open entry; `coalescedCount` counts them.
+- The entry closes, with `closedBy` recording why, when:
+  - another human commits (`author`);
+  - an agent, CLI or external write merges (`agent-merge`);
+  - 3 minutes pass with no commit (`idle`, a timer that `close()` cancels);
+  - `checkpoint(board)` is called (`checkpoint`, for Ctrl+S);
+  - the board file is deleted (`deleted`).
+- Agent, CLI and external writes never coalesce: each is its own entry, closed at once
+  (`agent-write`). This matches "every agent write is a version" and "close before an agent
+  merge".
+- On restart, an open entry past the idle limit is closed.
+
+**Base retention.**
+- A version handed out may come back as a base. Coalescing overwrites the open entry, so the
+  version it held would vanish. Versions in closed entries stay resolvable from history.
+- A version is copied into the base store when:
+  - it is read through `GET /api/board` (its ETag), `readMaster` or `readVersion` while it
+    isn't a closed entry;
+  - or a fold would drop it while another queued branch references it. Queued branches
+    hold a reference count, from ingest until their commit.
+- The writer's own commit response doesn't need a copy: only that author's next commit can
+  fold it, and that commit uses it as its own base.
+- Copies are kept 24 hours after the last hand-out (`baseTtlMs`), never while referenced or
+  current. The GC runs on load and at most every 10 minutes per board.
+- This is not history pruning (#23).
+
+**Crash recovery (D2).** The branch files are the journal.
+- On start, every remaining branch is re-queued, oldest `writtenAt` first.
+- A branch whose id is `state.last.branchId` already committed: it is only deleted. If master
+  doesn't match the committed version while that branch file still exists, master is rolled
+  forward from the history entry.
+- A crash before the state write replays the commit from the same state, to the same entry
+  name, so nothing is applied twice.
+- `tests/versions.test.mjs` kills a real process at each step, with and without coalescing.
+
+**External writes.**
+- When the watcher sees a settled master that differs from the last committed version, it
+  queues an adoption: the file becomes an `external` branch on the last committed version,
+  with its mtime as the write time. That is a fast-forward, and master is left as written.
+- Every commit also checks master first, so a write the watcher hasn't seen yet is adopted
+  before it can be merged over.
+- A direct write that lands while a commit runs is journaled as an `external` branch on the
+  version it overwrote, and merged right after.
+- A deleted master leaves history in place, and the next write starts a new board.
+- Files that don't parse, or have elements without ids, aren't adopted. They are logged and
+  replaced by the next commit.
+
+**Internal API for the write API and server-side Mermaid** (`api.versions`):
+- `submitBranch(board, { author, base, writtenAt?, kind?, elements, appState?, files?, raw?, ops?, mermaid? }, { onIngested? })`
+  resolves to `{ status, version, applied, overwritten, unbound, branchId, post }`.
+  - `onIngested(branchId)` fires once the write is journaled.
+  - `kind: "mermaid"` with `mermaid: { source, hash }` records the applied source per board.
+    `elements: null` records it without changing master.
+- `readVersion(board, version)` and `readMaster(board)` return `{ version, text, scene }`, or
+  null.
+- Also: `readState(board)`, `readMermaid(board)`, `checkpoint(board)`, `adoptExternal(board)`,
+  and `whenIdle()`.
 
 ## Annotation convention — free-form by default, local design rules
 

@@ -140,7 +140,7 @@ test("api serves view inbox and polling publishes view events", async () => {
     assert.equal(data.boards[0].viewPending, true);
   } finally {
     stream.req.destroy();
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });

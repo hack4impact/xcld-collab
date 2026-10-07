@@ -425,6 +425,8 @@ Prints usage.
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.excalidraw` | Snapshots from `xcld snapshot`; flat boards still use `boards/.snapshots/<name>.<timestamp>.excalidraw` |
 | `boards/.snapshots/<folder>/<leaf>.<timestamp>.mmd` | The snapshot's Mermaid twin. Written unless `XCLD_AUTO_EXPORT=off` |
 | `boards/.exports/<path>.mmd` | Always-current Mermaid of each board. Only with `XCLD_AUTO_EXPORT=save` |
+| `boards/.xcld/history/<path>/` | Version history the server keeps for every board change: one `<UTC>-<author>.excalidraw` plus `.meta.json` per author turn (a person's consecutive saves fold into one entry until someone else writes, 3 minutes pass or a checkpoint). Read-only for you; see [DESIGN](DESIGN.md#versions-storage-and-commit-pipeline) |
+| `boards/.xcld/branches/`, `state/`, `bases/` | The server's write journal, per-board commit state and kept base versions. Don't edit them |
 | `.env` | Written by the build (`XCLD_IMAGE`, `XCLD_TAG`; `XCLD_UID`/`XCLD_GID` on Linux). Your settings go here too |
 
 **Board paths:** one or more segments joined by `/`. Each segment uses letters, digits, `.`,

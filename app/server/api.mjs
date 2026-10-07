@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, watch } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -6,8 +5,27 @@ import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/b
 import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
 import { effectiveExportMode } from "../../tools/rules.mjs";
+import { contentHash, createVersionStore, parseAuthorKey, staleSaveCheck } from "./versions.mjs";
+
+export { contentHash, staleSaveCheck };
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
+
+// Slice 2: tab saves through PUT carry no identity yet, so they share one human author.
+const legacyAuthor = () => {
+  const key = `human:${String(process.env.XCLD_AUTHOR_NAME ?? "").trim() || "anonymous"}#legacy`;
+  return parseAuthorKey(key) ? key : "human:anonymous#legacy";
+};
+
+// SSE `merged` payloads leave out the overwritten elements (they are in history).
+const mergedEvent = ({ name, version, author, applied, overwritten, unbound }) => ({
+  name,
+  version,
+  author,
+  applied,
+  overwritten: overwritten.map(({ loser, ...rest }) => ({ ...rest, loser: { side: loser.side, author: loser.author, writtenAt: loser.writtenAt } })),
+  unbound,
+});
 
 export function isAllowedHostHeader(hostHeader) {
   if (!hostHeader || Array.isArray(hostHeader)) {
@@ -26,37 +44,7 @@ export function isAllowedHostHeader(hostHeader) {
 
 export const validateBoardName = (name) => validateBoardPath(name, { maxDepth: maxDepthFromEnv() }).ok;
 
-export const contentHash = (content) => createHash("sha256").update(content).digest("hex");
-
 const etagFor = (hash) => `"${hash}"`;
-
-// Strong comparison only: W/ tags never match. Bare (unquoted) hashes are accepted for scripts.
-const parseEntityTags = (header) => {
-  if (header === undefined) {
-    return null;
-  }
-  const value = Array.isArray(header) ? header.join(",") : String(header);
-  return value.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => (
-    tag === "*" || tag.startsWith("W/") ? tag : tag.replace(/^"(.*)"$/, "$1")
-  ));
-};
-
-// Returns null when the save may proceed. No If-Match/If-None-Match header means an
-// unguarded write (last write wins), kept for scripts.
-export const staleSaveCheck = (headers, currentHash) => {
-  const ifMatch = parseEntityTags(headers["if-match"]);
-  const ifNoneMatch = parseEntityTags(headers["if-none-match"]);
-  if (ifMatch) {
-    const ok = currentHash !== null && ifMatch.some((tag) => tag === "*" || tag === currentHash);
-    if (!ok) {
-      return { error: "stale-save", currentHash };
-    }
-  }
-  if (ifNoneMatch?.includes("*") && currentHash !== null) {
-    return { error: "stale-save", currentHash };
-  }
-  return null;
-};
 
 const readCurrent = async (filePath) => {
   try {
@@ -139,13 +127,6 @@ const filePathFor = (boardsDir, name, extension) => {
   return target;
 };
 
-const writeAtomic = async (targetPath, content) => {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(tempPath, content, "utf8");
-  await fs.rename(tempPath, targetPath);
-};
-
 export function createBoardApi({
   boardsDir,
   pollMs = Number.parseInt(process.env.XCLD_WATCH_POLL_MS ?? "1000", 10),
@@ -161,21 +142,6 @@ export function createBoardApi({
   let watcher;
   let closed = false;
 
-  // Serializes check-then-write per board so two tabs can't both pass the same If-Match.
-  const boardLocks = new Map();
-  const withBoardLock = (key, fn) => {
-    const previous = boardLocks.get(key) ?? Promise.resolve();
-    const run = previous.then(fn, fn);
-    const settled = run.catch(() => {});
-    boardLocks.set(key, settled);
-    settled.then(() => {
-      if (boardLocks.get(key) === settled) {
-        boardLocks.delete(key);
-      }
-    });
-    return run;
-  };
-
   // XCLD_AUTO_EXPORT=save, or a folder export rule, keeps boards/.exports/<path>.mmd current.
   const exportBoard = async (name) => {
     if (await effectiveExportMode(name, root, autoExport) !== "save") {
@@ -187,8 +153,8 @@ export function createBoardApi({
     });
   };
 
-  const publish = (data) => {
-    const payload = `event: board\ndata: ${JSON.stringify(data)}\n\n`;
+  const publish = (data, event = "board") => {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of clients) {
       client.write(payload);
     }
@@ -199,6 +165,27 @@ export function createBoardApi({
   // host-side agents write. A cheap mtime+size poll covers that case; signatures
   // dedupe the two so each change is published once.
   const signatures = new Map();
+
+  // The commit pipeline is the only writer of master. Its writes update the watcher's
+  // signature so they aren't re-published or re-adopted as external writes.
+  const versions = createVersionStore({
+    boardsDir: root,
+    onMasterWritten: async (name) => {
+      try {
+        const stat = await fs.stat(path.join(root, ...`${name}.excalidraw`.split("/")));
+        signatures.set(`${name}.excalidraw`, `${stat.mtimeMs}:${stat.size}`);
+      } catch {}
+    },
+    // Hook 3 (post-commit): SSE, then the export and rules hooks.
+    onCommitted: async (event) => {
+      publish(mergedEvent(event), "merged");
+      if (event.masterChanged) {
+        publish({ name: event.name, kind: "board", timestamp: Date.now() });
+        await exportBoard(event.name);
+      }
+    },
+  });
+  versions.start().catch((error) => console.warn(`version journal replay failed: ${error.message}`));
   // Signatures whose JSON content didn't parse (a writer caught mid-write); skipped until
   // the file changes again so a broken file isn't re-read every poll.
   const unparsed = new Map();
@@ -347,6 +334,8 @@ export function createBoardApi({
     });
     if (item.kind === "board") {
       await exportBoard(item.name);
+      // Adopt the settled file into history (an `external` branch) through the board's queue.
+      versions.adoptExternal(item.name).catch((error) => console.warn(`adopting external write to ${item.name} failed: ${error.message}`));
     }
   };
   const publishIfChanged = async (relativeFile) => {
@@ -494,6 +483,10 @@ export function createBoardApi({
             sendError(res, 404, "board-not-found", { name });
             return true;
           }
+          // The ETag may come back as a base; keep that version resolvable.
+          await versions.noteServed(name, current.hash, current.content.toString("utf8")).catch((error) => {
+            console.warn(`pinning served version of ${name} failed: ${error.message}`);
+          });
           res.setHeader("ETag", etagFor(current.hash));
           send(res, 200, "application/json; charset=utf-8", current.content);
           return true;
@@ -517,30 +510,38 @@ export function createBoardApi({
             return true;
           }
           const persisted = body.endsWith("\n") ? body : `${body}\n`;
-          // Hash what is on disk now, not what this server last wrote, so direct on-disk
-          // agent writes are detected too.
-          const result = await withBoardLock(filePath, async () => {
-            const current = await readCurrent(filePath);
-            const stale = staleSaveCheck(req.headers, current.hash);
-            if (stale) {
-              return { stale };
-            }
-            await writeAtomic(filePath, persisted);
-            const stat = await fs.stat(filePath);
-            signatures.set(`${name}.excalidraw`, `${stat.mtimeMs}:${stat.size}`);
-            return { hash: contentHash(persisted) };
+          // Goes through the commit pipeline as a branch. The If-Match / If-None-Match check
+          // runs in the board's queue against master on disk (after adopting any direct write),
+          // so a stale save is still a 409 and check-and-write stays atomic. Slice 3 turns a
+          // stale save into a merge.
+          const result = await versions.submitBranch(name, {
+            author: legacyAuthor(),
+            base: null,
+            kind: "json",
+            elements: parsed.elements,
+            appState: parsed.appState,
+            files: parsed.files,
+            raw: persisted,
+            legacy: { ifMatch: req.headers["if-match"], ifNoneMatch: req.headers["if-none-match"] },
           });
-          if (result.stale) {
-            if (result.stale.currentHash) {
-              res.setHeader("ETag", etagFor(result.stale.currentHash));
+          if (result.status === "stale") {
+            if (result.version) {
+              res.setHeader("ETag", etagFor(result.version));
             }
-            sendJson(res, 409, result.stale);
+            sendJson(res, 409, { error: "stale-save", currentHash: result.version ?? null });
             return true;
           }
-          publish({ name, kind: "board", timestamp: Date.now() });
-          await exportBoard(name);
-          res.setHeader("ETag", etagFor(result.hash));
-          sendJson(res, 200, { ok: true, hash: result.hash });
+          if (result.status === "invalid") {
+            sendError(res, 400, "invalid-excalidraw-json");
+            return true;
+          }
+          if (result.status !== "committed" && result.status !== "unchanged") {
+            sendError(res, 503, "not-committed", { status: result.status });
+            return true;
+          }
+          await result.post;
+          res.setHeader("ETag", etagFor(result.version));
+          sendJson(res, 200, { ok: true, hash: result.version });
           return true;
         }
 
@@ -587,6 +588,7 @@ export function createBoardApi({
 
   const close = () => {
     closed = true;
+    const drained = versions.close();
     watcher?.close();
     if (poller) {
       clearInterval(poller);
@@ -604,7 +606,10 @@ export function createBoardApi({
       client.end();
     }
     clients.clear();
+    // Resolves when the commit in flight has finished; callers that delete the boards
+    // folder afterwards should await it.
+    return drained;
   };
 
-  return { handle, close, boardsDir: root };
+  return { handle, close, boardsDir: root, versions };
 }

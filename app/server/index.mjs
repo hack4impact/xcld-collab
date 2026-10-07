@@ -136,8 +136,8 @@ const server = createServer(async (req, res) => {
 
 const shutdown = (signal) => {
   console.log(`${signal} received; shutting down`);
-  api.close();
-  server.close(() => process.exit(0));
+  // Let a commit in flight finish; anything queued stays in the journal for the next start.
+  Promise.resolve(api.close()).finally(() => server.close(() => process.exit(0)));
   setTimeout(() => process.exit(1), 5000).unref();
 };
 

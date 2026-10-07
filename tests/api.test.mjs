@@ -33,7 +33,7 @@ const withServer = async (fn) => {
   try {
     await fn({ boardsDir, port });
   } finally {
-    api.close();
+    await api.close();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });
   }
@@ -153,7 +153,7 @@ test("polling publishes external board changes without fs.watch", async () => {
     assert.match(events.join(""), /"name":"nested\/poll-me"/);
   } finally {
     stream?.destroy();
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });
@@ -219,7 +219,7 @@ test("polling waits for a slow non-atomic writer before publishing", async () =>
   } finally {
     await handle?.close();
     stream?.destroy();
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });
@@ -256,7 +256,7 @@ test("polling skips dot folders, node_modules, and symlinked directories", async
     assert.deepEqual(data.boards.map((board) => board.name), ["real/ok"]);
     assert.deepEqual(data.folders, ["real"]);
   } finally {
-    api.close();
+    await api.close();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     await rm(boardsDir, { recursive: true, force: true });
