@@ -221,8 +221,9 @@ export function createBoardApi({
     },
   });
   versions.start().catch((error) => console.warn(`version journal replay failed: ${error.message}`));
-  // Mermaid writes are applied here and committed as branches; only a board that needs a tab's
-  // full layout gets the `mermaid` event (an open tab converts the inbox file).
+  // Mermaid writes are applied here and committed as branches. A write the server can't apply node
+  // by node is a pending record: the `mermaid` event asks an open tab to lay it out, and the server
+  // lays a flowchart out itself after the retry schedule (app/server/mermaid-write.mjs).
   const mermaids = createMermaidWriter({
     versions,
     ...mermaidOptions,
@@ -232,7 +233,10 @@ export function createBoardApi({
         signatures.set(`${name}.mmd`, `${written.mtimeMs}:${written.size}`);
       }
     },
-    publishInbox: (name) => publish({ name, kind: "mermaid", timestamp: Date.now() }),
+    publishInbox: (name, extra = {}) => publish({ name, kind: "mermaid", ...extra, timestamp: Date.now() }),
+    // Agents can wait for a pending write on the SSE stream instead of polling its status.
+    publishLanded: (name, data) => publish({ name, ...data, timestamp: Date.now() }, "mermaid-write"),
+    afterLanded: (name, result) => announceMermaid(name, result),
   });
   // A Mermaid write that changed nothing on the board still clears "Mermaid pending".
   const announceMermaid = (name, result) => {
@@ -825,12 +829,31 @@ export function createBoardApi({
           sendError(res, 400, "invalid-json");
           return true;
         }
+        // ?layout=<pendingId>: a tab's in-memory conversion of a pending write. The shapes join
+        // the board as a group, written by the agent that wrote the Mermaid, at its write time.
+        const layoutId = url.searchParams.get("layout");
+        if (layoutId !== null) {
+          const landing = await mermaids.prepareTabLanding(name, layoutId, { hash: parsed.hash, elements: parsed.elements, files: parsed.files });
+          if (landing.error) {
+            sendJson(res, landing.error === "invalid-elements" ? 400 : 409, { error: landing.error, status: landing.status });
+            return true;
+          }
+          await respondToBranchWrite(res, name, landing.input, receiveMs, {
+            stages: landing.stages,
+            extra: { ops: landing.ops, hash: landing.record.hash, source: landing.record.source, pendingId: landing.record.id, placement: landing.placement?.placement ?? null, via: landing.via },
+            after: (submitted) => mermaids.settleLanding(landing.record, submitted, landing.via, landing).catch((error) => console.warn(`landing ${landing.record.id} on ${name} failed: ${error.message}`)),
+          });
+          return true;
+        }
+        const sourceName = parsed.source ?? undefined;
         const prepared = await mermaids.prepare(name, {
           author: parsed.author ?? "cli:api",
           displayName: parsed.displayName,
           base: parsed.base,
           writtenAt: parsed.writtenAt,
           source: parsed.mermaid,
+          sourceName,
+          position: parsed.position,
         });
         if (prepared.status === "invalid") {
           sendError(res, 400, prepared.error);
@@ -849,13 +872,25 @@ export function createBoardApi({
           sendError(res, 503, "mermaid-parser-unavailable", { message: prepared.error });
           return true;
         }
+        if (prepared.status === "noop") {
+          sendJson(res, 200, { status: "merged", unchanged: true, noop: true, version: prepared.version, hash: prepared.hash, source: prepared.source, applied: [], overwritten: [], unbound: [], ops: [] });
+          return true;
+        }
         if (prepared.status === "needs-tab") {
-          sendJson(res, 202, { status: "needs-tab", reason: prepared.reason, hash: prepared.hash });
+          sendJson(res, 202, {
+            status: "needs-tab",
+            reason: prepared.reason,
+            hash: prepared.hash,
+            source: prepared.pending.source,
+            pendingId: prepared.pending.id,
+            pending: prepared.pending,
+            retryScheduleMs: mermaids.schedule,
+          });
           return true;
         }
         await respondToBranchWrite(res, name, prepared.input, receiveMs, {
           stages: prepared.stages,
-          extra: { ops: prepared.ops, hash: prepared.hash, ...(prepared.previousKnown ? {} : { deletesSkipped: true }) },
+          extra: { ops: prepared.ops, hash: prepared.hash, source: prepared.source, ...(prepared.hint ? { hint: prepared.hint } : {}), ...(prepared.previousKnown ? {} : { deletesSkipped: true }) },
           // The inbox file follows the commit (queued writes too), in commit order.
           after: (submitted) => submitted.then(
             async (result) => {
@@ -872,6 +907,22 @@ export function createBoardApi({
         const rawName = rawPathname.slice(mermaidPrefix.length);
         const name = decodeURIComponent(rawName);
         const filePath = filePathFor(root, name, ".mmd");
+        // ?pending: the writes waiting for a layout (an open tab converts them).
+        if (url.searchParams.has("pending")) {
+          sendJson(res, 200, { name, pending: await mermaids.listPending(name), retryScheduleMs: mermaids.schedule });
+          return true;
+        }
+        // ?id=<pendingId>: where a pending write is (pending, landing, landed, superseded).
+        const pendingId = url.searchParams.get("id");
+        if (pendingId !== null) {
+          const found = await mermaids.statusOf(name, pendingId);
+          if (!found) {
+            sendError(res, 404, "pending-write-not-found", { name, id: pendingId });
+            return true;
+          }
+          sendJson(res, 200, found);
+          return true;
+        }
         if (!existsSync(filePath)) {
           sendError(res, 404, "mermaid-not-found", { name });
           return true;
@@ -911,6 +962,7 @@ export function createBoardApi({
 
   const close = () => {
     closed = true;
+    mermaids.close();
     const drained = versions.close();
     watcher?.close();
     if (poller) {
@@ -934,5 +986,5 @@ export function createBoardApi({
     return drained;
   };
 
-  return { handle, close, boardsDir: root, versions };
+  return { handle, close, boardsDir: root, versions, mermaids };
 }

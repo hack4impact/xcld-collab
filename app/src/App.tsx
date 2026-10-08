@@ -15,7 +15,7 @@ import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { validateBoardPath } from "../../tools/board-path.mjs";
-import { mermaidSourceHash, stampMermaidHash } from "../../tools/mermaid-hash.mjs";
+import { stampMermaidHash } from "../../tools/mermaid-hash.mjs";
 import {
   FALLBACK_NAME,
   NAME_STORAGE_KEY,
@@ -704,75 +704,76 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     return true;
   }, [applyScene, boardName, saveScene]);
 
-  const convertMermaidInbox = useCallback(async () => {
-    const response = await fetch(boardApiPath("mermaid", boardName));
-    // Already applied to the board by the server: converting it again would replace the board.
-    if (!response.ok || response.headers.get("X-Xcld-Mermaid-Applied")) {
+  // Mermaid writes the server couldn't apply node by node (a board without that source's shapes,
+  // a non-flowchart): this tab lays each one out in memory with the real converter and posts the
+  // shapes back. The server places them as a group clear of the drawing and merges them as the
+  // agent that wrote the Mermaid, at its write time; nothing on the board is replaced (only an
+  // empty board keeps the converter's coordinates). Returns true when a write landed.
+  const convertPendingMermaid = useCallback(async () => {
+    const response = await fetch(`${boardApiPath("mermaid", boardName)}?pending`);
+    if (!response.ok) {
       return false;
     }
-
-    const definition = await response.text();
-    const parsed = await parseMermaidToExcalidraw(definition, {
-      startOnLoad: false,
-      flowchart: { curve: "linear" },
-      themeVariables: { fontSize: "20px" },
-    });
-    const skeleton = Array.isArray(parsed) ? parsed : parsed.elements;
-    // When mermaid-to-excalidraw can't parse a diagram into shapes, it falls back to one
-    // image whose data is in `files`.
-    const parsedFiles = (Array.isArray(parsed) ? {} : parsed.files ?? {}) as BinaryFiles;
-    const isImageFallback = skeleton.length > 0 && skeleton.every((element) => element.type === "image");
-    const stableSkeleton = disambiguateDuplicateElementIds(skeleton);
-    const elements = stampMermaidHash(convertToExcalidrawElements(stableSkeleton, {
-      regenerateIds: false,
-    }), mermaidSourceHash(definition)) as ExcalidrawElement[];
-    const scene: SceneFile = {
-      type: "excalidraw",
-      version: 2,
-      source: "local-mermaid-inbox",
-      elements,
-      appState: DEFAULT_APP_STATE,
-      files: parsedFiles,
-    };
-    const hash = await saveScene(
-      { elements: scene.elements, appState: scene.appState ?? {}, files: scene.files ?? {} },
-      "converted Mermaid inbox",
-      { onStale: "replace" },
-    );
-    if (!lastSaveMergedRef.current) {
-      applyScene(scene, hash, true);
-    }
-    if (isImageFallback) {
-      setStatus({
-        level: "warn",
-        text: "Mermaid came in as a picture, not editable shapes (unsupported syntax; see the browser console).",
+    const { pending = [] } = await response.json() as { pending?: { id: string; hash: string; mermaid: string; author: string }[] };
+    let landed = false;
+    for (const item of pending) {
+      const parsed = await parseMermaidToExcalidraw(item.mermaid, {
+        startOnLoad: false,
+        flowchart: { curve: "linear" },
+        themeVariables: { fontSize: "20px" },
       });
+      const skeleton = Array.isArray(parsed) ? parsed : parsed.elements;
+      // When mermaid-to-excalidraw can't parse a diagram into shapes, it falls back to one
+      // image whose data is in `files`.
+      const parsedFiles = (Array.isArray(parsed) ? {} : parsed.files ?? {}) as BinaryFiles;
+      const isImageFallback = skeleton.length > 0 && skeleton.every((element) => element.type === "image");
+      const elements = stampMermaidHash(convertToExcalidrawElements(disambiguateDuplicateElementIds(skeleton), {
+        regenerateIds: false,
+      }), item.hash);
+      const answer = await fetch(`${boardApiPath("mermaid", boardName)}?layout=${encodeURIComponent(item.id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hash: item.hash, elements, files: parsedFiles }),
+      });
+      // 409: another tab (or the server's own layout) got there first.
+      const result = await answer.json().catch(() => null) as { placement?: string } | null;
+      if (answer.ok) {
+        landed = true;
+        setStatus(isImageFallback
+          ? { level: "warn", text: "Mermaid came in as a picture, not editable shapes (unsupported syntax; see the browser console)." }
+          : { level: "ok", text: `Laid out Mermaid from ${item.author.replace(/#.*$/, "")} on ${boardName}${result?.placement && result.placement !== "keep" ? ` (${result.placement} the drawing)` : ""}` });
+      } else if (answer.status !== 409) {
+        throw new Error(`Mermaid layout failed: HTTP ${answer.status}`);
+      }
     }
-    return true;
-  }, [applyScene, boardName, saveScene]);
+    return landed;
+  }, [boardName]);
 
   const loadBoard = useCallback(
-    async (reason: string) => {
+    async (reason: string, { recenter = false }: { recenter?: boolean } = {}): Promise<void> => {
       try {
         const remote = await fetchRemote();
         if (!remote.scene || !remote.text) {
           setBase(null, []);
-          const converted = await convertViewInbox() || await convertMermaidInbox();
-          if (!converted) {
-            const scene: SceneFile = {
-              type: "excalidraw",
-              version: 2,
-              source: "local-empty-board",
-              elements: [],
-              appState: DEFAULT_APP_STATE,
-              files: {},
-            };
-            applyScene(scene, sceneHash(scene));
-            setStatus({
-              level: "warn",
-              text: `Started empty ${boardName}.excalidraw; first edit will save it.`,
-            });
+          if (await convertViewInbox()) {
+            return;
           }
+          if (await convertPendingMermaid()) {
+            return loadBoard("converted Mermaid", { recenter: true });
+          }
+          const scene: SceneFile = {
+            type: "excalidraw",
+            version: 2,
+            source: "local-empty-board",
+            elements: [],
+            appState: DEFAULT_APP_STATE,
+            files: {},
+          };
+          applyScene(scene, sceneHash(scene));
+          setStatus({
+            level: "warn",
+            text: `Started empty ${boardName}.excalidraw; first edit will save it.`,
+          });
           return;
         }
 
@@ -790,8 +791,11 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         if (!hasLiveElements(remote.scene.elements)) {
           const previousBase = { hash: baseHashRef.current, elements: baseElementsRef.current };
           setBase(remote.hash, remote.scene.elements);
-          if (await convertViewInbox() || await convertMermaidInbox()) {
+          if (await convertViewInbox()) {
             return;
+          }
+          if (await convertPendingMermaid()) {
+            return loadBoard("converted Mermaid", { recenter: true });
           }
           setBase(previousBase.hash, previousBase.elements);
         }
@@ -803,7 +807,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           await saveScene(currentSceneRef.current, "saved before reload");
           return;
         }
-        applyScene(remote.scene, hash);
+        applyScene(remote.scene, hash, recenter);
         serverCopiesRef.current = serverCopies(remote.scene.rawElements, remote.scene.elements);
         setBase(remote.hash, remote.scene.elements);
         setStatus({ level: "ok", text: `Loaded ${boardName}.excalidraw (${reason})` });
@@ -812,7 +816,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         setStatus({ level: "error", text: message });
       }
     },
-    [applyScene, boardName, cancelPendingSave, convertMermaidInbox, convertViewInbox, fetchRemote, hasUnsavedEdits, saveScene, setBase, setDeletedState],
+    [applyScene, boardName, cancelPendingSave, convertPendingMermaid, convertViewInbox, fetchRemote, hasUnsavedEdits, saveScene, setBase, setDeletedState],
   );
 
   const reportError = useCallback((error: unknown) => {
@@ -944,8 +948,12 @@ const BoardView = ({ boardName }: { boardName: string }) => {
     void exclusive(async () => {
       await resolveIdentity();
       await loadBoard("initial");
-    });
-  }, [exclusive, loadBoard, resolveIdentity]);
+      // Mermaid written while no tab was open, on a board that already has a drawing.
+      if (hasSceneRef.current && await convertPendingMermaid()) {
+        await loadBoard("converted Mermaid");
+      }
+    }).catch(reportError);
+  }, [convertPendingMermaid, exclusive, loadBoard, reportError, resolveIdentity]);
 
   useEffect(() => {
     const events = new EventSource("/api/events");
@@ -963,7 +971,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
           return;
         }
         if (data.kind === "mermaid") {
-          void exclusive(convertMermaidInbox).catch(reportError);
+          void exclusive(convertPendingMermaid).catch(reportError);
           return;
         }
         if (data.kind === "view") {
@@ -997,7 +1005,7 @@ const BoardView = ({ boardName }: { boardName: string }) => {
       setStatus({ level: "warn", text: "SSE disconnected; retrying..." });
     };
     return () => events.close();
-  }, [boardName, convertMermaidInbox, convertViewInbox, exclusive, loadBoard, markDeletedOnDisk, reportError, reportMerge]);
+  }, [boardName, convertPendingMermaid, convertViewInbox, exclusive, loadBoard, markDeletedOnDisk, reportError, reportMerge]);
 
   return (
     <main className="app-shell">

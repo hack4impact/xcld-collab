@@ -23,6 +23,7 @@
 // tab. Text widths are estimated (no font metrics in Node); Excalidraw centers bound text, so
 // the estimate only affects wrapping and the selection box.
 import { MERMAID_HASH_KEY } from "./mermaid-hash.mjs";
+import { DEFAULT_SOURCE, ORIGIN_KEY, mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
 import { mermaidIdMapper } from "./to-mermaid.mjs";
 
 const FONT_SIZE = 20;
@@ -30,11 +31,11 @@ const FONT_FAMILY = 5;
 const LINE_HEIGHT = 1.25;
 const BOUND_TEXT_PADDING = 5;
 const DEFAULT_STROKE = "#1e1e1e";
-const GAP_PRIMARY = 80;
-const GAP_CROSS = 40;
+export const GAP_PRIMARY = 80;
+export const GAP_CROSS = 40;
 const CLEARANCE = 20;
-const SUBGRAPH_PADDING = 30;
-const SUBGRAPH_TITLE_SPACE = 40;
+export const SUBGRAPH_PADDING = 30;
+export const SUBGRAPH_TITLE_SPACE = 40;
 const ARROW_GAP = 4;
 const PARALLEL_OFFSET = 30;
 const SEARCH_STEPS = 30;
@@ -209,7 +210,7 @@ const textMetrics = (text, fontSize, lineHeight) => {
   };
 };
 
-const boxOf = (element) => {
+export const boxOf = (element) => {
   if (Array.isArray(element.points) && element.points.length) {
     const xs = element.points.map((point) => point[0]);
     const ys = element.points.map((point) => point[1]);
@@ -239,7 +240,7 @@ const overlaps = (left, right, clearance = 0) => left.x < right.x + right.w + cl
   && right.x < left.x + left.w + clearance
   && left.y < right.y + right.h + clearance
   && right.y < left.y + left.h + clearance;
-const unionBox = (boxes) => {
+export const unionBox = (boxes) => {
   const minX = Math.min(...boxes.map((box) => box.x));
   const minY = Math.min(...boxes.map((box) => box.y));
   return {
@@ -262,6 +263,23 @@ export const shapeFor = (mermaidShape) => {
   return { type: "rectangle", roundness: null };
 };
 
+/** The size a new node's shape gets (as the converter would roughly lay it out). */
+export const nodeSize = (node) => {
+  const metrics = textMetrics(node.label || " ", FONT_SIZE, LINE_HEIGHT);
+  const lines = String(node.label || " ").split("\n").length;
+  const { type } = shapeFor(node.shape);
+  if (type === "diamond") {
+    const width = Math.max(100, Math.ceil(metrics.width * 2 + 4 * BOUND_TEXT_PADDING + 20));
+    const height = Math.max(Math.round(width * 0.6), Math.ceil(metrics.height * 2 + 4 * BOUND_TEXT_PADDING + 20));
+    return { width, height };
+  }
+  if (type === "ellipse") {
+    const size = Math.max(80, Math.ceil((Math.max(metrics.width, metrics.height) + 2 * BOUND_TEXT_PADDING) * Math.SQRT2 + 20));
+    return { width: size, height: size };
+  }
+  return { width: Math.max(80, Math.ceil(metrics.width + 60)), height: 30 + 30 * lines };
+};
+
 const edgeStyleFor = (edge) => ({
   strokeWidth: edge.stroke === "thick" ? 4 : 2,
   strokeStyle: edge.stroke === "dotted" ? "dashed" : "solid",
@@ -276,8 +294,8 @@ const edgeSignature = (style) => JSON.stringify([
   style.endArrowhead ?? null,
 ]);
 
-/** Subgraph group ids, as the converter's computeGroupIds builds them. */
-const groupResolver = (parsed) => {
+/** Subgraph group ids, as the converter's computeGroupIds builds them (prefixed per source). */
+const groupResolver = (parsed, prefix = "") => {
   const tree = {};
   const vertexIds = new Set(parsed.nodes.map((node) => node.id));
   for (const subgraph of parsed.subgraphs) {
@@ -289,9 +307,9 @@ const groupResolver = (parsed) => {
   const groupIdsFor = (id) => {
     let current = tree[id];
     if (!current) return [];
-    const groupIds = current.isLeaf ? [] : [`${SUBGRAPH_GROUP_PREFIX}${current.id}`];
+    const groupIds = current.isLeaf ? [] : [`${SUBGRAPH_GROUP_PREFIX}${prefix}${current.id}`];
     while (current?.parent) {
-      groupIds.push(`${SUBGRAPH_GROUP_PREFIX}${current.parent}`);
+      groupIds.push(`${SUBGRAPH_GROUP_PREFIX}${prefix}${current.parent}`);
       current = tree[current.parent];
     }
     return groupIds;
@@ -302,9 +320,10 @@ const groupResolver = (parsed) => {
 /**
  * Element ids the tab's conversion would give each subgraph, node and edge: the
  * converter's skeleton order (subgraphs reversed, vertices, edges) through
- * disambiguateDuplicateElementIds (app/src/ids.mjs).
+ * disambiguateDuplicateElementIds (app/src/ids.mjs). A source other than `main` prefixes
+ * every id with "<source>:" (tools/mermaid-origin.mjs).
  */
-export const converterElementIds = (parsed) => {
+export const converterElementIds = (parsed, prefix = "") => {
   const used = new Set();
   const unique = (wanted) => {
     let candidate = String(wanted);
@@ -314,17 +333,17 @@ export const converterElementIds = (parsed) => {
     return candidate;
   };
   const subgraphs = new Map();
-  for (const subgraph of [...parsed.subgraphs].reverse()) subgraphs.set(subgraph.id, unique(subgraph.id));
+  for (const subgraph of [...parsed.subgraphs].reverse()) subgraphs.set(subgraph.id, unique(`${prefix}${subgraph.id}`));
   const nodes = new Map();
-  for (const node of parsed.nodes) nodes.set(node.id, unique(node.id));
-  const edges = parsed.edges.map((edge) => unique(`${edge.start}_${edge.end}`));
+  for (const node of parsed.nodes) nodes.set(node.id, unique(`${prefix}${node.id}`));
+  const edges = parsed.edges.map((edge) => unique(`${prefix}${edge.start}_${edge.end}`));
   return { subgraphs, nodes, edges };
 };
 
 // ---------------------------------------------------------------------------
 // Element factories (field order and defaults as convertToExcalidrawElements writes them)
 // ---------------------------------------------------------------------------
-const newElement = ({ id, type, x, y, width, height, groupIds = [], roundness = null, now, hash, extra = {}, style = {} }) => ({
+const newElement = ({ id, type, x, y, width, height, groupIds = [], roundness = null, now, hash, origin = null, extra = {}, style = {} }) => ({
   id,
   type,
   x: round(x),
@@ -349,7 +368,7 @@ const newElement = ({ id, type, x, y, width, height, groupIds = [], roundness = 
   created: now,
   link: null,
   locked: false,
-  customData: { [MERMAID_HASH_KEY]: hash },
+  customData: origin ? mermaidCustomData(null, { source: origin.source, nodeId: origin.nodeId, hash }) : { [MERMAID_HASH_KEY]: hash },
   ...extra,
 });
 
@@ -389,11 +408,29 @@ const arrowLabelCenter = (arrow) => {
 // ---------------------------------------------------------------------------
 // applyMermaid
 // ---------------------------------------------------------------------------
-export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), previous = null }) {
+const stableJson = (value) => {
+  if (value === null || value === undefined || typeof value !== "object") return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+};
+
+/**
+ * @param {object} input
+ * @param {string} [input.source] The named Mermaid source (default `main`): only its shapes are
+ *   matched, updated and deleted; new ids get its prefix (tools/mermaid-origin.mjs).
+ * @param {Map<string, {x:number,y:number,w:number,h:number}>} [input.layout] Boxes for new nodes
+ *   (the server's grid fallback). With a layout, a board without this source's shapes is laid
+ *   out here instead of answering needsTabLayout.
+ * @returns {{ elements, ops, needsTabLayout, reason?, error?, canvasOverwritten }}
+ *   `canvasOverwritten`: units whose canvas edit (active `canvas`) this write replaced, with the
+ *   canvas version of their elements, for history.
+ */
+export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), previous = null, source = DEFAULT_SOURCE, layout = null }) {
   const sourceElements = Array.isArray(master) ? master : Array.isArray(master?.elements) ? master.elements : [];
   const elements = clone(sourceElements);
   const ops = [];
-  const unchanged = (extra) => ({ elements, ops, needsTabLayout: false, ...extra });
+  const canvasLosses = new Map();
+  const unchanged = (extra) => ({ elements, ops, needsTabLayout: false, canvasOverwritten: [], ...extra });
 
   if (!parsed?.ok) {
     if (parsed?.unsupported) return unchanged({ needsTabLayout: true, reason: `unsupported diagram type: ${parsed.diagramType}` });
@@ -401,16 +438,41 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   }
   if (typeof hashOfSource !== "string" || !hashOfSource) throw new Error("applyMermaid: hashOfSource is required");
 
+  const prefix = sourcePrefix(source);
+  const mermaidSourceOf = (element) => originOf(element)?.mermaid?.source ?? null;
+  const owned = (element) => mermaidSourceOf(element) === source;
+  const foreign = (element) => {
+    const owner = mermaidSourceOf(element);
+    return owner !== null && owner !== source;
+  };
   const byId = new Map(elements.map((element) => [element.id, element]));
+  const originalById = new Map(sourceElements.map((element) => [element.id, element]));
   const live = elements.filter(isLive);
-  if (!live.some((element) => SHAPE_TYPES.has(element.type) && hasMermaidOrigin(element))) {
-    return unchanged({ needsTabLayout: true, reason: live.length ? "board has no Mermaid-origin shapes" : "new board" });
+  if (!layout && !live.some((element) => SHAPE_TYPES.has(element.type) && owned(element))) {
+    const anyMermaid = live.some((element) => SHAPE_TYPES.has(element.type) && hasMermaidOrigin(element));
+    const reason = !live.length ? "new board" : anyMermaid ? `board has no shapes from Mermaid source ${source}` : "board has no Mermaid-origin shapes";
+    return unchanged({ needsTabLayout: true, reason });
   }
 
   const hash = hashOfSource;
   const touchedIds = new Set();
   const newIds = new Set();
-  const stampable = new Set(live.filter(hasMermaidOrigin).map((element) => element.id));
+  const stampable = new Set(live.filter(owned).map((element) => element.id));
+  // Element id -> Mermaid id (node, subgraph, `start_end` edge), for the origin stamp.
+  const nodeIdOf = new Map();
+  const stamp = (element, active) => {
+    const current = element.customData?.[ORIGIN_KEY];
+    const origin = originOf(element);
+    element.customData = {
+      ...(element.customData ?? {}),
+      [MERMAID_HASH_KEY]: hash,
+      [ORIGIN_KEY]: {
+        mermaid: { source, nodeId: nodeIdOf.get(element.id) ?? origin?.mermaid?.nodeId ?? null, hash },
+        canvas: origin?.canvas ?? null,
+        active: active ?? (current ? origin.active : "mermaid"),
+      },
+    };
+  };
   const touch = (element) => {
     if (newIds.has(element.id)) return element;
     if (!touchedIds.has(element.id)) {
@@ -419,8 +481,50 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       element.versionNonce = intFor(element.id, hash, element.version);
       element.updated = now;
     }
-    if (stampable.has(element.id)) element.customData = { ...(element.customData ?? {}), [MERMAID_HASH_KEY]: hash };
+    if (stampable.has(element.id)) stamp(element);
     return element;
+  };
+  // The unit (a container and its bound text) of an element, as it was before this write.
+  const textsByContainer = new Map();
+  for (const item of sourceElements) {
+    if (isLive(item) && item.type === "text" && item.containerId) {
+      const bucket = textsByContainer.get(item.containerId) ?? [];
+      bucket.push(item);
+      textsByContainer.set(item.containerId, bucket);
+    }
+  }
+  const unitOf = (element) => {
+    const container = element.type === "text" && element.containerId && originalById.has(element.containerId) ? originalById.get(element.containerId) : originalById.get(element.id);
+    if (!container) return null;
+    return { container, members: [container, ...(textsByContainer.get(container.id) ?? [])] };
+  };
+  // A Mermaid write that changes an element makes Mermaid its active origin again. When a canvas
+  // edit was active, the canvas version of the unit goes to history as overwritten.
+  const claim = (element) => {
+    if (newIds.has(element.id) || !stampable.has(element.id)) return element;
+    touch(element);
+    stamp(element, "mermaid");
+    const unit = unitOf(element);
+    if (!unit || canvasLosses.has(unit.container.id)) return element;
+    const canvas = unit.members
+      .map((member) => originOf(member))
+      .filter((origin) => origin?.active === "canvas" && origin.canvas)
+      .map((origin) => origin.canvas)
+      .sort((left, right) => Number(right.at ?? 0) - Number(left.at ?? 0))[0];
+    if (!canvas) return element;
+    const label = unit.members.filter((member) => member.type === "text").map((member) => textOf(member).replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
+    canvasLosses.set(unit.container.id, {
+      unitId: unit.container.id,
+      label: label || `${unit.container.type ?? "element"} ${unit.container.id}`,
+      elementIds: unit.members.map((member) => member.id).sort(),
+      loser: { author: String(canvas.author ?? ""), writtenAt: Number(canvas.at ?? 0), elements: clone(unit.members) },
+    });
+    return element;
+  };
+  // A unit whose active origin is a canvas edit (on the shape or its label).
+  const canvasActive = (element) => {
+    const unit = unitOf(element);
+    return Boolean(unit?.members.some((member) => originOf(member)?.active === "canvas"));
   };
   const insertAfter = new Map();
   const appended = [];
@@ -446,7 +550,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const freshId = (wanted) => {
     let candidate = wanted;
     let suffix = 2;
-    while (byId.has(candidate) && (isLive(byId.get(candidate)) || !hasMermaidOrigin(byId.get(candidate)))) candidate = `${wanted}_${suffix++}`;
+    while (byId.has(candidate) && (isLive(byId.get(candidate)) || !owned(byId.get(candidate)))) candidate = `${wanted}_${suffix++}`;
     return candidate;
   };
   const boundTextOf = (container) => {
@@ -508,19 +612,25 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     const existing = boundTextOf(container);
     if (!label) {
       if (!existing) return false;
+      claim(container);
+      claim(existing);
       touch(existing).isDeleted = true;
       removeBound(container, existing.id);
       return true;
     }
     if (existing) {
       if (textOf(existing) === label) return false;
+      claim(container);
+      claim(existing);
       touch(existing);
       existing.originalText = label;
       const resized = layoutText(container, existing);
       if (resized) ops.push(resized);
       return true;
     }
+    claim(container);
     const textId = freshId(`${container.id}_label`);
+    nodeIdOf.set(textId, nodeIdOf.get(container.id) ?? null);
     const textElement = add(newElement({
       id: textId,
       type: "text",
@@ -531,6 +641,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       groupIds: [...groupIds],
       now,
       hash,
+      origin: { source, nodeId: nodeIdOf.get(container.id) ?? null },
       style: { strokeColor: labelStyle.strokeColor ?? DEFAULT_STROKE },
       extra: boundTextExtra({ text: label, originalText: label, containerId: container.id, verticalAlign, onArrow: container.type === "arrow" }),
     }), container.id);
@@ -546,32 +657,66 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     for (const [key, value] of Object.entries(wanted ?? {})) {
       if (element[key] === value) continue;
       changes[`${kind}.${key}`] = { from: element[key] ?? null, to: value };
+      claim(element);
       touch(element)[key] = value;
     }
     for (const key of Object.keys(previousWanted ?? {})) {
       if (wanted && key in wanted) continue;
       if (!(key in defaults) || element[key] === defaults[key] || element[key] !== previousWanted[key]) continue;
       changes[`${kind}.${key}`] = { from: element[key], to: defaults[key] };
+      claim(element);
       touch(element)[key] = defaults[key];
     }
   };
 
-  const ids = converterElementIds(parsed);
-  const previousIds = previous?.ok ? converterElementIds(previous) : null;
+  const ids = converterElementIds(parsed, prefix);
+  const previousIds = previous?.ok ? converterElementIds(previous, prefix) : null;
   const previousNodes = new Map((previous?.ok ? previous.nodes : []).map((node) => [node.id, node]));
   const previousSubgraphs = new Map((previous?.ok ? previous.subgraphs : []).map((subgraph) => [subgraph.id, subgraph]));
-  const { groupIdsFor, parentOf } = groupResolver(parsed);
+  const { groupIdsFor, parentOf } = groupResolver(parsed, prefix);
+  const previousGroups = previous?.ok ? groupResolver(previous, prefix) : null;
+  // Mermaid's own definition of a node or subgraph is unchanged since `previous`: a canvas edit
+  // of it stays (it is the active origin), and a shape deleted on the canvas isn't brought back.
+  const sameNodeDef = (before, after) => Boolean(before && previousGroups)
+    && (before.label ?? before.title ?? "") === (after.label ?? after.title ?? "")
+    && (before.shape ?? null) === (after.shape ?? null)
+    && (before.link ?? null) === (after.link ?? null)
+    && stableJson(before.style) === stableJson(after.style)
+    && sameList(previousGroups.groupIdsFor(before.id), groupIdsFor(after.id));
+  // Edges of `previous` by start, end and occurrence (parallel edges count in order).
+  const edgeKeys = (edges) => {
+    const seen = new Map();
+    return edges.map((edge) => {
+      const pair = `${edge.start}\u0000${edge.end}`;
+      const count = seen.get(pair) ?? 0;
+      seen.set(pair, count + 1);
+      return `${pair}\u0000${count}`;
+    });
+  };
+  const previousEdgeByKey = new Map();
+  if (previous?.ok) edgeKeys(previous.edges).forEach((key, index) => previousEdgeByKey.set(key, previous.edges[index]));
+  const parsedEdgeKeys = edgeKeys(parsed.edges);
+  const sameEdgeDef = (index) => {
+    const before = previousEdgeByKey.get(parsedEdgeKeys[index]);
+    const after = parsed.edges[index];
+    return Boolean(before) && (before.label ?? "") === (after.label ?? "") && before.type === after.type && before.stroke === after.stroke;
+  };
+  for (const [mermaidId, elementId] of ids.subgraphs) nodeIdOf.set(elementId, mermaidId);
+  for (const [mermaidId, elementId] of ids.nodes) nodeIdOf.set(elementId, mermaidId);
+  parsed.edges.forEach((edge, index) => nodeIdOf.set(ids.edges[index], `${edge.start}_${edge.end}`));
 
-  // to-mermaid's id mapping over the current board, so exported ids map back to elements.
+  // to-mermaid's id mapping over the current board, so exported ids map back to elements. Only
+  // for `main` (other sources' ids carry their prefix), and never to another source's shape.
   const toMermaidId = mermaidIdMapper();
   const elementIdByMermaidId = new Map();
   for (const element of live) {
     if (SHAPE_TYPES.has(element.type)) elementIdByMermaidId.set(toMermaidId(element.id), element.id);
   }
   const resolveShape = (mermaidId, converterId) => {
-    for (const candidate of [converterId, mermaidId, elementIdByMermaidId.get(mermaidId)]) {
+    const candidates = prefix ? [converterId] : [converterId, mermaidId, elementIdByMermaidId.get(mermaidId)];
+    for (const candidate of candidates) {
       const element = candidate ? byId.get(candidate) : null;
-      if (isLive(element) && SHAPE_TYPES.has(element.type)) return element;
+      if (isLive(element) && SHAPE_TYPES.has(element.type) && !foreign(element)) return element;
     }
     return null;
   };
@@ -581,32 +726,43 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const matchedIds = new Set();
   const newSubgraphs = [];
   const newNodes = [];
+  // Nodes of `previous`, unchanged since, that are no longer on the board: deleted on the
+  // canvas. They stay deleted until a Mermaid write changes them.
+  const canvasDeleted = new Set();
+  const deletedOnCanvas = (mermaidId, before, after) => {
+    if (layout || !sameNodeDef(before, after)) return false;
+    canvasDeleted.add(mermaidId);
+    ops.push({ op: "keep-canvas", id: ids.subgraphs.get(mermaidId) ?? ids.nodes.get(mermaidId) ?? mermaidId, kind: before.title !== undefined ? "subgraph" : "node", reason: "deleted on the canvas" });
+    return true;
+  };
   for (const subgraph of parsed.subgraphs) {
     const element = resolveShape(subgraph.id, ids.subgraphs.get(subgraph.id));
     if (element && !matchedIds.has(element.id)) {
       shapeByMermaidId.set(subgraph.id, element);
       matchedIds.add(element.id);
-    } else {
+      nodeIdOf.set(element.id, subgraph.id);
+    } else if (!deletedOnCanvas(subgraph.id, previousSubgraphs.get(subgraph.id), subgraph)) {
       newSubgraphs.push(subgraph);
     }
   }
   for (const node of parsed.nodes) {
-    if (shapeByMermaidId.has(node.id)) continue;
+    if (shapeByMermaidId.has(node.id) || canvasDeleted.has(node.id)) continue;
     const element = resolveShape(node.id, ids.nodes.get(node.id));
     if (element && !matchedIds.has(element.id)) {
       shapeByMermaidId.set(node.id, element);
       matchedIds.add(element.id);
-    } else {
+      nodeIdOf.set(element.id, node.id);
+    } else if (!deletedOnCanvas(node.id, previousNodes.get(node.id), node)) {
       newNodes.push(node);
     }
   }
 
   // --- match edges to existing arrows ---------------------------------------
-  const arrows = live.filter((element) => element.type === "arrow");
+  const arrows = live.filter((element) => element.type === "arrow" && !foreign(element));
   const edgeMatches = new Array(parsed.edges.length).fill(null);
   const claimed = new Set();
   const endpointsOf = (edge) => ({ start: shapeByMermaidId.get(edge.start)?.id ?? null, end: shapeByMermaidId.get(edge.end)?.id ?? null });
-  const rank = (arrow, edgeId) => (arrow.id === edgeId ? 0 : hasMermaidOrigin(arrow) ? 1 : 2);
+  const rank = (arrow, edgeId) => (arrow.id === edgeId ? 0 : owned(arrow) ? 1 : 2);
   parsed.edges.forEach((edge, index) => {
     const { start, end } = endpointsOf(edge);
     if (!start || !end) return;
@@ -627,7 +783,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   parsed.edges.forEach((edge, index) => {
     if (edgeMatches[index]) return;
     const arrow = byId.get(ids.edges[index]);
-    if (isLive(arrow) && arrow.type === "arrow" && hasMermaidOrigin(arrow) && !claimed.has(arrow.id)) {
+    if (isLive(arrow) && arrow.type === "arrow" && owned(arrow) && !claimed.has(arrow.id)) {
       edgeMatches[index] = { arrow, reconnect: true };
       claimed.add(arrow.id);
     }
@@ -641,12 +797,13 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     .find((owner) => owner && keptIds.has(owner));
   const deletedIds = new Set();
   for (const element of live) {
-    if (element.isDeleted || !hasMermaidOrigin(element) || keptIds.has(element.id)) continue;
+    if (element.isDeleted || !owned(element) || keptIds.has(element.id)) continue;
     if (element.type === "text" && element.containerId && isLive(byId.get(element.containerId))) continue;
     if (doubleCircleOwner(element)) continue;
     if (previousOwned && !previousOwned.has(element.id)) continue;
     const kind = element.type === "arrow" ? "edge" : SHAPE_TYPES.has(element.type) ? "node" : element.type;
     const label = boundTextOf(element);
+    claim(element);
     touch(element).isDeleted = true;
     deletedIds.add(element.id);
     if (label && !label.isDeleted) {
@@ -679,9 +836,16 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     if (sameList(current, wanted)) return false;
     const next = [...wanted, ...otherGroupIds(element.groupIds)];
     ops.push({ op: "regroup", id: element.id, from: current, to: wanted });
+    claim(element);
     touch(element).groupIds = next;
     const label = boundTextOf(element);
     if (label) touch(label).groupIds = [...wanted, ...otherGroupIds(label.groupIds)];
+    return true;
+  };
+  // A canvas edit stays the active origin while Mermaid's definition of the shape is unchanged.
+  const keepsCanvas = (element, before, after, kind) => {
+    if (!canvasActive(element) || !sameNodeDef(before, after)) return false;
+    ops.push({ op: "keep-canvas", id: element.id, kind, reason: "edited on the canvas; unchanged in Mermaid" });
     return true;
   };
   const updateShape = (mermaidId, label, styleSpec, previousStyle, kind, verticalAlign) => {
@@ -700,14 +864,17 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   };
   for (const subgraph of parsed.subgraphs) {
     if (!shapeByMermaidId.has(subgraph.id) || newSubgraphs.includes(subgraph)) continue;
+    if (keepsCanvas(shapeByMermaidId.get(subgraph.id), previousSubgraphs.get(subgraph.id), subgraph, "subgraph")) continue;
     updateShape(subgraph.id, subgraph.title, subgraph.style, previousSubgraphs.get(subgraph.id)?.style, "subgraph", "top");
   }
   for (const node of parsed.nodes) {
-    if (newNodes.includes(node)) continue;
+    if (newNodes.includes(node) || canvasDeleted.has(node.id)) continue;
     const element = shapeByMermaidId.get(node.id);
+    if (keepsCanvas(element, previousNodes.get(node.id), node, "node")) continue;
     const wanted = shapeFor(node.shape);
     if (element.type !== wanted.type) {
       ops.push({ op: "reshape", id: element.id, from: element.type, to: wanted.type });
+      claim(element);
       Object.assign(touch(element), { type: wanted.type, roundness: wanted.roundness });
       const text = boundTextOf(element);
       if (text) {
@@ -742,21 +909,6 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       .filter((element) => !excluded.has(element.id))
       .filter((element) => !(element.type === "text" && shapeIds.has(element.containerId) && !excluded.has(element.containerId)))
       .map((element) => ({ id: element.id, box: boxOf(element) }));
-  };
-  const nodeSize = (node) => {
-    const metrics = textMetrics(node.label || " ", FONT_SIZE, LINE_HEIGHT);
-    const lines = String(node.label || " ").split("\n").length;
-    const { type } = shapeFor(node.shape);
-    if (type === "diamond") {
-      const width = Math.max(100, Math.ceil(metrics.width * 2 + 4 * BOUND_TEXT_PADDING + 20));
-      const height = Math.max(Math.round(width * 0.6), Math.ceil(metrics.height * 2 + 4 * BOUND_TEXT_PADDING + 20));
-      return { width, height };
-    }
-    if (type === "ellipse") {
-      const size = Math.max(80, Math.ceil((Math.max(metrics.width, metrics.height) + 2 * BOUND_TEXT_PADDING) * Math.SQRT2 + 20));
-      return { width: size, height: size };
-    }
-    return { width: Math.max(80, Math.ceil(metrics.width + 60)), height: 30 + 30 * lines };
   };
   // sign > 0 places the box after the anchor in the flow direction, sign < 0 before it.
   const findSpot = (anchorBox, sign, size, excluded) => {
@@ -793,6 +945,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const createNode = (node, box, anchor, placement) => {
     const wanted = shapeFor(node.shape);
     const id = freshId(ids.nodes.get(node.id) ?? node.id);
+    nodeIdOf.set(id, node.id);
     const groupIds = groupIdsFor(node.id);
     const element = add(newElement({
       id,
@@ -805,6 +958,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       roundness: wanted.roundness,
       now,
       hash,
+      origin: { source, nodeId: node.id },
       style: node.style?.container ?? {},
       extra: { link: node.link ?? null },
     }));
@@ -812,7 +966,13 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     if (node.label) setLabel(element, node.label, { groupIds, labelStyle: node.style?.label ?? {} });
     ops.push({ op: "add-node", id, shape: wanted.type, x: element.x, y: element.y, width: element.width, height: element.height, anchor, placement });
   };
-  const pendingNodes = [...newNodes];
+  // A layout (the grid fallback) places its nodes first; the rest go next to a neighbour.
+  const pendingNodes = [];
+  for (const node of newNodes) {
+    const box = layout?.get(node.id);
+    if (box) createNode(node, box, null, "grid");
+    else pendingNodes.push(node);
+  }
   while (pendingNodes.length) {
     let placed = false;
     for (const node of pendingNodes) {
@@ -861,6 +1021,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   };
   const subgraphsDeepestFirst = [...parsed.subgraphs].sort((left, right) => depth(right.id) - depth(left.id));
   for (const subgraph of subgraphsDeepestFirst) {
+    if (canvasDeleted.has(subgraph.id)) continue;
     const memberBoxes = subgraph.nodes
       .map((id) => shapeByMermaidId.get(id))
       .filter(Boolean)
@@ -884,6 +1045,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     const titleWidth = estimateTextWidth(subgraph.title || subgraph.id) + 2 * 32;
     const width = Math.max(needed.w + 2 * SUBGRAPH_PADDING, titleWidth);
     const id = freshId(ids.subgraphs.get(subgraph.id) ?? subgraph.id);
+    nodeIdOf.set(id, subgraph.id);
     const groupIds = groupIdsFor(subgraph.id);
     const firstMember = subgraph.nodes.map((memberId) => shapeByMermaidId.get(memberId)).find(Boolean);
     const container = newElement({
@@ -896,6 +1058,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       groupIds,
       now,
       hash,
+      origin: { source, nodeId: subgraph.id },
       style: subgraph.style?.container ?? {},
     });
     // Subgraph containers sit below their members, as in the converter's output.
@@ -999,13 +1162,20 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     }
     const wantedStyle = edgeStyleFor(edge);
     const match = edgeMatches[index];
+    const edgeNodeId = `${edge.start}_${edge.end}`;
     if (match) {
       const { arrow } = match;
+      if (!nodeIdOf.has(arrow.id)) nodeIdOf.set(arrow.id, edgeNodeId);
+      if (canvasActive(arrow) && sameEdgeDef(index)) {
+        ops.push({ op: "keep-canvas", id: arrow.id, kind: "edge", reason: "edited on the canvas; unchanged in Mermaid" });
+        return;
+      }
       if (match.reconnect) {
         const ends = arrowEnds(arrow);
         for (const oldEnd of [ends.start, ends.end]) {
           if (oldEnd && oldEnd !== startShape.id && oldEnd !== endShape.id) removeBound(byId.get(oldEnd), arrow.id);
         }
+        claim(arrow);
         Object.assign(touch(arrow), geometry(startShape, endShape, parallelCount(startShape, endShape, arrow.id)));
         addBound(startShape, { id: arrow.id, type: "arrow" });
         addBound(endShape, { id: arrow.id, type: "arrow" });
@@ -1022,19 +1192,27 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
         for (const [key, value] of Object.entries(wantedStyle)) {
           if ((arrow[key] ?? null) !== value) changes[key] = { from: arrow[key] ?? null, to: value };
         }
+        claim(arrow);
         Object.assign(touch(arrow), wantedStyle);
         ops.push({ op: "restyle", id: arrow.id, kind: "edge", changes });
       }
-      if (hasMermaidOrigin(arrow)) {
+      if (owned(arrow)) {
         const wantedGroups = edgeGroupIds(edge);
         if (!sameList(subgraphGroupIds(arrow.groupIds), wantedGroups)) {
           ops.push({ op: "regroup", id: arrow.id, from: subgraphGroupIds(arrow.groupIds), to: wantedGroups });
+          claim(arrow);
           touch(arrow).groupIds = [...wantedGroups, ...otherGroupIds(arrow.groupIds)];
         }
       }
       return;
     }
+    // An unchanged edge between two shapes that were already on the board, deleted on the canvas.
+    if (!layout && sameEdgeDef(index) && !newIds.has(startShape.id) && !newIds.has(endShape.id)) {
+      ops.push({ op: "keep-canvas", id: ids.edges[index], kind: "edge", reason: "deleted on the canvas" });
+      return;
+    }
     const id = freshId(ids.edges[index]);
+    nodeIdOf.set(id, edgeNodeId);
     const groupIds = edgeGroupIds(edge);
     const arrow = add(newElement({
       id,
@@ -1047,6 +1225,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       roundness: { type: 2 },
       now,
       hash,
+      origin: { source, nodeId: edgeNodeId },
       style: { strokeWidth: wantedStyle.strokeWidth, strokeStyle: wantedStyle.strokeStyle },
       extra: {
         points: [],
@@ -1085,5 +1264,5 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       element.index = null;
     }
   }
-  return { elements: result, ops, needsTabLayout: false };
+  return { elements: result, ops, needsTabLayout: false, canvasOverwritten: [...canvasLosses.values()].sort((left, right) => (left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0)) };
 }

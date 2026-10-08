@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeOrigin } from "./mermaid-origin.mjs";
 import { collectRuleLegend, formatRuleWarnings, loadEffectiveRulesForBoard, ruleTagText, rulesForChange } from "./rules.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
@@ -85,17 +86,29 @@ export const diffElements = (oldElements, newElements, files = {}) => {
   const oldModel = makeModel(oldElements);
   const newModel = makeModel(newElements);
   const diff = { files, nodes: { added: [], removed: [], relabeled: [] }, edges: { added: [], removed: [], rewired: [], relabeled: [] }, notes: { added: [], removed: [], changed: [] }, styles: [], moves: [] };
+  // The active origin of a changed node or edge (a canvas edit, or the Mermaid source it shows).
+  const labelsOf = new Map();
+  for (const element of newModel.byId.values()) {
+    if (element.type === "text" && element.containerId) labelsOf.set(element.containerId, element);
+  }
+  const originFor = (id) => {
+    const element = newModel.byId.get(id);
+    const own = describeOrigin(element);
+    const label = describeOrigin(labelsOf.get(id));
+    const origin = own?.active === "canvas" ? own : label?.active === "canvas" ? label : own;
+    return origin ? { origin: origin.text, active: origin.active } : {};
+  };
 
   for (const node of newModel.nodes.values()) {
     const oldNode = oldModel.nodes.get(node.id);
     if (!oldNode) {
-      diff.nodes.added.push({ id: node.id, label: node.label, type: node.type });
+      diff.nodes.added.push({ id: node.id, label: node.label, type: node.type, ...originFor(node.id) });
     } else {
-      if (oldNode.label !== node.label) diff.nodes.relabeled.push({ id: node.id, from: oldNode.label, to: node.label });
+      if (oldNode.label !== node.label) diff.nodes.relabeled.push({ id: node.id, from: oldNode.label, to: node.label, ...originFor(node.id) });
       for (const property of STYLE_PROPS) {
-        if (oldNode.element[property] !== node.element[property]) diff.styles.push({ id: node.id, subject: node.label, kind: "node", property, from: oldNode.element[property] ?? null, to: node.element[property] ?? null });
+        if (oldNode.element[property] !== node.element[property]) diff.styles.push({ id: node.id, subject: node.label, kind: "node", property, from: oldNode.element[property] ?? null, to: node.element[property] ?? null, ...originFor(node.id) });
       }
-      if (positionChanged(oldNode.element, node.element)) diff.moves.push({ id: node.id, subject: node.label, kind: "node", from: summarizeGeometry(oldNode.element), to: summarizeGeometry(node.element) });
+      if (positionChanged(oldNode.element, node.element)) diff.moves.push({ id: node.id, subject: node.label, kind: "node", from: summarizeGeometry(oldNode.element), to: summarizeGeometry(node.element), ...originFor(node.id) });
     }
   }
   for (const node of oldModel.nodes.values()) {
@@ -105,10 +118,10 @@ export const diffElements = (oldElements, newElements, files = {}) => {
   for (const edge of newModel.edges.values()) {
     const oldEdge = oldModel.edges.get(edge.id);
     if (!oldEdge) {
-      diff.edges.added.push({ id: edge.id, edge: newModel.edgePhrase(edge) });
+      diff.edges.added.push({ id: edge.id, edge: newModel.edgePhrase(edge), ...originFor(edge.id) });
     } else {
-      if (oldEdge.startId !== edge.startId || oldEdge.endId !== edge.endId) diff.edges.rewired.push({ id: edge.id, from: oldModel.edgePhrase(oldEdge), to: newModel.edgePhrase(edge) });
-      if (oldEdge.label !== edge.label) diff.edges.relabeled.push({ id: edge.id, edge: newModel.edgePhrase(edge), from: oldEdge.label, to: edge.label });
+      if (oldEdge.startId !== edge.startId || oldEdge.endId !== edge.endId) diff.edges.rewired.push({ id: edge.id, from: oldModel.edgePhrase(oldEdge), to: newModel.edgePhrase(edge), ...originFor(edge.id) });
+      if (oldEdge.label !== edge.label) diff.edges.relabeled.push({ id: edge.id, edge: newModel.edgePhrase(edge), from: oldEdge.label, to: edge.label, ...originFor(edge.id) });
       for (const property of STYLE_PROPS) {
         if (oldEdge.element[property] !== edge.element[property]) diff.styles.push({ id: edge.id, subject: newModel.edgePhrase(edge), kind: "edge", property, from: oldEdge.element[property] ?? null, to: edge.element[property] ?? null });
       }
@@ -190,24 +203,25 @@ export const diffFiles = async (oldFile, newFile, options = {}) => {
 export const formatDiff = (diff) => {
   const lines = [`Semantic diff ${diff.files.old ?? "old"} -> ${diff.files.new ?? "new"}`];
   const section = (title, entries) => { if (entries.length) { lines.push(`${title}:`); for (const entry of entries) lines.push(`  ${entry}`); } };
+  const originTag = (item) => (item.origin ? ` [${item.origin}]` : "");
   section("Nodes", [
-    ...diff.nodes.added.map((item) => `+ added ${item.type} "${item.label}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.nodes.added.map((item) => `+ added ${item.type} "${item.label}" (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
     ...diff.nodes.removed.map((item) => `- removed "${item.label}" (${item.id})${ruleTagText(item.rules)}`),
-    ...diff.nodes.relabeled.map((item) => `~ relabeled "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.nodes.relabeled.map((item) => `~ relabeled "${item.from}" -> "${item.to}" (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
   ]);
   section("Edges", [
-    ...diff.edges.added.map((item) => `+ added ${item.edge} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.edges.added.map((item) => `+ added ${item.edge} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
     ...diff.edges.removed.map((item) => `- removed ${item.edge} (${item.id})${ruleTagText(item.rules)}`),
-    ...diff.edges.rewired.map((item) => `~ rewired ${item.from} -> ${item.to} (${item.id})${ruleTagText(item.rules)}`),
-    ...diff.edges.relabeled.map((item) => `~ label ${item.edge}: "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.edges.rewired.map((item) => `~ rewired ${item.from} -> ${item.to} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
+    ...diff.edges.relabeled.map((item) => `~ label ${item.edge}: "${item.from}" -> "${item.to}" (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
   ]);
   section("Notes", [
     ...diff.notes.added.map((item) => `+ added "${item.text}"${item.nearestNode ? ` near "${item.nearestNode.label}"` : ""} (${item.id})${ruleTagText(item.rules)}`),
     ...diff.notes.removed.map((item) => `- removed "${item.text}" (${item.id})${ruleTagText(item.rules)}`),
     ...diff.notes.changed.map((item) => `~ changed "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
-  section("Style", diff.styles.map((item) => `~ ${item.kind} "${item.subject}" ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${ruleTagText(item.rules)}`));
-  section("Moves", diff.moves.map((item) => `~ ${item.kind} "${item.subject}": ${item.from} -> ${item.to} (${item.id})${ruleTagText(item.rules)}`));
+  section("Style", diff.styles.map((item) => `~ ${item.kind} "${item.subject}" ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
+  section("Moves", diff.moves.map((item) => `~ ${item.kind} "${item.subject}": ${item.from} -> ${item.to} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
   if (lines.length === 1) lines.push("No semantic changes detected.");
   const legend = collectRuleLegend(diff);
   if (legend.length) {

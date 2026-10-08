@@ -108,7 +108,7 @@ export const createMermaidParser = ({ workerUrl = DEFAULT_WORKER_URL, timeoutMs 
     return readyPromise;
   };
 
-  const parseFlowchart = async (text) => {
+  const request = async (payload) => {
     await warmUp();
     const current = worker;
     if (!current || info.state !== "ready") throw new Error(`Mermaid parser unavailable: ${info.error ?? info.state}`);
@@ -120,9 +120,12 @@ export const createMermaidParser = ({ workerUrl = DEFAULT_WORKER_URL, timeoutMs 
       timer.unref?.();
       pending.set(id, { resolve, reject, timer });
       updateRef();
-      current.postMessage({ type: "parse", id, text: String(text ?? "") });
+      current.postMessage({ ...payload, id });
     });
   };
+  const parseFlowchart = (text) => request({ type: "parse", text: String(text ?? "") });
+  // Tests only: replace the worker's site config (mermaid.initialize) for the parses after it.
+  const configure = (config = {}) => request({ type: "configure", config });
 
   const status = () => ({ ...info, pending: pending.size });
 
@@ -139,7 +142,7 @@ export const createMermaidParser = ({ workerUrl = DEFAULT_WORKER_URL, timeoutMs 
     if (current) await current.terminate();
   };
 
-  return { warmUp, parseFlowchart, status, close };
+  return { warmUp, parseFlowchart, configure, status, close };
 };
 
 const defaultParser = createMermaidParser();

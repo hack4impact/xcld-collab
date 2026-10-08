@@ -13,7 +13,7 @@ import { checkBoardRules, effectiveRulesBriefing, effectiveSnapshotMode, formatC
 import { sceneToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeMermaidWrite, describeWrite, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
+import { describeMermaidStatus, describeMermaidWrite, describeWrite, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
 
 // Author key for this process's writes: agent:<MCP clientInfo.name>#<id>. The id is new for
 // every `xcld mcp` process, so two sessions of the same client never share a branch.
@@ -34,7 +34,7 @@ const conventions = [
   "Read the board first (read_board) and pass its version as base when you write: the server merges your write with the human's and other agents' edits.",
   "Draw proposed parts in light blue: classDef proposed fill:#a5d8ff,stroke:#1971c2,color:#1971c2.",
   "Read the board's design-rules briefing; folder design-rules.csv files can replace local defaults.",
-  "Use Mermaid flowcharts only; subgraphs are supported (they convert to grouped, editable shapes).",
+  "Use Mermaid flowcharts only; subgraphs are supported (they convert to grouped, editable shapes). Several diagrams can share a board as named Mermaid sources (write_mermaid source).",
   LABEL_NEWLINE_RULE,
 ].join(" ");
 
@@ -179,14 +179,16 @@ export const createXcldMcpServer = () => {
     server,
     "write_mermaid",
     {
-      description: `Write a Mermaid flowchart to a board. The board server applies it to the board and merges it with edits made since your base, like write_board: existing shapes keep their place and the human's notes stay; relabels, restyles, new nodes and edges and removed Mermaid nodes are applied; a shape changed on both sides goes to the later write. Call read_board first and pass its "version" as base (without base: the board as it is now). Several agents can write Mermaid to the same board in parallel. A brand-new board (or a non-flowchart diagram) needs a browser tab to lay it out once: the result then says so; open board_url. If the merge takes longer than 5 s the write is queued: it is safe and will land. ${conventions}`,
+      description: `Write a Mermaid flowchart to a board. The board server applies it to the board and merges it with edits made since your base, like write_board: existing shapes keep their place and the human's notes and drawings stay; relabels, restyles, new nodes and edges and removed Mermaid nodes are applied; a shape changed on both sides goes to the later write. A node the human edited on the canvas keeps the human's version until your Mermaid changes that node. Call read_board first and pass its "version" as base (without base: the board as it is now). Several agents can write Mermaid to the same board in parallel. Name the diagram with "source" to keep several diagrams on one board (default "main"): each source only ever changes and deletes its own shapes, and writing the same Mermaid again is a no-op. A diagram that isn't on the board yet is added as a group next to the existing drawing (below for TD, right of it for LR; "position" can say below, right or near:<id>); a browser tab lays it out, or the server does in a simple grid after about 2 minutes: the result is then "needs-tab" with a pendingId for mermaid_status. If the merge takes longer than 5 s the write is queued: it is safe and will land. ${conventions}`,
       inputSchema: {
         board: z.string().describe("Board path without extension."),
         mermaid: z.string().describe("Mermaid flowchart source. Use flowchart TD; subgraphs are supported. Break labels with a real newline inside the quotes, never <br/>. Keep node ids stable: a node id is the shape's id on the board."),
         base: z.string().optional().describe('The "version" read_board returned for this board. Omit it to apply to the board as it is now.'),
+        source: z.string().optional().describe('Name of this diagram on the board (default "main"). Use a new name for a separate diagram on the same board; reuse the name to edit that diagram. A letter, then letters, digits, "_" or "-".'),
+        position: z.string().optional().describe('Where a new diagram goes on a board that already has a drawing: "below", "right" or "near:<element or node id>". Default: follow the diagram direction (TD below, LR right).'),
       },
     },
-    async ({ board, mermaid, base }) => {
+    async ({ board, mermaid, base, source, position }) => {
       if (!validateBoardName(board)) {
         throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
       }
@@ -197,7 +199,7 @@ export const createXcldMcpServer = () => {
           preWriteSnapshot = formatSnapshotResult(await snapshotBoard(board, boardsDir()));
         }
       }
-      const written = await writeMermaid(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, mermaid });
+      const written = await writeMermaid(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, mermaid, source, position });
       const url = boardUrl(board);
       const message = describeMermaidWrite(board, written, { url });
       if (!["merged", "queued", "needs-tab"].includes(written.status)) {
@@ -208,6 +210,10 @@ export const createXcldMcpServer = () => {
         ...(written.version ? { version: written.version } : {}),
         ...(written.branchId ? { branchId: written.branchId } : {}),
         ...(written.reason ? { reason: written.reason } : {}),
+        ...(written.source ? { source: written.source } : {}),
+        ...(written.pendingId ? { pendingId: written.pendingId, pending: written.pending } : {}),
+        ...(written.noop ? { noop: true } : {}),
+        ...(written.hint ? { hint: written.hint } : {}),
         applied: written.applied ?? [],
         overwritten: written.overwritten ?? [],
         ops: written.ops ?? [],
@@ -218,6 +224,30 @@ export const createXcldMcpServer = () => {
         briefing: await briefingFor(board),
       };
       return okText(`${message}\n\n${result.briefing}`, result);
+    },
+  );
+
+  registerTool(
+    server,
+    "mermaid_status",
+    {
+      description: `Where a pending Mermaid write is (write_mermaid answered "needs-tab" with a pendingId): pending (waiting for a tab; the server lays a flowchart out itself at layoutAt), landing, landed (via a tab, the server's grid, or node by node, with the board version), superseded by a newer write of the same source, or waiting-for-tab (a non-flowchart). ${conventions}`,
+      inputSchema: {
+        board: z.string().describe("Board path without extension."),
+        pendingId: z.string().describe("The pendingId write_mermaid returned."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ board, pendingId }) => {
+      if (!validateBoardName(board)) {
+        throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
+      }
+      const found = await mermaidWriteStatus(board, pendingId);
+      const message = describeMermaidStatus(board, { id: pendingId, ...found });
+      if (found.httpStatus !== 200) {
+        return toolError(message);
+      }
+      return okText(message, { ...found, message });
     },
   );
 

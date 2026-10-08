@@ -9,6 +9,7 @@ import { performance } from "node:perf_hooks";
 import { splitBoardPath } from "../../tools/board-path.mjs";
 import { applyDelta, CHECKPOINT_EVERY, encodeDelta, gzipText, HISTORY_SCHEMA, historyEntryFiles, readRecordFile } from "../../tools/history.mjs";
 import { mergeBoard } from "../../tools/merge.mjs";
+import { stampCanvasEdits } from "../../tools/mermaid-origin.mjs";
 
 export const IDLE_CLOSE_MS = 3 * 60 * 1000;
 export const BASE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -81,7 +82,7 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 let idCounter = 0;
 // Time-sortable id: 10 chars of milliseconds, a per-process counter (keeps arrival order
 // within one millisecond), then randomness.
-const sortableId = (time) => {
+export const sortableId = (time) => {
   let encoded = "";
   for (let value = Math.max(0, Math.floor(time)), digit = 0; digit < 10; digit++, value = Math.floor(value / 32)) {
     encoded = CROCKFORD[value % 32] + encoded;
@@ -531,6 +532,7 @@ export function createVersionStore({
       last: board.last,
       open: board.open,
       mermaid: board.mermaid,
+      mermaidSources: board.mermaidSources ?? {},
       lastEntryAt: board.lastEntryAt,
       records: board.records ?? RECORD_SCHEMA,
       // How many deltas lead from the nearest checkpoint to the entry holding `version`.
@@ -789,6 +791,8 @@ export function createVersionStore({
       last: state?.last ?? null,
       open: state?.open ?? null,
       mermaid: state?.mermaid ?? null,
+      // Per named Mermaid source: the last applied source text, hash, author and write time.
+      mermaidSources: state?.mermaidSources ?? (state?.mermaid ? { main: state.mermaid } : {}),
       lastEntryAt: state?.lastEntryAt ?? 0,
       records: state ? state.records ?? 1 : RECORD_SCHEMA,
       // Unknown for a state written before history v2: its next entry is a checkpoint.
@@ -893,6 +897,7 @@ export function createVersionStore({
       ...(input.rawHash !== undefined ? { rawHash: input.rawHash } : {}),
       ...(input.ops !== undefined ? { ops: input.ops } : {}),
       ...(input.mermaid !== undefined ? { mermaid: input.mermaid } : {}),
+      ...(Array.isArray(input.overwritten) && input.overwritten.length ? { overwritten: input.overwritten } : {}),
       ...(input.legacy !== undefined ? { legacy: input.legacy } : {}),
     };
     addRef(name, base);
@@ -1045,7 +1050,7 @@ export function createVersionStore({
       diskAtStart = (await watch.run("sync", () => syncExternal(board, branch))).disk;
     }
     await step("commit-start", { branch });
-    if (board.last?.branchId === branch.id || board.mermaid?.branchId === branch.id) {
+    if (board.last?.branchId === branch.id || board.mermaid?.branchId === branch.id || Object.values(board.mermaidSources ?? {}).some((record) => record?.branchId === branch.id)) {
       await watch.run("archive", () => archiveBranch(branch));
       return { status: "committed", version: board.version, applied: [], overwritten: [], unbound: [], replayed: true, masterChanged: false };
     }
@@ -1082,18 +1087,34 @@ export function createVersionStore({
     let version = board.version;
     let result = { applied: [], overwritten: [], unbound: [], meta: board.meta, fastForward: true };
     if (branch.elements !== null) {
+      // A non-Mermaid write records its canvas edits in the dual origin of Mermaid shapes
+      // (tools/mermaid-origin.mjs). Deterministic from the journal, so a replay matches. A direct
+      // file write keeps its exact bytes (rawHash), so it isn't stamped.
+      const branchElements = branch.kind === "json" && !branch.rawHash
+        ? stampCanvasEdits({ base: baseScene?.elements ?? [], branch: branch.elements, author: branch.author, at: branch.writtenAt })
+        : branch.elements;
       result = await watch.run("merge", () => mergeBoard({
         base: baseScene,
         master: masterScene,
-        branch: { elements: branch.elements, appState: branch.appState, files: branchFiles },
+        branch: { elements: branchElements, appState: branch.appState, files: branchFiles },
         branchWrittenAt: branch.writtenAt,
         branchAuthor: branch.author,
         masterMeta: board.meta,
       }));
+      // A Mermaid write that replaced canvas edits (active `canvas`) reports them as overwritten,
+      // for the units it did change (a newer canvas edit may still have won the merge).
+      if (Array.isArray(branch.overwritten) && branch.overwritten.length) {
+        const appliedUnits = new Set(result.applied.map((item) => item.unitId));
+        const reported = new Set(result.overwritten.map((item) => item.unitId));
+        const extra = branch.overwritten.filter((item) => appliedUnits.has(item.unitId) && !reported.has(item.unitId));
+        if (extra.length) {
+          result = { ...result, overwritten: [...result.overwritten, ...extra].sort((left, right) => (left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0)) };
+        }
+      }
       // A fast-forward keeps the writer's own scene (a tab save keeps its exact text).
       sceneOut = fastForward
         ? sceneObject(branch.template ?? masterScene, {
-            elements: branch.elements,
+            elements: branchElements,
             appState: branch.appState === undefined ? result.appState : branch.appState,
             files: branchFiles === undefined ? result.files : branchFiles,
           })
@@ -1110,9 +1131,12 @@ export function createVersionStore({
         version = contentHash(text);
       }
     }
-    const mermaid = branch.kind === "mermaid" && branch.mermaid
-      ? { ...branch.mermaid, author: branch.author, writtenAt: branch.writtenAt, appliedAt: now(), branchId: branch.id, version }
-      : board.mermaid;
+    const mermaidRecord = branch.kind === "mermaid" && branch.mermaid
+      ? { source: branch.mermaid.source, hash: branch.mermaid.hash, ...(branch.mermaid.pendingId ? { pendingId: branch.mermaid.pendingId } : {}), author: branch.author, writtenAt: branch.writtenAt, appliedAt: now(), branchId: branch.id, version }
+      : null;
+    const sourceName = branch.mermaid?.name ?? "main";
+    const mermaid = mermaidRecord && sourceName === "main" ? mermaidRecord : board.mermaid;
+    const mermaidSources = mermaidRecord ? { ...(board.mermaidSources ?? {}), [sourceName]: mermaidRecord } : board.mermaidSources ?? {};
 
     if (version === board.version) {
       // Every unit of this write lost to a newer edit: master stays, and the losing content is
@@ -1121,8 +1145,9 @@ export function createVersionStore({
       if (lost) {
         await watch.run("history", () => keepUnchangedLosers(board, branch, base, result.overwritten));
       }
-      if (mermaid !== board.mermaid || lost) {
+      if (mermaidRecord || lost) {
         board.mermaid = mermaid;
+        board.mermaidSources = mermaidSources;
         await watch.run("state", () => writeState(board));
       }
       await watch.run("archive", () => archiveBranch(branch));
@@ -1224,6 +1249,7 @@ export function createVersionStore({
       last: { branchId: branch.id, author: branch.author, entry, previous, writtenAt: branch.writtenAt, committedAt },
       open: human ? open : null,
       mermaid,
+      mermaidSources,
       lastEntryAt: coalesce ? board.lastEntryAt : Math.max(branch.receivedAt, board.lastEntryAt + 1),
       depth,
     };
@@ -1663,12 +1689,15 @@ export function createVersionStore({
       last: board.last,
       open: board.open,
       mermaid: board.mermaid,
+      mermaidSources: board.mermaidSources ?? {},
       depth: board.depth,
     };
   });
 
   // The last applied Mermaid. A loaded board answers from memory, without waiting for its queue.
   const readMermaid = async (name) => (boards.has(name) ? boards.get(name).mermaid ?? null : (await readState(name)).mermaid);
+  // Every named source's last applied Mermaid (`main` included), the same way.
+  const readMermaidSources = async (name) => (boards.has(name) ? boards.get(name).mermaidSources ?? {} : (await readState(name)).mermaidSources ?? {});
 
   // For /api/status: queued writes per board and commits waiting on a retry.
   const status = () => ({
@@ -1710,5 +1739,5 @@ export function createVersionStore({
     }
   };
 
-  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, whenIdle, close, parseAuthorKey };
+  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, whenIdle, close, parseAuthorKey, stateDir: xcld };
 }

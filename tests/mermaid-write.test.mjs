@@ -419,6 +419,13 @@ test("MCP write_mermaid end to end: two agents write Mermaid to one board in par
       assert.equal(fresh.isError, undefined);
       assert.equal(fresh.structuredContent.status, "needs-tab");
       assert.match(fresh.content[0].text, /Open http:\/\/127\.0\.0\.1:3131\/\?board=mcp\/brand-new in a browser/);
+      // An agent can poll a pending write.
+      const status = await first.call("mermaid_status", { board: "mcp/brand-new", pendingId: fresh.structuredContent.pendingId });
+      assert.equal(status.isError, undefined, status.content?.[0]?.text);
+      assert.equal(status.structuredContent.status, "pending");
+      assert.match(status.content[0].text, /^Pending on mcp\/brand-new \(source "main"\)/);
+      const unknown = await first.call("mermaid_status", { board: "mcp/brand-new", pendingId: "nope" });
+      assert.equal(unknown.isError, true);
     } finally {
       first.stop();
       second.stop();

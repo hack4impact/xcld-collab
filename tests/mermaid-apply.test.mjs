@@ -262,6 +262,13 @@ test("applyMermaid output matches the tab's converter for new nodes and edges (a
         assert.equal(element[key].mode, expected[key].mode);
         continue;
       }
+      // The server also stamps the dual origin (slice 6a); the tab's raw conversion has the hash only.
+      if (key === "customData") {
+        assert.equal(element.customData.xcldMermaidHash, expected.customData.xcldMermaidHash, `${element.id}.customData`);
+        assert.equal(element.customData.xcldOrigin.mermaid.source, "main");
+        assert.equal(element.customData.xcldOrigin.active, "mermaid");
+        continue;
+      }
       assert.deepEqual(element[key], expected[key], `${element.id}.${key}`);
     }
     assert.deepEqual((element.boundElements ?? []).map((bound) => bound.type), (expected.boundElements ?? []).map((bound) => bound.type));

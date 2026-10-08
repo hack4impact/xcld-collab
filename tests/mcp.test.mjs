@@ -101,7 +101,7 @@ test("xcld mcp stdio exposes board tools and returns MCP tool errors", { skip: !
     assert.equal(listedTools.error, undefined, JSON.stringify(listedTools));
     assert.deepEqual(
       listedTools.result.tools.map((tool) => tool.name).sort(),
-      ["board_url", "check_board", "diff", "list_boards", "open_in_canvas", "read_board", "snapshot", "write_board", "write_mermaid"],
+      ["board_url", "check_board", "diff", "list_boards", "mermaid_status", "open_in_canvas", "read_board", "snapshot", "write_board", "write_mermaid"],
     );
     for (const tool of listedTools.result.tools) {
       assert.match(tool.description, /real newline inside the quoted label/, `${tool.name} should carry the label newline convention`);

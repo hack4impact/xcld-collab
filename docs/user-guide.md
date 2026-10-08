@@ -40,9 +40,14 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
    place, and a shape you both changed goes to whoever wrote last (the other version stays in
    history). Then the loop repeats from step 3.
 
-> **Still replaced by a tab:** Mermaid the server can't apply (a diagram type other than a
-> flowchart, or a board with no shapes from Mermaid yet) is laid out by the open tab, which
-> **replaces** the board. `xcld snapshot` first if the board has work on it.
+> **Mermaid never replaces your drawing.** A diagram the server can't apply shape by shape (a
+> new diagram, or a type other than a flowchart) is laid out by the open tab and **added** next
+> to what is on the board: below it for `flowchart TD`, to the right for `LR` (an agent can ask
+> for `below`, `right` or `near:<shape>`). Only an empty board takes the diagram's own layout as
+> is. With no tab open, the server lays a flowchart out itself in a simple grid after about 2
+> minutes. If you change a Mermaid shape (its label, color or position), your version stays
+> until the agent's Mermaid changes that shape; then the agent's version wins and yours stays
+> in version history, reported as overwritten.
 
 ## The loop with MCP tools
 
@@ -51,8 +56,9 @@ the order matters:
 
 1. The agent calls `write_mermaid` with the board path and a flat `flowchart TD`.
 2. The agent calls `board_url` and gives you the returned localhost URL.
-3. You open or keep open that URL. The browser consumes the Mermaid inbox, replaces the
-   canvas with editable Excalidraw elements and autosaves the `.excalidraw` board.
+3. You open or keep open that URL. The browser lays the Mermaid out as editable Excalidraw
+   elements and the server saves them as the agent's write. (Without a tab, the server lays it
+   out itself after about 2 minutes; the agent can check with `mermaid_status`.)
 4. The agent calls `read_board` to verify conversion, then `snapshot` before handing the
    board to you for review.
 5. You edit the board in the localhost Excalidraw canvas and tell the agent when you are done.
@@ -60,8 +66,12 @@ the order matters:
    snapshots the next review baseline.
 
 Calling `board_url` first is not creation: visiting that URL starts an empty unsaved canvas.
-Keep the tab open and call `write_mermaid`; the tab will consume the inbox and replace the
-blank canvas. Reload once if the watcher misses the update.
+Keep the tab open and call `write_mermaid`; the tab lays the diagram out on the blank canvas.
+Reload once if the watcher misses the update.
+
+Several diagrams can share a board: the agent gives each one a `source` name (`write_mermaid`
+`source`, default `main`). Each source only changes and deletes its own shapes, and writing the
+same Mermaid again changes nothing.
 
 ### Edit a chat drawing in the canvas
 
@@ -226,5 +236,4 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 - Some Mermaid shapes. A cylinder `[(DB)]` and other special shapes arrive as plain
   rectangles. Rectangles, diamonds `{}` and circles `(())` are kept.
 - Diagram direction. `to-mermaid` always writes `flowchart TD`.
-- Browsing version history in the canvas, and merge on Mermaid re-import: see
-  [Coming soon](../README.md#coming-soon).
+- Browsing version history in the canvas: see [Coming soon](../README.md#coming-soon).

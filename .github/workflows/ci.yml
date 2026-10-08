@@ -4,14 +4,23 @@
 #   hygiene      every push: gitleaks over main's full history (.gitleaks.toml) and the
 #                GitHub-noreply author/committer email check
 #   build-test   only when build/app/test inputs changed (or on manual dispatch):
-#                build.sh image + vendor tarballs, app build, `node --test tests`,
-#                then a Compose smoke (healthz + `xcld list`)
+#                build.sh image + vendor tarballs, app build, `node --test tests` (includes
+#                the Mermaid checks in tests/mermaid-ci.test.mjs), then a Compose smoke
+#                (healthz + `xcld list`)
+#   mermaid-latest  manual dispatch on main with `mermaid_latest` only: the latest Mermaid
+#                11.x in place of the locked one, then the Mermaid checks. Mermaid isn't
+#                pinned; this catches drift before a lockfile update does.
 name: CI
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mermaid_latest:
+        description: "Only run the Mermaid checks against the latest Mermaid 11.x"
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -86,7 +95,7 @@ jobs:
   build-test:
     name: Build, test, smoke
     needs: hygiene
-    if: needs.hygiene.outputs.build == 'true'
+    if: needs.hygiene.outputs.build == 'true' && !inputs.mermaid_latest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -141,3 +150,43 @@ jobs:
       - name: Compose down
         if: always()
         run: docker compose down || true
+
+  # Manual, main only: is the newest Mermaid 11.x still compatible with the parser bundle's
+  # FlowDB patch and the parse output server-side apply relies on? (Mermaid isn't pinned.)
+  mermaid-latest:
+    name: Mermaid checks on the latest Mermaid 11.x
+    needs: hygiene
+    if: github.event_name == 'workflow_dispatch' && inputs.mermaid_latest && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      # npm ci needs the vendor tarballs the lockfile points at.
+      - name: build.sh --target vendor
+        run: ./build.sh --target vendor
+
+      - name: App install, then the latest Mermaid 11.x in place of the locked one
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund mermaid@11
+          node -e "console.log('mermaid ' + JSON.parse(require('fs').readFileSync('node_modules/mermaid/package.json', 'utf8')).version)"
+          npm run build:mermaid
+
+      - name: Mermaid checks
+        run: node --test tests/mermaid-ci.test.mjs tests/mermaid-parse.test.mjs tests/mermaid-apply.test.mjs

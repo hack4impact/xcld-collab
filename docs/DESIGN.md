@@ -38,12 +38,13 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   `boards/<path>.mmd` is the Mermaid inbox, and `boards/<path>.view.json` is the
   Excalidraw MCP checkpoint/view inbox. Any agent can take part by reading and writing
   files, with or without MCP.
-- **A brand-new Mermaid diagram is laid out in the host's default browser** through the
+- **A new Mermaid diagram is laid out in the host's default browser** through the
   mapped port. The full layout needs a real page, and this avoids putting headless Chromium in
   the image. When it needs a conversion or review, the agent opens the board with
-  `Start-Process http://127.0.0.1:3100/?board=<path>`. Opening the tab is the handoff. Every
-  later Mermaid write to that board is applied by the server, with no tab
-  ([Server-side Mermaid apply](#server-side-mermaid-apply)).
+  `Start-Process http://127.0.0.1:3100/?board=<path>`. Opening the tab is the handoff; with no
+  tab, the server lays the diagram out itself in a simple grid after about 2 minutes
+  ([Mermaid ingestion](#mermaid-ingestion-slice-6a)). Every later Mermaid write to that board is
+  applied by the server, with no tab ([Server-side Mermaid apply](#server-side-mermaid-apply)).
 - **Live sync.** The browser saves debounced edits through `PUT /api/board/:name`. A file
   watcher pushes on-disk (agent) changes to the browser over SSE.
   Each side ignores its own echoes by content hash.
@@ -117,8 +118,8 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
     automatically; a later real recreate publishes the normal `kind: "board"` event.
   - **Lead decision (2026-10-02):** an empty board loaded from a first-time URL is not
     persisted until the user makes a real element edit. If an existing board has no live
-    elements and a newer `.mmd` or `.view.json` inbox exists, the browser converts the inbox
-    instead of treating the empty board as final.
+    elements and a Mermaid write or a newer `.view.json` inbox is waiting, the browser converts
+    it instead of treating the empty board as final.
   - `.view.json` files are indexed as the board name (for example `x.view.json` appears as
     `x`), publish SSE `kind: "view"`, and stay `viewPending` until a non-empty
     `.excalidraw` save is newer.
@@ -468,8 +469,9 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
     `classDef`/`class`/`style` colors, shape type, edge style and subgraph membership
     follow the Mermaid. A style that the Mermaid doesn't mention is left alone, unless
     `previous` (the Mermaid the board came from) shows that Mermaid had set it.
-  - **Only Mermaid-origin elements are ever deleted**: those carrying
-    `customData.xcldMermaidHash`. Human notes, human arrows and human shapes never are; an
+  - **Only Mermaid-origin elements of the written source are ever deleted**: those whose
+    origin (`customData.xcldOrigin`, or `xcldMermaidHash` for `main` on older boards) names the
+    source. Human notes, human arrows, human shapes and other sources' shapes never are; an
     arrow left pointing at a deleted shape is kept, unbound. With `previous`, only ids that
     Mermaid had can be deleted.
   - New shapes go next to a connected neighbour, in the flowchart's direction. They avoid
@@ -478,8 +480,9 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
     their members, and existing ones grow to hold new members.
   - Changed and new elements get the new Mermaid hash and a version bump; untouched ones
     keep theirs, so a merge sees only real changes.
-- **Still needs a tab:** a board with no Mermaid-origin shapes (new, or an image fallback)
-  and non-flowchart diagrams return `needsTabLayout: true`. Placement is local, not a full
+- **Still needs a layout:** a board with no shapes of the written source (new, or an image
+  fallback) and non-flowchart diagrams return `needsTabLayout: true`; the write becomes a
+  pending write ([Mermaid ingestion](#mermaid-ingestion-slice-6a)). Placement is local, not a full
   re-layout, so straight arrows can cross shapes. Text widths are estimated (Node has no
   font metrics); Excalidraw centers bound text, so that only affects wrapping.
 - **Conventions are tested against the real converter.** `tests/fixtures/mermaid-apply-*.excalidraw`
@@ -518,14 +521,13 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
    or trailing whitespace). It stays the human-readable "last Mermaid written to this board"
    and the source a later write can use as `previous`. `GET /api/mermaid/<path>` sends
    `X-Xcld-Mermaid-Applied: 1` for an applied inbox, and the tab doesn't convert it.
-7. **Still the tab:** a brand-new board, a board with no Mermaid shapes, and non-flowcharts
-   answer 202 `needs-tab`. The source goes to the inbox file and an SSE `mermaid` event asks an
-   open tab to lay it out, which replaces the board as before. That is the only `mermaid` event
-   the server sends now.
+7. **Pending writes:** a brand-new board, a board without shapes of the written source, and
+   non-flowcharts answer 202 `needs-tab` with a `pendingId`. An open tab lays the diagram out and
+   it **joins** the board as a group; nothing is replaced (see below).
 
 **Direct writes to the inbox.** When the watcher sees a settled `boards/<path>.mmd` that isn't
-the last applied source (and isn't what the board was converted from), it applies it the same
-way as the `external` author, written at the file's mtime. Parse errors and an unavailable
+the last applied source of `main` (and isn't what the board was converted from), it applies it the
+same way as the `external` author, written at the file's mtime. Parse errors and an unavailable
 parser fall back to the `mermaid` event, so an open tab shows the error as before.
 
 **Parser speed.** Mermaid's `FlowDB.addVertex` deep-copies the whole Mermaid config for every
@@ -533,6 +535,92 @@ labeled node (about 0.4 ms each, 85% of a 500-node parse). The parser bundle fet
 per diagram instead (`app/scripts/build-mermaid.mjs`; the build fails if Mermaid's code
 changes). A 525-node, 450-edge flowchart parses in about 95 ms instead of 312 ms. Mermaid's own
 limit of 500 edges (`maxEdges`, the same in the tab) applies.
+
+**Mermaid is not pinned (lead, 2026-10-07).** `tests/mermaid-ci.test.mjs`, part of the suite CI
+runs on main, fails when the installed Mermaid stops working with the patch or the parser:
+(a) the bundle carries the patch marker (`this.config = this.xcldConfig ??= getConfig()`, once);
+(b) one parse's config never carries over to the next (with the worker's site config changed
+between parses, `maxEdges` takes effect per diagram, both ways; diagrams with different
+`%%{init}%%` directives also parse independently. Mermaid 11 applies no directive in
+`getDiagramFromText`, and `maxEdges` is a secure key a directive can't set, so the test drives
+the site config through a test-only `configure` message to the worker);
+(c) the parse output apply relies on (nodes, edges, subgraphs, classes) keeps its shape; and
+(d) the installed Mermaid version is printed in the test output and must match the bundle's.
+A manual CI run (`workflow_dispatch` with `mermaid_latest`) installs the latest Mermaid 11.x in
+place of the locked one and runs these checks plus the parse and apply tests, to catch drift
+early. **If they fail, pinning Mermaid in `app/package.json` is the fallback.**
+
+### Mermaid ingestion (slice 6a)
+
+Decided by the lead on 2026-10-07 (board `sandbox/mermaid-inbox-merge`); built in
+`app/server/mermaid-write.mjs` with `tools/mermaid-origin.mjs`, `mermaid-place.mjs`,
+`mermaid-grid.mjs` and `mermaid-group.mjs` (`tests/mermaid-ingest.test.mjs`,
+`tests/mermaid-place.test.mjs`).
+
+- **The inbox merges instead of replacing.** A Mermaid write the server can't apply node by
+  node becomes a **pending write**: a record in the state dir
+  (`<state>/mermaid-pending/<path>/<id>.json`, fsynced before the answer). An open tab gets the
+  `mermaid` SSE event, reads `GET /api/mermaid/<path>?pending`, converts each write **in
+  memory** with the real converter, and posts the shapes to
+  `POST /api/mermaid/<path>?layout=<id>`. The server namespaces and stamps them, places them as
+  a group clear of the drawing, and commits them as a `kind: "mermaid"` branch whose **author is
+  the agent that wrote the Mermaid** and whose `writtenAt` is **the write's time** (the writer's
+  clock, or the `.mmd` mtime for a direct write). Hand-drawn shapes stay. Only an **empty board**
+  (no live elements) keeps the converter's coordinates, i.e. the layout becomes the board.
+  Converted shapes carry the same stamps as server-applied ones, so the next `write_mermaid`
+  applies on the server with no tab.
+- **Placement** (`tools/mermaid-place.mjs`, shared by the tab path and the grid fallback):
+  `write_mermaid` takes an optional `position`: `below`, `right` or `near:<elementOrNodeId>`.
+  Without one, the diagram's direction decides: TD/TB (and BT) **below** the drawing, LR/RL **to
+  the right**, centered on the drawing's bounding box, 120 px away. `near` tries right, below,
+  left, then above the element, sliding outward until the group is clear of every live element
+  by 40 px; an unknown element falls back to the default and the op says so. Deterministic.
+- **No tab open.** The answer is still 202 `needs-tab`, with `pendingId`, `pending.layoutAt` and
+  the schedule. The server checks again **5 s, 15 s and 45 s** after the write (did a tab land it?
+  if not, the `mermaid` event goes out again for tabs opened since), and at **2 min** it lays a
+  flowchart out itself (`tools/mermaid-grid.mjs`): one row per rank for TD (columns for LR,
+  reversed for BT/RL), ranks by longest path with cycle back edges ignored, subgraph members
+  next to each other in a rank, then `applyMermaid({ layout })` draws the shapes, straight bound
+  arrows and subgraph containers (groups) with the usual conventions. Same author and
+  `writtenAt` as the tab path. The schedule is `MERMAID_RETRY_SCHEDULE_MS` (offsets from the
+  write), overridable with `mermaidOptions.retryScheduleMs` or `XCLD_MERMAID_RETRY_MS`. A
+  **non-flowchart** can't be laid out without a tab: after the schedule it stays pending as
+  `waiting-for-tab`.
+- **Status.** `GET /api/mermaid/<path>?id=<pendingId>` (MCP `mermaid_status`, `xcld
+  mermaid-status [--wait]`) answers `pending` (with `nextAttemptAt`, `layoutAt`), `landing`,
+  `landed` (`via`: `tab`, `grid`, or `server` when the source appeared meanwhile and the write
+  applied node by node; `version`), `superseded` (a newer write of the same source replaced a
+  write still pending) or `waiting-for-tab`. On landing, SSE `mermaid-write` carries the same.
+- **Restart.** The records are the journal: on start every record is re-armed on its schedule
+  (from its original receive time). A record whose landing branch already committed (the
+  source's state names its `pendingId`) is dropped, so nothing lands twice; landing commits
+  through the normal branch journal, so nothing is lost either.
+- **Named sources.** A write names a source (`source`, default `main`; a letter, then up to 39
+  letters, digits, `_` or `-`). Per source the state keeps the last applied Mermaid and hash
+  (`mermaidSources`; `main` is also kept as `mermaid` for older readers). **Element ids:** `main`
+  keeps the Mermaid id (boards converted before named sources work unchanged); any other source
+  uses `<source>:<nodeId>` (edges `<source>:<start>_<end>`, subgraph groups
+  `subgraph_group_<source>:<id>`). A source matches, updates and **deletes only its own shapes**
+  (by origin); `to-mermaid` rewrites `:` to `_`. The **identical document again is a no-op** (200,
+  `noop: true`, no commit). An edited one applies only its differences. A **different diagram
+  under the same name** is an edit of that source; when it would delete most of the source's
+  nodes and subgraphs, the answer carries `hint.suggestSource` (e.g. `diagram-2`). The inbox
+  file `boards/<path>.mmd` is source `main` only.
+- **Dual origin.** Every Mermaid-converted element carries `customData.xcldOrigin`:
+  `mermaid: { source, nodeId, hash }`, `canvas: { author, at } | null` (the last canvas edit) and
+  `active: "mermaid" | "canvas"` (and still `xcldMermaidHash`). The commit step stamps it on
+  every non-Mermaid write (tab saves, `write_board`, CLI): an element changed against the
+  writer's base gets `canvas` active; one that only lacks the stamps (a tab that never saw them)
+  keeps the base's, so it **survives tab saves**; a new element is kept as sent (a human's copy
+  of a Mermaid shape has its own id, which no Mermaid write matches or deletes). Direct file
+  writes keep their exact bytes and
+  aren't stamped. A Mermaid write leaves a canvas-active node alone while **its Mermaid
+  definition is unchanged** since the previous source (op `keep-canvas`), and doesn't bring back
+  a node or edge deleted on the canvas. **A write that changes the node wins** (last writer takes
+  all): Mermaid is active again, and the canvas version goes to history as **overwritten**
+  (loser = the canvas author and time), reported in the answer, the banner and the entry's meta.
+  `to-mermaid` adds `%% Active origin of <id>: canvas edit by <name> (over Mermaid main:A)` and
+  `%% Mermaid source <name>: ...` comments; `diff` tags changes with their active origin.
 
 ## Versions storage and commit pipeline
 
@@ -897,6 +985,18 @@ Next for Mermaid writes (not done): read a recent base from memory without waiti
 queue (read p95 114 → about 5 ms); parse the previous Mermaid only once per board (it is cached
 after the first write, so this matters only after a restart); profile the apply (40 ms at
 1,500 elements).
+
+### Mermaid ingestion (slice 6a)
+
+Measured 2026-10-07 on image `a8c2be1` (volume storage, the same Windows 11 host), 2 min per
+size, p95 ms of all writes: gate scenario **89.5 / 211.5** (50 / 1,500 elements), with the
+Mermaid writer **107.5 / 365.9**: both pass. The Mermaid writes alone were 121.8 / **492.8**
+(parse 88 / 123, read 6 / 191, apply 45 / 56, before the answer 258 / 475), above slice 4b's 386:
+the apply now also checks each node's canvas origin and Mermaid definition (about +4 ms in an
+in-process benchmark at 1,500 elements), and with 51 writes the p95 is the third-slowest one.
+The gate counts all writes. That day several other runs of both modes hit 39–77 s pauses in
+the file-system stages (journal, state, master; merge and apply stayed normal), also in the
+plain gate scenario where none of the new code runs; those runs failed and were repeated.
 
 ## Annotation convention — free-form by default, local design rules
 

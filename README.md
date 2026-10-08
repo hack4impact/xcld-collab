@@ -200,9 +200,12 @@ direct edits of a board or `.mmd` file all go through one commit pipeline:
   later.
 - **Mermaid merges too, with no tab open.** The server applies an agent's Mermaid to the
   board: your layout, notes and colors stay, existing shapes keep their place, new nodes go
-  next to a connected one, and only shapes that came from Mermaid are ever removed (a copy you
-  made of one never is). Several agents can write Mermaid to the same board at once. Only a
-  brand-new diagram still needs an open tab to lay it out the first time.
+  next to a connected one, and only shapes that came from that Mermaid are ever removed (a copy
+  you made of one never is). Several agents can write Mermaid to the same board at once, each
+  diagram under its own `source` name if they like. A new diagram is laid out by an open tab
+  and **added** next to your drawing (below it, or to the right for left-right diagrams), never
+  over it; with no tab, the server lays it out in a simple grid after about 2 minutes. A shape
+  you edited keeps your version until the agent's Mermaid changes that shape.
 
 The canvas takes part like any other writer:
 

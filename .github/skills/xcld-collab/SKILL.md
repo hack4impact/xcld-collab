@@ -14,20 +14,28 @@ experimental and off by default; if its tools are not available, use `xcld-probe
 Follow this order:
 
 1. Call `write_mermaid` with the board path and Mermaid source (no `base` for a new board).
-   It answers `status: "needs-tab"`: a brand-new board needs a browser tab to lay out the
-   whole diagram once.
+   It answers `status: "needs-tab"` with a `pendingId`: a new diagram needs a layout once,
+   from a browser tab or (after about 2 minutes without one) from the server's simple grid.
 2. Call `board_url` and give the returned localhost URL to the user.
-3. The user opens or keeps open the URL so the browser converts the Mermaid inbox into
-   editable Excalidraw elements.
+3. The user opens or keeps open the URL so the browser lays the Mermaid out as editable
+   Excalidraw elements (saved as your write). Without a tab, `mermaid_status` says when the
+   server's grid layout lands.
 4. Call `read_board` to verify that conversion produced the expected nodes and edges.
 5. Call `snapshot` before asking the user to review the board.
 
 Do not present `board_url` as board creation. Opening a URL before `write_mermaid` starts an
 empty unsaved canvas; the first real edit saves it. If the tab is already open, call
-`write_mermaid` while it remains open; the browser should replace the blank canvas. Ask the
+`write_mermaid` while it remains open; the browser lays it out on the blank canvas. Ask the
 user to reload once only if the watcher misses the update.
 
 After that first layout, Mermaid writes to the board don't need a tab: the server applies them.
+
+A board that already has a drawing keeps it: a new diagram is **added** as a group next to it
+(below for `flowchart TD`, right of it for `LR`; pass `position`: `below`, `right` or
+`near:<id>` to choose). For a second, separate diagram on the same board, pass a new
+`source` name (default `main`): each source only changes and deletes its own shapes. Reusing a
+source name edits that diagram; the result's `hint` suggests a new name when your write would
+delete most of it. Writing the same Mermaid again is a no-op.
 
 ## Edit a chat drawing in the canvas
 
@@ -86,11 +94,14 @@ you write. Parallel Mermaid writes are merged too.
    applies to the board as it is now.
 4. The server applies it on the board: existing shapes keep their position and the human's
    notes, arrows and shapes stay; new nodes are placed next to a connected node; only shapes
-   and arrows that came from Mermaid are ever deleted. The result lists `ops` (what your
+   and arrows of the same Mermaid source are ever deleted. A shape the human edited keeps the
+   human's version (op `keep-canvas`) until your Mermaid changes that shape; then yours wins
+   and the human's version is reported in `overwritten` (tell the user). The result lists `ops` (what your
    Mermaid changed), `applied`, `overwritten` and the new `version`, as for `write_board`.
    `status: "queued"` means the merge took longer than 5 s; the write is safe.
 5. A syntax error is refused with its line; nothing is written. Non-flowchart diagrams, and
-   boards with no Mermaid shapes yet, answer `needs-tab` (open `board_url`).
+   boards with no shapes of your source yet, answer `needs-tab`: open `board_url`, or for a
+   flowchart wait for the server's layout (`mermaid_status` with the `pendingId`).
 
 **With Excalidraw JSON** (`write_board`):
 

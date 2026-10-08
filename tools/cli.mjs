@@ -12,7 +12,7 @@ import { fileToMermaid } from "./to-mermaid.mjs";
 import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
 import { exportRoot, hostPathOf, stateDirFromEnv } from "./storage.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeMermaidWrite, describeWrite, formatApplyOp, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
+import { describeMermaidStatus, describeMermaidWrite, describeWrite, formatApplyOp, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 // Versions data and the export root, as the server sees them (tools/storage.mjs).
@@ -31,8 +31,11 @@ Usage:
   xcld open-in-canvas <checkpointId> <board> [--overwrite]
   xcld read <board>                  (JSON with the version to pass as --base)
   xcld write <board> <file.excalidraw|-> --base <version|none> [--json]
-  xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--json]
-                                     (the server applies it to the board and merges; no --base: the current board)
+  xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--source <name>] [--position below|right|near:<id>] [--json]
+                                     (the server applies it to the board and merges; no --base: the current board;
+                                      --source names the diagram on the board, default main)
+  xcld mermaid-status <board> <pendingId> [--wait] [--json]
+                                     (a write that waits for a layout: a tab's, or the server's grid after ~2 min)
   xcld history export <board> [--to <dir>] [--full] [--json]
                                      (default --to: <cache>/exports/<board>, the host's ~/.excalidraw/exports/<board>
                                       unless XCLD_CACHE_DIR says otherwise; --full: every version as .excalidraw)
@@ -188,12 +191,20 @@ const run = async (argv) => {
     return;
   }
   if (command === "write-mermaid") {
-    const usage = "Usage: xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--json]   (without --base: the current board)";
+    const usage = "Usage: xcld write-mermaid <board> <file.mmd|-> [--base <version>] [--source <name>] [--position below|right|near:<id>] [--json]   (without --base: the current board)";
     const jsonMode = args.includes("--json");
-    const baseAt = args.indexOf("--base");
-    if (baseAt >= 0 && (args[baseAt + 1] === undefined || args[baseAt + 1].startsWith("--"))) throw new Error(usage);
-    const base = baseAt >= 0 ? args[baseAt + 1] : undefined;
-    const names = args.filter((arg, index) => arg !== "--json" && (baseAt < 0 || (index !== baseAt && index !== baseAt + 1)));
+    const valued = ["--base", "--source", "--position"];
+    const values = {};
+    const used = new Set();
+    for (const flag of valued) {
+      const at = args.indexOf(flag);
+      if (at < 0) continue;
+      if (args[at + 1] === undefined || args[at + 1].startsWith("--")) throw new Error(usage);
+      values[flag] = args[at + 1];
+      used.add(at).add(at + 1);
+    }
+    const base = values["--base"];
+    const names = args.filter((arg, index) => arg !== "--json" && !used.has(index));
     if (names.length !== 2) throw new Error(usage);
     if (!validateBoardName(names[0])) throw new Error(`Invalid board name: ${names[0]}`);
     const source = names[1] === "-" ? await new Promise((resolve, reject) => {
@@ -204,9 +215,25 @@ const run = async (argv) => {
       process.stdin.on("error", reject);
     }) : await readFile(names[1], "utf8");
     const author = `cli:${String(process.env.XCLD_AUTHOR ?? "").trim() || "cli"}`;
-    const result = await writeMermaid(names[0], { author, base: base === "none" ? undefined : base, mermaid: source });
+    const result = await writeMermaid(names[0], { author, base: base === "none" ? undefined : base, mermaid: source, source: values["--source"], position: values["--position"] });
     console.log(jsonMode ? JSON.stringify(result, null, 2) : describeMermaidWrite(names[0], result, { url: `${(process.env.XCLD_PUBLIC_URL || "http://127.0.0.1:3100").replace(/\/+$/g, "")}/?board=${names[0].split("/").map(encodeURIComponent).join("/")}` }));
     if (!["merged", "queued", "needs-tab"].includes(result.status)) process.exitCode = 1;
+    return;
+  }
+  if (command === "mermaid-status") {
+    const usage = "Usage: xcld mermaid-status <board> <pendingId> [--wait] [--json]   (--wait: until it has landed, been superseded or needs a tab)";
+    const jsonMode = args.includes("--json");
+    const wait = args.includes("--wait");
+    const names = args.filter((arg) => arg !== "--json" && arg !== "--wait");
+    if (names.length !== 2) throw new Error(usage);
+    if (!validateBoardName(names[0])) throw new Error(`Invalid board name: ${names[0]}`);
+    let result = await mermaidWriteStatus(names[0], names[1]);
+    while (wait && result.httpStatus === 200 && (result.status === "pending" || result.status === "landing")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      result = await mermaidWriteStatus(names[0], names[1]);
+    }
+    console.log(jsonMode ? JSON.stringify(result, null, 2) : describeMermaidStatus(names[0], { id: names[1], ...result }));
+    if (result.httpStatus !== 200) process.exitCode = 1;
     return;
   }
   if (command === "history") {

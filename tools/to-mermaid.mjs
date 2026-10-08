@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { describeOrigin } from "./mermaid-origin.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
 const VALID_MERMAID_ID = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -109,7 +110,7 @@ export const sceneToMermaid = (data) => {
       if (start && end) {
         const localComments = [];
         const operator = edgeOperator(element, localComments);
-        edges.push({ id: element.id, start, end, label, operator });
+        edges.push({ id: element.id, element, start, end, label, operator });
         comments.push(...localComments);
       } else {
         comments.push(`%% Unbound arrow ${element.id}: ${startId ?? "<none>"} -> ${endId ?? "<none>"}${label ? ` label="${label}"` : ""}`);
@@ -132,6 +133,26 @@ export const sceneToMermaid = (data) => {
 
   nodes.sort((left, right) => left.id.localeCompare(right.id));
   edges.sort((left, right) => left.id.localeCompare(right.id));
+  // The active origin where it matters: a canvas edit over a Mermaid shape (the Mermaid text no
+  // longer says what the board shows), and which named Mermaid source a shape belongs to.
+  const originNote = (element) => {
+    const own = describeOrigin(element);
+    const label = describeOrigin(textByContainer.get(element.id)?.[0]);
+    return own?.active === "canvas" ? own : label?.active === "canvas" ? label : own;
+  };
+  const bySource = new Map();
+  for (const item of [...nodes, ...edges]) {
+    const origin = originNote(item.element);
+    if (!origin) continue;
+    const name = item.mermaidId ?? `${item.start.mermaidId}->${item.end.mermaidId}`;
+    if (origin.active === "canvas") comments.push(`%% Active origin of ${name}: ${origin.text}`);
+    if (origin.source && origin.source !== "main") {
+      const bucket = bySource.get(origin.source) ?? [];
+      bucket.push(name);
+      bySource.set(origin.source, bucket);
+    }
+  }
+  for (const [source, names] of bySource) comments.push(`%% Mermaid source ${source}: ${names.join(", ")}`);
   comments.sort();
 
   const shape = (node) => {

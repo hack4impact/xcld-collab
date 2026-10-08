@@ -148,8 +148,18 @@ const parseDefinition = async (text) => {
 };
 
 // One parse at a time: each request runs after the previous one settles.
+// `configure` (tests only, tests/mermaid-ci.test.mjs) replaces the site config, as
+// mermaid.initialize does, so a test can show that one diagram's config never leaks into the
+// next parse through the bundle's FlowDB config patch.
 let queue = Promise.resolve();
 parentPort?.on("message", (message) => {
+  if (message?.type === "configure") {
+    queue = queue.then(() => {
+      mermaid.initialize({ ...MERMAID_CONFIG, ...(message.config ?? {}) });
+      parentPort.postMessage({ type: "result", id: message.id, result: { ok: true, configured: true }, ms: 0 });
+    });
+    return;
+  }
   if (message?.type !== "parse") return;
   queue = queue.then(async () => {
     const startedAt = performance.now();
