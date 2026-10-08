@@ -75,6 +75,21 @@ off TLS verification.
   installs a gitleaks pre-commit hook that uses the repo's `.gitleaks.toml`, the same rules
   CI enforces on `main`. Install it once per clone.
 - **Use LF line endings** (`.gitattributes` handles it; `git diff --check` should be clean).
+- **Performance-sensitive changes** (the commit pipeline, merge, Mermaid apply): run the load
+  gate locally against your container started with `XCLD_TIMING=1`, plain and with `--mermaid`:
+
+  ```powershell
+  node tests/versions-load.mjs --url http://127.0.0.1:3100 --gate 450
+  node tests/versions-load.mjs --url http://127.0.0.1:3100 --gate 450 --mermaid
+  ```
+
+  Run it on a **quiet machine**: no image builds and no other disk-heavy containers at the same
+  time. On Docker Desktop every container shares one disk, and a busy neighbour stalls the
+  server's fsyncs for seconds (`--noise` reproduces that on purpose). If a run fails, read its
+  slow-I/O lines first: slow `journal.fsync` or `state.fsync` operations mean a busy disk, not
+  your change. **The gate of record is the Linux CI `load-gate` job** on `main`, run by a
+  maintainer before a release: `gh workflow run ci.yml --ref main -f load_gate=true`
+  ([Performance](docs/DESIGN.md#performance)).
 
 ## What a good pull request looks like
 

@@ -81,6 +81,10 @@ export const describeWrite = (board, result) => {
     return `Merged into ${board}: version ${result.version}, ${result.applied?.length ?? 0} change(s) applied.${overwritten} Pass version as base on your next write.`;
   }
   if (result.status === "queued") {
+    // During a disk stall the server says which operation is slow (`slowIo`, `message`).
+    if (result.slowIo && typeof result.message === "string") {
+      return `Queued: ${result.message}. The server has your write for ${board} safely in its journal (branch ${result.branchId}) and will merge it; nothing is lost. Read the board again before writing on top of it.`;
+    }
     return `Queued: the server has your write for ${board} safely in its journal (branch ${result.branchId}) and will merge it; nothing is lost. Read the board again before writing on top of it.`;
   }
   if (result.error === "unknown-base") {

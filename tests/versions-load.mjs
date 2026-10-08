@@ -6,16 +6,30 @@
 // Not part of `node --test tests`: it runs for minutes.
 //
 //   node tests/versions-load.mjs --url http://127.0.0.1:3201 [--sizes 50,1500]
-//     [--duration 120] [--min-writes 300] [--gate 450] [--out .scratch/load.json]
+//     [--duration 120] [--min-writes 300] [--gate 450] [--mermaid] [--noise]
+//     [--json <file> | --json]
 //
 // Start the server with XCLD_TIMING=1 to also get per-stage timings (GET /api/timings).
-// Exit code 1 when p95 at any size is above the gate.
+// Exit code 1 when p95 at any size is above the gate, 2 when the run itself failed.
+//
+// After each size the script reads GET /api/status and prints the slow file-system operations
+// (slowIo, at or above XCLD_SLOW_IO_MS) that happened during it, next to the stage table.
 //
 // --mermaid: the board is a Mermaid-origin flowchart (shapes, labels and tree edges stamped with
 // the Mermaid hash, as a tab conversion writes them), and a fourth writer sends Mermaid through
 // POST /api/mermaid every 1-3 s (relabels, some on the hot units, and now and then a new node and
 // edge). Its latency (parse + apply + commit, submit to answer) is reported on its own, and held
 // to the same gate.
+//
+// --noise: reproduce a disk stall. Starts a neighbour container (alpine:3.20, with its own
+// Docker volume) that writes --noise-mb MB (default 1024) with `dd ... conv=fsync`, then `sync`,
+// in a loop, for the whole run; on Docker Desktop it shares the VM disk with the server's
+// volume. The container and its volume are removed at the end, also on Ctrl+C or an error.
+//
+// --json <file>: also write everything (settings, latencies, stages, errors, slow I/O, the text
+// tables) as JSON, e.g. for a CI artifact. `--json` alone (or `--json -`) prints the JSON on
+// stdout and the text tables on stderr. --out <file> is the old name of --json <file>.
+import { spawnSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -23,15 +37,62 @@ import { generateKeyBetween } from "../tools/mermaid-apply.mjs";
 import { mermaidSourceHash, stampMermaidHash } from "../tools/mermaid-hash.mjs";
 import { arrow, makeBoard, mulberry32, shape } from "./merge-fixtures.mjs";
 
-const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, index, all) => (arg.startsWith("--") ? [...pairs, [arg.slice(2), all[index + 1]?.startsWith("--") ? "1" : all[index + 1] ?? "1"]] : pairs), []));
+const VALUE_OPTIONS = new Set(["url", "sizes", "duration", "min-writes", "gate", "seed", "out", "timings", "noise-mb"]);
+const FLAG_OPTIONS = new Set(["mermaid", "noise", "json"]);
+const usage = "usage: node tests/versions-load.mjs [--url <url>] [--sizes 50,1500] [--duration <s>] [--min-writes <n>] [--gate <ms>] [--seed <n>] [--mermaid] [--noise [--noise-mb <n>]] [--json [<file>|-]] [--out <file>] [--timings 0]";
+// `--name value`, `--name=value`, and flags (`--mermaid`, `--mermaid=false`). An unknown option
+// is an error, so a typo never silently runs another scenario.
+const parseArgs = (argv) => {
+  const parsed = {};
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    const match = /^--([a-z-]+)(?:=(.*))?$/.exec(arg);
+    if (!match || (!VALUE_OPTIONS.has(match[1]) && !FLAG_OPTIONS.has(match[1]))) {
+      throw new Error(`unknown argument ${arg}\n${usage}`);
+    }
+    const [, name, inline] = match;
+    if (FLAG_OPTIONS.has(name)) {
+      const next = argv[index + 1];
+      // --json takes an optional file; a flag an optional true/false.
+      const takesNext = next !== undefined && !next.startsWith("--") && (name === "json" || /^(true|false|1|0|yes|no)$/i.test(next));
+      const value = inline ?? (takesNext ? argv[++index] : "true");
+      parsed[name] = /^(false|0|no)$/i.test(value) ? false : name === "json" ? value : true;
+      continue;
+    }
+    const value = inline ?? argv[++index];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error(`${arg} needs a value\n${usage}`);
+    }
+    parsed[name] = value;
+  }
+  return parsed;
+};
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
 const url = (args.url ?? "http://127.0.0.1:3201").replace(/\/+$/, "");
 const sizes = (args.sizes ?? "50,1500").split(",").map(Number);
 const durationMs = Number(args.duration ?? 120) * 1000;
 const minWrites = Number(args["min-writes"] ?? 300);
 const gateMs = Number(args.gate ?? 450);
 const seed = Number(args.seed ?? 7);
-const mermaidMode = args.mermaid === "1";
+const mermaidMode = Boolean(args.mermaid);
+const noiseMode = Boolean(args.noise);
+const noiseMb = Number(args["noise-mb"] ?? 1024);
+const jsonTarget = typeof args.json === "string" ? (/^(true|1|yes|-)$/i.test(args.json) ? "-" : args.json) : args.out ?? null;
 const runId = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15);
+// With the JSON on stdout, the text goes to stderr.
+const say = jsonTarget === "-" ? (line) => console.error(line) : (line) => console.log(line);
+for (const [name, value] of [["sizes", sizes], ["duration", [durationMs]], ["min-writes", [minWrites]], ["gate", [gateMs]], ["noise-mb", [noiseMb]]]) {
+  if (value.some((item) => !Number.isFinite(item) || item <= 0)) {
+    console.error(`--${name} must be a positive number\n${usage}`);
+    process.exit(2);
+  }
+}
 
 const AFTER_ANSWER = new Set(["post", "master", "archive"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +104,86 @@ const percentile = (values, fraction) => {
 const summary = (values) => ({ n: values.length, p50: percentile(values, 0.5), p95: percentile(values, 0.95), p99: percentile(values, 0.99), max: values.length ? Math.max(...values) : null });
 const fmt = (value) => (value === null || value === undefined ? "-" : `${value.toFixed(1)}`);
 const boardPath = (board) => board.split("/").map(encodeURIComponent).join("/");
+
+// --noise: a neighbour container that keeps the disk busy (its own volume, removed afterwards).
+const NOISE_IMAGE = "alpine:3.20";
+const noise = { name: `xcld-load-noise-${runId.toLowerCase()}`, volume: `xcld-load-noise-${runId.toLowerCase()}`, image: NOISE_IMAGE, mb: noiseMb, started: false, cleaned: false };
+const docker = (...dockerArgs) => spawnSync("docker", dockerArgs, { encoding: "utf8", windowsHide: true });
+const stopNoise = () => {
+  if (!noise.started || noise.cleaned) return;
+  noise.cleaned = true;
+  const removed = docker("rm", "-f", noise.name);
+  const volume = docker("volume", "rm", "-f", noise.volume);
+  say(`noise: removed container ${noise.name} (${removed.status === 0 ? "ok" : removed.stderr.trim() || "failed"}) and volume ${noise.volume} (${volume.status === 0 ? "ok" : volume.stderr.trim() || "failed"})`);
+};
+const startNoise = async () => {
+  // Cleanup first, so Ctrl+C or a crash while it starts still removes it.
+  process.on("exit", stopNoise);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) {
+    process.on(signal, () => {
+      stopNoise();
+      process.exit(130);
+    });
+  }
+  noise.started = true;
+  const script = `while :; do dd if=/dev/zero of=/noise/blob bs=1M count=${Math.round(noiseMb)} conv=fsync 2>/dev/null; sync; done`;
+  const run = docker("run", "-d", "--name", noise.name, "--label", "xcld-load-noise=1", "-v", `${noise.volume}:/noise`, NOISE_IMAGE, "sh", "-c", script);
+  if (run.status !== 0) {
+    throw new Error(`--noise: docker run failed: ${(run.stderr || run.error?.message || "").trim()}`);
+  }
+  noise.script = script;
+  say(`noise: started ${noise.name} (${NOISE_IMAGE}, volume ${noise.volume}): ${script}`);
+  // Let the writes build up before measuring.
+  await sleep(5000);
+  const state = docker("inspect", "-f", "{{.State.Running}}", noise.name);
+  if (state.stdout.trim() !== "true") {
+    throw new Error(`--noise: the neighbour container isn't running: ${docker("logs", noise.name).stderr.trim()}`);
+  }
+};
+
+// GET /api/status's slowIo (null from a server without slow-I/O diagnostics).
+const readSlowIo = async () => {
+  try {
+    const response = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(15_000) });
+    return response.ok ? (await response.json()).slowIo ?? null : null;
+  } catch {
+    return null;
+  }
+};
+// The slow operations of one size: counts from the difference of two snapshots; the max per stage
+// is exact when it grew, otherwise taken from the recent ring (the last 50).
+const slowIoWindow = (before, after, sinceMs) => {
+  if (!after) return null;
+  const recent = after.recent.filter((event) => Date.parse(event.at) >= sinceMs);
+  const byStage = {};
+  for (const [stage, totals] of Object.entries(after.byStage)) {
+    const previous = before?.byStage?.[stage] ?? { count: 0, maxMs: 0 };
+    const count = totals.count - previous.count;
+    if (count > 0) {
+      const ringMax = Math.max(0, ...recent.filter((event) => event.stage === stage).map((event) => event.ms));
+      byStage[stage] = { count, maxMs: totals.maxMs > previous.maxMs ? totals.maxMs : ringMax || null };
+    }
+  }
+  const counts = Object.values(byStage);
+  return {
+    thresholdMs: after.thresholdMs,
+    count: after.count - (before?.count ?? 0),
+    maxMs: counts.length ? Math.max(...counts.map((item) => item.maxMs ?? 0)) : null,
+    byStage,
+    slowest: [...recent].sort((left, right) => right.ms - left.ms).slice(0, 5),
+    inFlight: after.inFlight ?? [],
+  };
+};
+const slowIoLines = (window) => {
+  if (!window) return ["  slow I/O: not reported by this server (GET /api/status has no slowIo)"];
+  if (!window.count && !window.inFlight.length) return [`  slow I/O (>= ${window.thresholdMs} ms): none`];
+  const stages = Object.entries(window.byStage).sort(([, left], [, right]) => right.count - left.count).map(([stage, item]) => `${stage} ${item.count} (max ${item.maxMs ?? "?"} ms)`);
+  return [
+    `  slow I/O (>= ${window.thresholdMs} ms): ${window.count} operation(s), max ${window.maxMs ?? "?"} ms; by stage: ${stages.join(", ")}`,
+    ...(window.slowest.length ? [`    slowest: ${window.slowest.map((event) => `${event.stage} ${event.ms} ms at ${event.at.slice(11, 19)}Z`).join("; ")}`] : []),
+    ...(window.inFlight.length ? [`    still running: ${window.inFlight.map((event) => `${event.stage} ${event.ms} ms so far`).join("; ")}`] : []),
+  ];
+};
 
 // Small edits: move a shape (and its label), relabel, restyle.
 const editUnits = (elements, rng, { hot, count, author }) => {
@@ -110,6 +251,8 @@ const makeMermaidBoard = (size) => {
 
 const runSize = async (size) => {
   const board = `sandbox/load-${runId}-${size}`;
+  const slowBefore = await readSlowIo();
+  const sinceMs = Date.now();
   const rng = mulberry32(seed + size);
   const flowchart = mermaidMode ? makeMermaidBoard(size) : null;
   const initial = flowchart ? flowchart.elements : makeBoard(size, rng);
@@ -180,6 +323,10 @@ const runSize = async (size) => {
         elements = next;
         // The merged board differs from what this agent sent when others wrote meanwhile.
         if (!data.fastForward) ({ version, elements } = await getBoard(board));
+      } else if (response.status === 202 && data.status === "queued") {
+        // Answered after the 5 s wait (a disk stall): safe in the journal, counted at its latency.
+        samples.push({ writer: "agent", ms, queued: true, at: t0 - started, message: data.message });
+        ({ version, elements } = await getBoard(board));
       } else {
         errors.push({ writer: "agent", status: response.status, data });
         ({ version, elements } = await getBoard(board));
@@ -225,6 +372,9 @@ const runSize = async (size) => {
       if (response.status === 200) {
         samples.push({ writer: "mermaid", ms, merged: !data.fastForward, at: t0 - started, ops: data.ops?.length ?? 0 });
         version = data.version;
+      } else if (response.status === 202 && data.status === "queued") {
+        samples.push({ writer: "mermaid", ms, queued: true, at: t0 - started, message: data.message });
+        ({ version } = await getBoard(board));
       } else {
         errors.push({ writer: "mermaid", status: response.status, data });
         ({ version } = await getBoard(board));
@@ -257,17 +407,43 @@ const runSize = async (size) => {
     ...(flowchart ? { mermaid: summary(samples.filter((sample) => sample.writer === "mermaid").map((sample) => sample.ms)) } : {}),
     all: summary(samples.map((sample) => sample.ms)),
   };
-  return { size, board, wallMs, writes: samples.length, merged: samples.filter((sample) => sample.merged).length, errors, latency, stages };
+  const slowIo = slowIoWindow(slowBefore, await readSlowIo(), sinceMs);
+  return {
+    size,
+    board,
+    wallMs,
+    writes: samples.length,
+    merged: samples.filter((sample) => sample.merged).length,
+    queued: samples.filter((sample) => sample.queued).length,
+    queuedMessages: [...new Set(samples.filter((sample) => sample.queued).map((sample) => sample.message))],
+    errors,
+    latency,
+    stages,
+    slowIo,
+  };
 };
 
+const startedAt = new Date().toISOString();
 const results = [];
-for (const size of sizes) {
-  console.log(`size ${size}: running ${durationMs / 1000}s / ${minWrites} writes against ${url} ...`);
-  results.push(await runSize(size));
+let failure = null;
+try {
+  if (noiseMode) {
+    await startNoise();
+  }
+  for (const size of sizes) {
+    say(`size ${size}: running ${durationMs / 1000}s / ${minWrites} writes against ${url}${mermaidMode ? " (--mermaid)" : ""}${noiseMode ? " (--noise)" : ""} ...`);
+    results.push(await runSize(size));
+  }
+} catch (error) {
+  // Report what ran, then fail the run (exit 2), not just the gate.
+  failure = error;
+  console.error(`load run failed: ${error.stack ?? error.message}`);
+} finally {
+  stopNoise();
 }
 
 const lines = [];
-lines.push(`Versions load scenario: 1 tab (PUT ~1/s) + 3 agents (POST every 1-3 s)${mermaidMode ? " + 1 Mermaid writer (POST /api/mermaid every 1-3 s)" : ""}, gate p95 <= ${gateMs} ms`);
+lines.push(`Versions load scenario (${mermaidMode ? "--mermaid" : "plain"}${noiseMode ? `, --noise ${noiseMb} MB dd+sync neighbour` : ""}): 1 tab (PUT ~1/s) + 3 agents (POST every 1-3 s)${mermaidMode ? " + 1 Mermaid writer (POST /api/mermaid every 1-3 s)" : ""}, gate p95 <= ${gateMs} ms`);
 lines.push("");
 lines.push("| Size | Writer | Writes | p50 ms | p95 ms | p99 ms | max ms |");
 lines.push("|---|---|---|---|---|---|---|");
@@ -279,7 +455,10 @@ for (const result of results) {
 }
 for (const result of results) {
   lines.push("");
-  lines.push(`Size ${result.size}: ${result.writes} writes in ${(result.wallMs / 1000).toFixed(0)} s, ${result.merged} merged (stale base), ${result.errors.length} errors.`);
+  lines.push(`Size ${result.size}: ${result.writes} writes in ${(result.wallMs / 1000).toFixed(0)} s, ${result.merged} merged (stale base), ${result.queued} queued (answered after the wait), ${result.errors.length} errors.`);
+  for (const message of result.queuedMessages) {
+    lines.push(`  queued: ${message}`);
+  }
   if (result.stages) {
     for (const writer of ["human", "agent", "mermaid"]) {
       const stages = result.stages[writer];
@@ -287,14 +466,39 @@ for (const result of results) {
       lines.push(`  ${writer} server stages (p50 / p95 ms), merge share ${(stages.mergeShare * 100).toFixed(1)}%:`);
       lines.push(`    ${Object.entries(stages).filter(([name]) => name !== "mergeShare").map(([name, value]) => `${name} ${fmt(value.p50)}/${fmt(value.p95)}`).join(", ")}`);
     }
+  } else {
+    lines.push("  server stages: not available (start the server with XCLD_TIMING=1)");
+  }
+  lines.push(...slowIoLines(result.slowIo));
+}
+const pass = !failure && results.length === sizes.length && results.every((result) => result.latency.all.p95 !== null && result.latency.all.p95 <= gateMs);
+lines.push("");
+lines.push(failure ? `Gate p95 <= ${gateMs} ms: NOT RUN to the end (${failure.message})` : `Gate p95 <= ${gateMs} ms at every size: ${pass ? "PASS" : "FAIL"}`);
+say(lines.join("\n"));
+if (jsonTarget) {
+  const report = {
+    runId,
+    url,
+    mode: mermaidMode ? "mermaid" : "plain",
+    gateMs,
+    durationMs,
+    minWrites,
+    seed,
+    sizes,
+    noise: noiseMode ? { image: noise.image, container: noise.name, volume: noise.volume, mb: noiseMb, script: noise.script ?? null } : null,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    pass,
+    error: failure ? failure.message : null,
+    results,
+    text: lines.join("\n"),
+  };
+  const json = `${JSON.stringify(report, null, 2)}\n`;
+  if (jsonTarget === "-") {
+    process.stdout.write(json);
+  } else {
+    await mkdir(path.dirname(path.resolve(jsonTarget)), { recursive: true });
+    await writeFile(jsonTarget, json, "utf8");
   }
 }
-const pass = results.every((result) => result.latency.all.p95 !== null && result.latency.all.p95 <= gateMs);
-lines.push("");
-lines.push(`Gate p95 <= ${gateMs} ms at every size: ${pass ? "PASS" : "FAIL"}`);
-console.log(lines.join("\n"));
-if (args.out) {
-  await mkdir(path.dirname(path.resolve(args.out)), { recursive: true });
-  await writeFile(args.out, `${JSON.stringify({ runId, url, gateMs, results }, null, 2)}\n`, "utf8");
-}
-process.exitCode = pass ? 0 : 1;
+process.exitCode = failure ? 2 : pass ? 0 : 1;

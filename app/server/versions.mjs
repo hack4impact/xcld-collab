@@ -10,6 +10,7 @@ import { splitBoardPath } from "../../tools/board-path.mjs";
 import { applyDelta, CHECKPOINT_EVERY, encodeDelta, gzipText, HISTORY_SCHEMA, historyEntryFiles, readRecordFile } from "../../tools/history.mjs";
 import { mergeBoard } from "../../tools/merge.mjs";
 import { stampCanvasEdits } from "../../tools/mermaid-origin.mjs";
+import { createSlowIoRecorder } from "./slow-io.mjs";
 
 export const IDLE_CLOSE_MS = 3 * 60 * 1000;
 export const BASE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -151,28 +152,31 @@ const renameWithRetry = async (from, to) => {
   }
 };
 
+const runOp = (_op, fn) => fn();
+
 // Returns the written file's stat when `stat` is set (taken on the open handle: the rename keeps
-// inode, mtime and size, and it saves a round trip).
-export const writeFileAtomic = async (target, content, { sync = false, mkdir = true, stat = false } = {}) => {
+// inode, mtime and size, and it saves a round trip). `io(op, fn)` wraps each file-system call
+// (mkdir, open, write, fsync, stat, close, rename), for the slow-I/O diagnostics.
+export const writeFileAtomic = async (target, content, { sync = false, mkdir = true, stat = false, io = runOp } = {}) => {
   if (mkdir) {
-    await fs.mkdir(path.dirname(target), { recursive: true });
+    await io("mkdir", () => fs.mkdir(path.dirname(target), { recursive: true }));
   }
   const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  const handle = await fs.open(temp, "w");
+  const handle = await io("open", () => fs.open(temp, "w"));
   let written = null;
   try {
-    await handle.writeFile(content, "utf8");
+    await io("write", () => handle.writeFile(content, "utf8"));
     if (sync) {
-      await handle.sync();
+      await io("fsync", () => handle.sync());
     }
     if (stat) {
-      written = await handle.stat();
+      written = await io("stat", () => handle.stat());
     }
   } finally {
-    await handle.close();
+    await io("close", () => handle.close());
   }
   try {
-    await renameWithRetry(temp, target);
+    await io("rename", () => renameWithRetry(temp, target));
   } catch (error) {
     await fs.rm(temp, { force: true });
     throw error;
@@ -256,7 +260,8 @@ const stopwatch = (enabled) => {
  * @param {boolean} [options.timing] Record per-stage timings (`timings()`); default XCLD_TIMING=1.
  * @param {(name: string) => Promise<void> | void} [options.onMasterWritten] After the commit step writes master.
  * @param {(event: object) => Promise<void> | void} [options.onCommitted] Post-commit hook (Hook 3), run after the commit, not awaited by the queue.
- * @param {{ onStep?: (step: string, info: object) => Promise<void> | void }} [options.testHooks]
+ * @param {ReturnType<typeof createSlowIoRecorder>} [options.slowIo] Slow-I/O recorder; default one with XCLD_SLOW_IO_MS.
+ * @param {{ onStep?: (step: string, info: object) => Promise<void> | void, onIo?: (stage: string, board: string) => Promise<void> | void }} [options.testHooks]
  */
 export function createVersionStore({
   boardsDir,
@@ -269,6 +274,7 @@ export function createVersionStore({
   timing = process.env.XCLD_TIMING === "1",
   onMasterWritten = () => {},
   onCommitted = () => {},
+  slowIo = createSlowIoRecorder(),
   testHooks = {},
 }) {
   const root = path.resolve(boardsDir);
@@ -305,17 +311,29 @@ export function createVersionStore({
     await testHooks.onStep?.(name, info);
   };
 
+  // Every file operation of the pipeline goes through timeIo (stage `<kind>.<op>`, e.g.
+  // `journal.fsync`), so a slow one shows in /api/status and the log (slow-io.mjs).
+  const ioHook = testHooks.onIo;
+  const timeIo = ioHook
+    ? (stage, board, fn) => slowIo.time(stage, board, async () => {
+        await ioHook(stage, board);
+        return fn();
+      })
+    : slowIo.time;
+  const ioFor = (kind, board) => (op, fn) => timeIo(`${kind}.${op}`, board, fn);
+
   // Every file operation costs a round trip on a Docker Desktop bind mount, so folders known to
   // exist aren't created again.
   const knownDirs = new Set();
-  const writeAtomic = async (target, content, options = {}) => {
+  const writeAtomic = async (target, content, { kind, board, ...options }) => {
+    const io = ioFor(kind, board);
     const dir = path.dirname(target);
     if (!knownDirs.has(dir)) {
-      await fs.mkdir(dir, { recursive: true });
+      await io("mkdir", () => fs.mkdir(dir, { recursive: true }));
       knownDirs.add(dir);
     }
     try {
-      return await writeFileAtomic(target, content, { ...options, mkdir: false });
+      return await writeFileAtomic(target, content, { ...options, mkdir: false, io });
     } catch (error) {
       knownDirs.delete(dir);
       throw error;
@@ -325,7 +343,7 @@ export function createVersionStore({
   // Master's identity without reading it: inode (atomic writes replace it), mtime and size.
   const masterSignature = async (name) => {
     try {
-      const stat = await fs.stat(masterPath(name));
+      const stat = await timeIo("master.stat", name, () => fs.stat(masterPath(name)));
       return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
     } catch (error) {
       if (error?.code === "ENOENT") {
@@ -402,7 +420,7 @@ export function createVersionStore({
   };
 
   const readMasterFile = async (name) => {
-    const text = await readSettledJsonText(masterPath(name));
+    const text = await timeIo("master.read", name, () => readSettledJsonText(masterPath(name)));
     return text === null ? { text: null, hash: null } : { text, hash: contentHash(text) };
   };
 
@@ -425,9 +443,9 @@ export function createVersionStore({
       refs.push([id, key]);
       if (!known.has(key)) {
         const target = path.join(filesDir(name), `${key}.json`);
-        const exists = await fs.stat(target).then(() => true, () => false);
+        const exists = await timeIo("files.stat", name, () => fs.stat(target)).then(() => true, () => false);
         if (!exists) {
-          await writeAtomic(target, JSON.stringify(file), { sync: true });
+          await writeAtomic(target, JSON.stringify(file), { sync: true, kind: "files", board: name });
         }
         known.set(key, file);
       }
@@ -440,7 +458,7 @@ export function createVersionStore({
     for (const [id, key] of refs ?? []) {
       let file = known.get(key);
       if (!file) {
-        file = await readJson(path.join(filesDir(name), `${key}.json`));
+        file = await timeIo("files.read", name, () => readJson(path.join(filesDir(name), `${key}.json`)));
         if (!file) {
           throw new Error(`image ${id} of ${name} is missing from the file store`);
         }
@@ -455,16 +473,16 @@ export function createVersionStore({
   // `xcld: { schema, version, files: [[fileId, key]] }`. Slice-2 records are plain master
   // text, checked against their hash. `text` (the scene's canonical text) saves serializing a
   // board without images twice.
-  const writeRecord = async (name, target, version, scene, text = null) => {
+  const writeRecord = async (name, target, version, scene, text = null, kind = "base") => {
     const refs = await storeFiles(name, scene.files);
     const xcldInfo = { schema: RECORD_SCHEMA, version, files: refs };
     const record = text !== null && !refs.length && text.endsWith("\n}\n")
       ? `${text.slice(0, -3)},\n  "xcld": ${JSON.stringify(xcldInfo)}\n}\n`
       : canonicalText({ ...scene, files: {}, xcld: xcldInfo });
-    await writeAtomic(target, record);
+    await writeAtomic(target, record, { kind, board: name });
   };
-  const readRecord = async (name, file, version) => {
-    const text = await readText(file);
+  const readRecord = async (name, file, version, kind = "base") => {
+    const text = await timeIo(`${kind}.read`, name, () => readText(file));
     if (text === null) {
       return null;
     }
@@ -493,18 +511,18 @@ export function createVersionStore({
     const record = text !== null && !refs.length && text.endsWith("\n}\n")
       ? `${text.slice(0, -3)},\n  "xcld": ${JSON.stringify(info)}\n}\n`
       : canonicalText({ ...scene, files: {}, xcld: info });
-    await writeAtomic(target, await gzipText(record));
+    await writeAtomic(target, await gzipText(record), { kind: "history", board: name });
   };
   const writeDelta = async (name, target, { version, parent, depth, parentScene, scene }) => {
     const refs = await storeFiles(name, scene.files);
     const record = { xcld: { schema: HISTORY_SCHEMA, record: "delta", version, parent, depth, files: refs }, ...encodeDelta(parentScene, scene) };
-    await writeAtomic(target, await gzipText(JSON.stringify(record)));
+    await writeAtomic(target, await gzipText(JSON.stringify(record)), { kind: "history", board: name });
   };
   // An entry's version: a delta rebuilt on its parent, a checkpoint, or a full record written
   // before history v2 (still valid as a checkpoint).
   const readEntry = async (board, entry, version, guard) => {
     const files = entryFiles(board.name, entry);
-    const delta = await readRecordFile(files.delta);
+    const delta = await timeIo("history.read", board.name, () => readRecordFile(files.delta));
     if (delta?.data?.xcld?.version === version) {
       const parent = await versionScene(board, delta.data.xcld.parent, { keep: false, guard: guard + 1 });
       if (parent) {
@@ -514,13 +532,13 @@ export function createVersionStore({
       }
       console.warn(`history of ${board.name}: the parent of entry ${entry} is not readable`);
     }
-    const checkpoint = await readRecordFile(files.checkpoint);
+    const checkpoint = await timeIo("history.read", board.name, () => readRecordFile(files.checkpoint));
     if (checkpoint?.data?.xcld?.version === version) {
       const { xcld: info, ...scene } = checkpoint.data;
       scene.files = await loadFiles(board.name, info.files);
       return { scene };
     }
-    return readRecord(board.name, files.legacy, version);
+    return readRecord(board.name, files.legacy, version, "history");
   };
 
   const writeState = async (board) => {
@@ -538,7 +556,7 @@ export function createVersionStore({
       // How many deltas lead from the nearest checkpoint to the entry holding `version`.
       depth: board.depth ?? null,
     };
-    await writeAtomic(statePath(board.name), `${JSON.stringify(state)}\n`, { sync: true });
+    await writeAtomic(statePath(board.name), `${JSON.stringify(state)}\n`, { sync: true, kind: "state", board: board.name });
   };
 
   const entryFiles = (name, entry) => {
@@ -551,7 +569,7 @@ export function createVersionStore({
       const index = new Map();
       let names = [];
       try {
-        names = await fs.readdir(historyDir(board.name));
+        names = await timeIo("history.list", board.name, () => fs.readdir(historyDir(board.name)));
       } catch (error) {
         if (error?.code !== "ENOENT") {
           throw error;
@@ -559,7 +577,7 @@ export function createVersionStore({
       }
       for (const file of names.filter((item) => item.endsWith(".meta.json")).sort()) {
         try {
-          const meta = await readJson(path.join(historyDir(board.name), file));
+          const meta = await timeIo("history.read", board.name, () => readJson(path.join(historyDir(board.name), file)));
           // Meta-only entries (`record: "none"`, losers of a write that changed nothing) have no
           // version of their own.
           if (meta?.version && meta.record !== "none") {
@@ -625,11 +643,11 @@ export function createVersionStore({
     const stamp = new Date(now());
     board.baseCopies.add(version);
     try {
-      await fs.utimes(file, stamp, stamp);
+      await timeIo("base.touch", board.name, () => fs.utimes(file, stamp, stamp));
       return;
     } catch {}
     await writeRecord(board.name, file, version, scene);
-    await fs.utimes(file, stamp, stamp).catch(() => {});
+    await timeIo("base.touch", board.name, () => fs.utimes(file, stamp, stamp)).catch(() => {});
   };
 
   // A base copy of a version that is now a closed history entry is redundant: history resolves
@@ -639,7 +657,7 @@ export function createVersionStore({
       board.redundantBases.delete(version);
       board.baseCopies.delete(version);
       if (version !== board.open?.version) {
-        await unlinkIfExists(basePath(board.name, version)).catch(() => {});
+        await timeIo("base.unlink", board.name, () => unlinkIfExists(basePath(board.name, version))).catch(() => {});
       }
     }
   };
@@ -651,7 +669,7 @@ export function createVersionStore({
     lastGc.set(board.name, now());
     let files = [];
     try {
-      files = await fs.readdir(basesDir(board.name));
+      files = await timeIo("base.list", board.name, () => fs.readdir(basesDir(board.name)));
     } catch {
       return;
     }
@@ -662,9 +680,9 @@ export function createVersionStore({
       }
       try {
         const entry = (await historyIndex(board)).get(version);
-        const stat = await fs.stat(basePath(board.name, version));
+        const stat = await timeIo("base.stat", board.name, () => fs.stat(basePath(board.name, version)));
         if ((entry && entry !== board.open?.entry) || now() - stat.mtimeMs > baseTtlMs) {
-          await unlinkIfExists(basePath(board.name, version));
+          await timeIo("base.unlink", board.name, () => unlinkIfExists(basePath(board.name, version)));
           board.baseCopies.delete(version);
         }
       } catch {}
@@ -697,7 +715,7 @@ export function createVersionStore({
         if (parsed.xcld || !parsed.files || !Object.keys(parsed.files).length || contentHash(text) !== version) {
           continue;
         }
-        await writeRecord(board.name, file, version, parsed);
+        await writeRecord(board.name, file, version, parsed, null, "migrate");
         await fs.utimes(file, stat.atime, stat.mtime).catch(() => {});
       } catch (error) {
         console.warn(`migrating ${path.relative(root, file)} failed: ${error.message}`);
@@ -761,7 +779,7 @@ export function createVersionStore({
     if (!board.open) {
       return false;
     }
-    await writeAtomic(entryFiles(board.name, board.open.entry).meta, `${JSON.stringify(entryMetaFile(board.open, reason), null, 2)}\n`);
+    await writeAtomic(entryFiles(board.name, board.open.entry).meta, `${JSON.stringify(entryMetaFile(board.open, reason), null, 2)}\n`, { kind: "history", board: board.name });
     if (board.baseCopies.has(board.open.version)) {
       board.redundantBases.add(board.open.version);
     }
@@ -783,7 +801,7 @@ export function createVersionStore({
     if (board) {
       return board;
     }
-    const state = await readJson(statePath(name)).catch(() => null);
+    const state = await timeIo("state.read", name, () => readJson(statePath(name))).catch(() => null);
     board = {
       name,
       version: state?.version ?? null,
@@ -811,12 +829,12 @@ export function createVersionStore({
     // gone the commit finished, and a different master is an external write.
     if (board.version && board.last?.branchId) {
       const disk = await readMasterFile(name);
-      const pending = await fs.stat(branchFile({ board: name, author: board.last.author, id: board.last.branchId })).then(() => true, () => false);
+      const pending = await timeIo("journal.stat", name, () => fs.stat(branchFile({ board: name, author: board.last.author, id: board.last.branchId }))).then(() => true, () => false);
       if (disk.hash !== board.version && pending) {
         const found = await versionScene(board, board.version);
         const text = found ? found.text ?? canonicalText(found.scene) : null;
         if (text !== null && contentHash(text) === board.version) {
-          await writeAtomic(masterPath(name), text);
+          await writeAtomic(masterPath(name), text, { kind: "master", board: name });
           await onMasterWritten(name);
         }
       }
@@ -840,7 +858,7 @@ export function createVersionStore({
   const archiveBranch = async (branch) => {
     await step("before-archive", { branch });
     try {
-      await unlinkIfExists(branchFile(branch));
+      await timeIo("archive.unlink", branch.board, () => unlinkIfExists(branchFile(branch)));
     } finally {
       releaseRef(branch.board, branch.base);
       countPending(branch.board, -1);
@@ -907,7 +925,7 @@ export function createVersionStore({
         if (input.files !== undefined && input.files !== null) {
           branch.fileRefs = await storeFiles(name, input.files);
         }
-        await writeAtomic(branchFile(branch), `${JSON.stringify(branch)}\n`, { sync: true });
+        await writeAtomic(branchFile(branch), `${JSON.stringify(branch)}\n`, { sync: true, kind: "journal", board: name });
       });
     } catch (error) {
       releaseRef(name, base);
@@ -967,7 +985,7 @@ export function createVersionStore({
     }
     let writtenAt = now();
     try {
-      writtenAt = (await fs.stat(masterPath(board.name))).mtimeMs;
+      writtenAt = (await timeIo("master.stat", board.name, () => fs.stat(masterPath(board.name)))).mtimeMs;
     } catch {}
     const ingested = await ingest(board.name, {
       author,
@@ -1038,7 +1056,7 @@ export function createVersionStore({
       record: "none",
       depth: null,
     };
-    await writeAtomic(entryFiles(board.name, entry).meta, `${JSON.stringify(meta, null, 2)}\n`);
+    await writeAtomic(entryFiles(board.name, entry).meta, `${JSON.stringify(meta, null, 2)}\n`, { kind: "history", board: board.name });
     board.lastEntryAt = stamp;
     board.last = { branchId: branch.id, author: branch.author, entry, previous: board.version, writtenAt: branch.writtenAt, committedAt };
   };
@@ -1231,11 +1249,11 @@ export function createVersionStore({
       // An open entry that changes record kind (a pre-v2 entry, an unreadable parent) drops its
       // other file once the new one is written.
       writes.push(coalesce && board.open.record !== record
-        ? writeRecordFile.then(() => Promise.all([files.delta, files.checkpoint, files.legacy].filter((file) => file !== target).map(unlinkIfExists)))
+        ? writeRecordFile.then(() => Promise.all([files.delta, files.checkpoint, files.legacy].filter((file) => file !== target).map((file) => timeIo("history.unlink", board.name, () => unlinkIfExists(file)))))
         : writeRecordFile);
       // A human entry stays open: its meta lives in the state until it closes.
       if (!human) {
-        writes.push(writeAtomic(files.meta, `${JSON.stringify(entryMetaFile(open, authorInfo.kind === "init" ? "init" : "agent-write"), null, 2)}\n`));
+        writes.push(writeAtomic(files.meta, `${JSON.stringify(entryMetaFile(open, authorInfo.kind === "init" ? "init" : "agent-write"), null, 2)}\n`, { kind: "history", board: board.name }));
       }
       await Promise.all(writes);
     });
@@ -1284,7 +1302,7 @@ export function createVersionStore({
           await adoptRaced(board, disk, previous);
         }
         if (writeMaster && disk.hash !== version) {
-          const written = await writeAtomic(masterPath(board.name), text ?? canonicalText(sceneOut), { stat: true });
+          const written = await writeAtomic(masterPath(board.name), text ?? canonicalText(sceneOut), { stat: true, kind: "master", board: board.name });
           board.masterSig = `${written.ino}:${written.mtimeMs}:${written.size}`;
           await onMasterWritten(board.name, written);
         } else if (disk.hash === version) {
@@ -1653,7 +1671,7 @@ export function createVersionStore({
       return null;
     }
     const files = entryFiles(board.name, entry);
-    const meta = await readJson(files.meta);
+    const meta = await timeIo("history.read", board.name, () => readJson(files.meta));
     if (!meta || meta.version !== board.version) {
       return null;
     }
@@ -1666,9 +1684,9 @@ export function createVersionStore({
       await writeCheckpoint(board.name, files.checkpoint, board.version, found.scene, found.text);
     }
     const pinnedAt = now();
-    await writeAtomic(files.meta, `${JSON.stringify({ ...meta, record: wasDelta ? "checkpoint" : meta.record ?? "checkpoint", depth: 0, pinned: label, pinnedAt }, null, 2)}\n`);
+    await writeAtomic(files.meta, `${JSON.stringify({ ...meta, record: wasDelta ? "checkpoint" : meta.record ?? "checkpoint", depth: 0, pinned: label, pinnedAt }, null, 2)}\n`, { kind: "history", board: board.name });
     if (wasDelta) {
-      await unlinkIfExists(files.delta);
+      await timeIo("history.unlink", board.name, () => unlinkIfExists(files.delta));
     }
     board.depth = 0;
     return { entry, label, pinnedAt };
@@ -1699,11 +1717,13 @@ export function createVersionStore({
   // Every named source's last applied Mermaid (`main` included), the same way.
   const readMermaidSources = async (name) => (boards.has(name) ? boards.get(name).mermaidSources ?? {} : (await readState(name)).mermaidSources ?? {});
 
-  // For /api/status: queued writes per board and commits waiting on a retry.
+  // For /api/status: queued writes per board, commits waiting on a retry, and slow file-system
+  // operations since start.
   const status = () => ({
     ok: failures.size === 0,
     pending: Object.fromEntries(pendingCount),
     failing: Object.fromEntries(failures),
+    slowIo: slowIo.snapshot(),
   });
 
   const timings = ({ clear = false } = {}) => {
@@ -1739,5 +1759,5 @@ export function createVersionStore({
     }
   };
 
-  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, whenIdle, close, parseAuthorKey, stateDir: xcld };
+  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, slowIo, whenIdle, close, parseAuthorKey, stateDir: xcld };
 }

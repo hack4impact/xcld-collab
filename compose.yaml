@@ -18,6 +18,7 @@
 #   XCLD_DESIGN_RULES=...           # optional default rules CSV path; folder design-rules.csv overrides it
 #   XCLD_AUTHOR_NAME=Your Name      # the canvas's default author; the build seeds it from git config user.name
 #   XCLD_TIMING=1                   # record per-stage commit timings at GET /api/timings (profiling)
+#   XCLD_SLOW_IO_MS=1000            # log and report (GET /api/status slowIo) file operations this slow
 #   XCLD_CACHE_DIR=~/.excalidraw    # host folder for `xcld history export` (<cache>/exports/<board>/)
 #                                   # and, with XCLD_HISTORY=cache, version history (<cache>/history/).
 #                                   # On Linux it must be writable by XCLD_UID (the build creates it as you).
@@ -64,6 +65,8 @@ services:
       XCLD_AUTHOR_NAME: "${XCLD_AUTHOR_NAME:-}"
       # 1 = record per-stage commit timings (GET /api/timings); off by default.
       XCLD_TIMING: "${XCLD_TIMING:-}"
+      # A commit-pipeline file operation this slow (ms) is logged and listed in /api/status; default 1000.
+      XCLD_SLOW_IO_MS: "${XCLD_SLOW_IO_MS:-}"
     restart: unless-stopped
 
   # EXPERIMENTAL, opt-in: the upstream Excalidraw MCP Apps chat widget. Only starts with

@@ -98,7 +98,8 @@ you write. Parallel Mermaid writes are merged too.
    human's version (op `keep-canvas`) until your Mermaid changes that shape; then yours wins
    and the human's version is reported in `overwritten` (tell the user). The result lists `ops` (what your
    Mermaid changed), `applied`, `overwritten` and the new `version`, as for `write_board`.
-   `status: "queued"` means the merge took longer than 5 s; the write is safe.
+   `status: "queued"` means the merge took longer than 5 s; the write is safe. "Disk is slow right
+   now (journal fsync 4.2 s)" means a busy disk on the user's machine; tell the user, don't retry.
 5. A syntax error is refused with its line; nothing is written. Non-flowchart diagrams, and
    boards with no shapes of your source yet, answer `needs-tab`: open `board_url`, or for a
    flowchart wait for the server's layout (`mermaid_status` with the `pendingId`).
@@ -112,7 +113,8 @@ you write. Parallel Mermaid writes are merged too.
    out are deleted; elements others added after your `version` are kept.
 4. Read the result. `overwritten` lists units you and someone else both changed: the later
    write won. If it says someone else's edit won, tell the user rather than redoing it.
-   `queued` means the merge took longer than 5 s; the write is safe. Read the board again
+   `queued` means the merge took longer than 5 s; the write is safe (if it says the disk is slow,
+   tell the user; don't write the same change again). Read the board again
    before writing on top of it. The user's canvas shows each of your writes on a banner under
    your MCP client name, with anything overwritten either way.
 5. For your next write, use the returned `version` as `base`. If a write is refused with an

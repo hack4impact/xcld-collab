@@ -10,6 +10,10 @@
 #   mermaid-latest  manual dispatch on main with `mermaid_latest` only: the latest Mermaid
 #                11.x in place of the locked one, then the Mermaid checks. Mermaid isn't
 #                pinned; this catches drift before a lockfile update does.
+#   load-gate    manual dispatch on main with `load_gate` only: the versions load gate of
+#                record (p95 <= 450 ms at 50 and 1,500 elements, plain and --mermaid) on a
+#                clean Linux runner. About 16 runner minutes; never on push or pull requests.
+#                Run it with: gh workflow run ci.yml --ref main -f load_gate=true
 name: CI
 
 on:
@@ -21,11 +25,16 @@ on:
         description: "Only run the Mermaid checks against the latest Mermaid 11.x"
         type: boolean
         default: false
+      load_gate:
+        description: "Only run the versions load gate (the gate of record, about 16 minutes)"
+        type: boolean
+        default: false
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The load gate gets its own group, so a push to main doesn't cancel it halfway.
+  group: ci-${{ github.ref }}${{ inputs.load_gate && '-load-gate' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -95,7 +104,7 @@ jobs:
   build-test:
     name: Build, test, smoke
     needs: hygiene
-    if: needs.hygiene.outputs.build == 'true' && !inputs.mermaid_latest
+    if: needs.hygiene.outputs.build == 'true' && !inputs.mermaid_latest && !inputs.load_gate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -190,3 +199,119 @@ jobs:
 
       - name: Mermaid checks
         run: node --test tests/mermaid-ci.test.mjs tests/mermaid-parse.test.mjs tests/mermaid-apply.test.mjs
+
+  # Manual, main only: the versions load gate of record (docs/DESIGN.md#performance). Builds the
+  # image, starts it with XCLD_TIMING=1 on scratch boards and history folders, and runs
+  # tests/versions-load.mjs plain and --mermaid at 50 and 1,500 elements (2 min and at least 300
+  # writes each) with --gate 450. Estimate: build about 5 min, the four runs about 9-10 min, setup
+  # and teardown about 1 min: about 16 runner minutes.
+  load-gate:
+    name: Load gate (gate of record)
+    needs: hygiene
+    if: github.event_name == 'workflow_dispatch' && inputs.load_gate && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      XCLD_TIMING: "1"
+      XCLD_PORT: "3100"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: build.sh (runtime image)
+        run: ./build.sh
+
+      # Scratch boards and history (XCLD_HISTORY=cache, the Linux default, so history is on the
+      # runner's disk), created as the runner user that build.sh wrote to .env as XCLD_UID.
+      - name: Start the workspace (XCLD_TIMING=1, scratch folders)
+        run: |
+          mkdir -p "$RUNNER_TEMP/boards" "$RUNNER_TEMP/cache/history" "$RUNNER_TEMP/cache/exports" load-gate
+          {
+            echo "XCLD_BOARDS=$RUNNER_TEMP/boards"
+            echo "XCLD_CACHE_DIR=$RUNNER_TEMP/cache"
+            echo "XCLD_HISTORY=cache"
+          } >> "$GITHUB_ENV"
+          export XCLD_BOARDS="$RUNNER_TEMP/boards" XCLD_CACHE_DIR="$RUNNER_TEMP/cache" XCLD_HISTORY=cache
+          docker compose up -d --wait --wait-timeout 120
+          curl -fsS --retry 5 --retry-connrefused --retry-delay 2 http://127.0.0.1:3100/api/config
+          echo
+          nproc; free -m; df -h "$RUNNER_TEMP"
+
+      # Both scenarios always run; the job fails afterwards if either missed the gate.
+      - name: Load gate, plain
+        id: plain
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node tests/versions-load.mjs --url http://127.0.0.1:3100 --sizes 50,1500 --gate 450 \
+            --json load-gate/plain.json 2>&1 | tee load-gate/plain.txt
+
+      - name: Load gate, --mermaid
+        id: mermaid
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node tests/versions-load.mjs --url http://127.0.0.1:3100 --sizes 50,1500 --gate 450 --mermaid \
+            --json load-gate/mermaid.json 2>&1 | tee load-gate/mermaid.txt
+
+      - name: Slow-I/O summary and job summary
+        if: always()
+        env:
+          PLAIN: ${{ steps.plain.outcome }}
+          MERMAID: ${{ steps.mermaid.outcome }}
+        run: |
+          curl -fsS http://127.0.0.1:3100/api/status > load-gate/status.json || echo '{}' > load-gate/status.json
+          echo "Slow file-system operations since the server started (GET /api/status slowIo):"
+          jq '.slowIo | {thresholdMs, count, maxMs, byStage, inFlight}' load-gate/status.json || true
+          {
+            echo "## Versions load gate (gate of record)"
+            echo
+            echo "Plain: $PLAIN; --mermaid: $MERMAID"
+            for mode in plain mermaid; do
+              [ -f "load-gate/$mode.txt" ] || continue
+              echo
+              echo "### $mode"
+              echo
+              echo '```text'
+              cat "load-gate/$mode.txt"
+              echo '```'
+            done
+            echo
+            echo "### Slow I/O since start"
+            echo
+            echo '```json'
+            jq '.slowIo' load-gate/status.json || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compose logs
+        if: always()
+        run: docker compose logs --no-color --tail 400 > load-gate/compose.log 2>&1 || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: load-gate-${{ github.run_id }}
+          path: load-gate/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Compose down
+        if: always()
+        run: docker compose down -v || true
+
+      - name: Fail when the gate failed
+        if: steps.plain.outcome != 'success' || steps.mermaid.outcome != 'success'
+        env:
+          PLAIN: ${{ steps.plain.outcome }}
+          MERMAID: ${{ steps.mermaid.outcome }}
+        run: |
+          echo "::error::Load gate failed (plain: $PLAIN, --mermaid: $MERMAID); see the job summary and the load-gate artifact."
+          exit 1

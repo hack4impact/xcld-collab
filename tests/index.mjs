@@ -21,6 +21,7 @@ import "./mermaid-place.test.mjs";
 import "./mermaid-write.test.mjs";
 import "./rules-vocab.test.mjs";
 import "./rules.test.mjs";
+import "./slow-io.test.mjs";
 import "./snapshot.test.mjs";
 import "./stale-save.test.mjs";
 import "./tab-identity.test.mjs";

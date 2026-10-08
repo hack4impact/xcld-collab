@@ -872,8 +872,14 @@ wants it near 250 ms for now and eventually 100 ms.
 
 Reproduce it with `XCLD_TIMING=1 docker compose up -d --wait`, then
 `node tests/versions-load.mjs --url http://127.0.0.1:3100`. The script runs 2 minutes and at
-least 300 writes per size, prints p50/p95/p99 per writer and per-stage timings, and exits 1
-above the gate. It is not part of `node --test tests`.
+least 300 writes per size, prints p50/p95/p99 per writer, per-stage timings and the slow
+file-system operations of each size (from `GET /api/status`), and exits 1 above the gate.
+`--json <file>` writes all of it as JSON. It is not part of `node --test tests`.
+
+**The gate of record is a clean Linux CI run** (lead, 2026-10-07): the dispatch-only `load-gate`
+job in `.github/workflows/ci.yml`, plain and `--mermaid` at both sizes
+([disk stalls](#disk-stalls-and-the-gate-of-record)). Local Docker Desktop must pass too, on a
+quiet machine, for dev testing.
 
 Measured on a Windows 11 host with Docker Desktop (WSL 2): 300 writes per size, 2 min each,
 p50 / p95 / p99 in ms.
@@ -997,6 +1003,106 @@ in-process benchmark at 1,500 elements), and with 51 writes the p95 is the third
 The gate counts all writes. That day several other runs of both modes hit 39–77 s pauses in
 the file-system stages (journal, state, master; merge and apply stayed normal), also in the
 plain gate scenario where none of the new code runs; those runs failed and were repeated.
+
+### Disk stalls and the gate of record
+
+**Experiment X1** (lead, 2026-10-07, the Windows 11 host, Docker Desktop, volume storage): a
+neighbour container ran `dd ... conv=fsync; sync` in a loop on another Docker volume, which is
+the same Docker Desktop VM disk.
+
+| Condition | fsync 4 KB p99 / max | Gate p95, 50 / 1,500 elements | Errors |
+|---|---|---|---|
+| Quiet | 30 / 45 ms | 94 / 212 ms, pass | 0 |
+| `dd`+`sync` neighbour on another volume (same Docker Desktop disk) | 1,009 / 4,389 ms | 2,653 / 3,816 ms, **fail** | 0 |
+| Quiet again | 33 / 70 ms | – | – |
+
+Nearly all the extra time was in the journal stage (its fsync); merge and apply stayed normal,
+and the quiet machine recovered at once.
+
+**Conclusion (lead, load-stall review):**
+- The stalls come from other workloads on Docker Desktop's shared disk (other containers, image
+  builds), not from the commit pipeline.
+- Nothing is lost. A write is in the journal before anything else; if its commit takes longer
+  than 5 s it answers `queued` and lands later, which is acceptable during a stall.
+- The journal fsync stays; durability is not traded for latency.
+- **The gate of record is a clean Linux CI run.** Local Docker Desktop must also pass, on a
+  quiet machine (no image builds or disk-heavy containers alongside), for dev testing.
+
+**Slow-I/O diagnostics** (always on, `app/server/slow-io.mjs`):
+- Every file-system operation of the commit pipeline is timed, as stage `<kind>.<op>`.
+  - Kinds: `journal`, `files`, `history`, `state`, `master`, `base`, `archive` (and `migrate`).
+  - Operations: `mkdir`, `open`, `write`, `fsync`, `stat`, `close`, `rename`, `unlink`, `read`,
+    `list`, `touch`.
+- An operation that takes `XCLD_SLOW_IO_MS` (default 1000) or longer is logged once, as one line:
+  `slow I/O: journal.fsync took 4213 ms (board sandbox/x, 2026-10-07T20:41:03.123Z, threshold
+  1000 ms)`.
+- It is also kept for `GET /api/status` under `slowIo`: count, max and per-stage counts and max
+  since start, the last 50, and operations running that long right now.
+- A write answered `queued` names the slowest such operation that overlapped its wait (its own
+  board's first, else any board's, including one still running), e.g. `disk is slow right now
+  (journal fsync 4.2 s); your write is safe and queued`. MCP and the CLI repeat it.
+- Cost: about 0.32 µs per operation (two clock reads and a Set add and delete; 1 M calls in a
+  micro-benchmark), and a commit does 22–26 operations: about 0.01 ms per write.
+
+**Measured with the diagnostics** (2026-10-08, the same Windows 11 host, volume storage, 2 min
+and at least 300 writes per size, p50 / p95 / p99 ms of all writes). Before is image `4d132ce`
+(#33), after is `b344e8f` (this change):
+
+| Run | 50 elements | 1,500 elements | Gate |
+|---|---|---|---|
+| Before, plain | 56.9 / 76.4 / 86.7 | 119.0 / 224.6 / 298.6 | pass |
+| After, plain | 58.8 / 91.6 / 4795.6 | 120.3 / 187.8 / 227.2 | pass |
+| After, `--mermaid` | 61.1 / 105.6 / 153.8 | 142.3 / 288.0 / 371.8 | pass |
+| After, `--mermaid`, Mermaid writes alone | 74.9 / 133.8 / 146.7 | 246.1 / 375.6 / 436.6 | (counted above) |
+
+- **Overhead:** none measurable. The p50s moved by 1–2 ms and the p95s both ways, within
+  run-to-run noise.
+- **Stalls on a "quiet" machine:** the diagnostics caught them.
+  - In the plain run after: one `master.write` of 7.0 s at 50 elements; 2 writes answered
+    `queued`, both naming it.
+  - The first before run: p95 1,464 ms at 1,500 elements, with no diagnostics to say why.
+  - Two of three `--mermaid` runs failed:
+    - one at 1,500 elements with 55 slow operations (`journal.fsync` ×30 up to 10.3 s,
+      `master.write` up to 40.7 s);
+    - one at 50 with 13 (`journal.fsync` up to 25.5 s, `master.write` up to 35.0 s).
+  - Those runs had no neighbour container. `master.write` (the boards bind mount) and
+    `journal.fsync` (the volume) stalled together, which points at the whole VM disk pausing
+    (believe; not traced further), like the 39–77 s pauses of slice 6a. Writes waited and
+    answered `queued`, with 0 errors, and the third run passed.
+
+**Reproducing a stall:** `node tests/versions-load.mjs --url … --noise` starts the X1
+neighbour, an `alpine:3.20` container with its own volume. It runs `dd if=/dev/zero bs=1M
+count=<--noise-mb, default 1024> conv=fsync` then `sync`, in a loop. The container and the
+volume are removed at the end, also on Ctrl+C (verified with SIGINT: exit 130, nothing left).
+Plain, 50 elements, 60 s, p50 / p95 / p99 ms:
+
+| Neighbour | All writes | Journal stage p50 / p95 (agents) | Slow I/O (≥ 1000 ms) | Errors |
+|---|---|---|---|---|
+| `--noise-mb 256` | 391.7 / 807.4 / 843.8, fail | 239 / 692 | none | 0 |
+| `--noise` (1024 MB) | 1615.8 / 2924.4 / 3863.1, fail | 1481 / 2736 | 52 × `journal.fsync`, max 3,766 ms | 0 |
+
+**The gate of record, on Linux CI.** The `load-gate` job in `.github/workflows/ci.yml` runs
+only on a manual dispatch on `main`. Under the Hack4Impact CI-cost rule it has no push or pull
+request trigger. Start it with:
+
+```sh
+gh workflow run ci.yml --ref main -f load_gate=true
+gh run watch "$(gh run list --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+- **Setup:** `build.sh` builds the image. Compose starts it with `XCLD_TIMING=1` on scratch
+  boards and history folders (`XCLD_HISTORY=cache`, the runner's own disk).
+- **Runs:** the plain and `--mermaid` scenarios at 50 and 1,500 elements, with `--gate 450`.
+- **Output:**
+  - The job summary has the text tables and `slowIo` since start.
+  - The artifact `load-gate-<run id>` has `plain.json`, `plain.txt`, `mermaid.json`,
+    `mermaid.txt`, `status.json` and `compose.log`.
+  - The job fails when either scenario misses the gate.
+- **Cost estimate:** about 16 runner minutes per run.
+  - The image build took 4 min 42 s in the last `build-test` run.
+  - The four sizes take about 9–10 min (2 min each plus seeding, up to the 300-write minimum).
+  - Setup and teardown take about 1 min.
+  - Timeout: 40 min.
 
 ## Annotation convention — free-form by default, local design rules
 

@@ -115,7 +115,7 @@ test("GET /api/config exposes the default human name; /api/status reports the pi
       assert.equal(config.authorName, "Ada Lovelace");
       assert.equal(config.writeWaitMs, 5000);
       const status = await (await fetch(`${base}/api/status`)).json();
-      assert.deepEqual(status, { ok: true, pending: {}, failing: {} });
+      assert.deepEqual(status, { ok: true, pending: {}, failing: {}, slowIo: { thresholdMs: 1000, count: 0, maxMs: 0, byStage: {}, recent: [], inFlight: [] } });
     });
   } finally {
     if (previous === undefined) delete process.env.XCLD_AUTHOR_NAME;

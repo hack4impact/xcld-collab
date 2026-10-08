@@ -8,6 +8,7 @@ import { effectiveExportMode } from "../../tools/rules.mjs";
 import { mermaidSourceHash } from "../../tools/mermaid-hash.mjs";
 import { stateDirFromEnv } from "../../tools/storage.mjs";
 import { createMermaidWriter } from "./mermaid-write.mjs";
+import { formatDuration, slowIoMessage } from "./slow-io.mjs";
 import { contentHash, createVersionStore, parseAuthorKey, parseEntityTags, readSettledJsonText, staleSaveCheck } from "./versions.mjs";
 
 export { contentHash, staleSaveCheck };
@@ -507,6 +508,8 @@ export function createBoardApi({
   // committed by then answers 202 `queued`; it is committed later and never dropped.
   const respondToBranchWrite = async (res, name, input, receiveMs, { stages, extra = {}, after } = {}) => {
     const TIMEOUT = Symbol("timeout");
+    // Slow file-system operations from here on explain a `queued` answer.
+    const slowMark = versions.slowIo.mark();
     let branchId = null;
     let markIngested;
     const ingested = new Promise((resolve) => {
@@ -547,7 +550,15 @@ export function createBoardApi({
       clearTimeout(timer);
     }
     if (result === TIMEOUT || result.status === "queued") {
-      sendJson(res, 202, { status: "queued", branchId, base: input.base ?? null, ...extra });
+      const slow = versions.slowIo.worstSince(slowMark, name);
+      sendJson(res, 202, {
+        status: "queued",
+        branchId,
+        base: input.base ?? null,
+        message: slow ? slowIoMessage(slow) : `the commit is taking longer than ${formatDuration(writeWaitMs)}; your write is safe and queued`,
+        ...(slow ? { slowIo: slow } : {}),
+        ...extra,
+      });
       return;
     }
     if (result.status === "invalid") {

@@ -534,7 +534,7 @@ levels.
   | Status | Body | Meaning |
   |---|---|---|
   | 200 | `{ status: "merged", version, fastForward, applied, overwritten, unbound, branchId }` | Committed. Use `version` as your next `base` |
-  | 202 | `{ status: "queued", branchId, base }` | Safely in the journal, committed later; never dropped |
+  | 202 | `{ status: "queued", branchId, base, message, slowIo? }` | Safely in the journal, committed later; never dropped. `message` says why; during a disk stall `slowIo` (`{ stage, board, ms, inFlight }`) names the slow file operation, e.g. "disk is slow right now (journal fsync 4.2 s); your write is safe and queued" |
   | 400 | `{ error }`, e.g. `base-required`, `invalid-author`, `invalid-elements` | Not written |
   | 409 | `{ error: "unknown-base", base, currentVersion }` | The server doesn't know `base` (expired, or never read through it). Read again |
 
@@ -593,9 +593,14 @@ levels.
 
 - `GET /api/config` returns `{ authorName, writeWaitMs, timing }` (`authorName` is
   `XCLD_AUTHOR_NAME`, the canvas's default author name).
-- `GET /api/status` returns `{ ok, pending, failing }`: writes waiting in the journal per
-  board, and commits waiting on a retry after a disk error (retried with backoff 0.5, 1, 2, 4,
-  then every 10 s; the board's other writes wait, other boards don't).
+- `GET /api/status` returns `{ ok, pending, failing, slowIo }`: writes waiting in the journal per
+  board, commits waiting on a retry after a disk error (retried with backoff 0.5, 1, 2, 4,
+  then every 10 s; the board's other writes wait, other boards don't), and slow file
+  operations. `slowIo` is `{ thresholdMs, count, maxMs, byStage, recent, inFlight }`: every file
+  operation of the commit pipeline that took `XCLD_SLOW_IO_MS` (default 1000) or longer since the
+  server started, by stage (`<kind>.<op>`, e.g. `journal.fsync`, `state.rename`, `master.write`:
+  `{ count, maxMs }`), the last 50 as `{ stage, board, ms, at }`, and those running that long now.
+  Each one is also logged once (`docker compose logs canvas`).
 - `GET /api/timings[?clear=1]` (only with `XCLD_TIMING=1`) returns per-stage timings of recent
   commits.
 - `POST /api/mermaid/<path>` (`Content-Type: application/json`) writes Mermaid:
@@ -611,7 +616,7 @@ levels.
   |---|---|---|
   | 200 | `{ status: "merged", version, fastForward, applied, overwritten, unbound, branchId, ops, hash, source, unchanged?, deletesSkipped?, hint? }` | Committed. `ops` lists what the Mermaid changed on the board (`keep-canvas`: a human's edit kept because this Mermaid doesn't change that node). `unchanged: true`: the board already matched, only the Mermaid was recorded. `deletesSkipped: true`: the server doesn't know which Mermaid the board came from, so nothing was deleted. `hint.suggestSource`: the write deleted most of the source; a new source name would have kept both diagrams. `overwritten` includes the canvas edits this write replaced |
   | 200 | `{ status: "merged", noop: true, unchanged: true, version, hash, source }` | This source already has exactly this Mermaid; nothing was written |
-  | 202 | `{ status: "queued", branchId, base, ops, hash }` | Safely in the journal, committed later; never dropped |
+  | 202 | `{ status: "queued", branchId, base, message, slowIo?, ops, hash }` | Safely in the journal, committed later; never dropped. `message` and `slowIo` as for `POST /api/branch` |
   | 202 | `{ status: "needs-tab", reason, hash, source, pendingId, pending, retryScheduleMs }` | A new board, a board without shapes of this source, or a non-flowchart: a pending write. An open tab lays it out and it joins the board as a group (only an empty board keeps the converter's layout as is); otherwise the server checks again at 5 s, 15 s and 45 s and lays a flowchart out itself in a grid at 2 min (`pending.layoutAt`). The author and write time stay the writer's |
   | 400 | `{ error: "mermaid-syntax-error", message, line, column }`, or `mermaid-required`, `invalid-author`, `invalid-source`, `invalid-position` | Not written |
   | 409 | `{ error: "unknown-base", base, currentVersion }` | Read again |
@@ -854,6 +859,7 @@ points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.e
 | The top bar says "Board changed elsewhere; your edits were re-applied" | The server no longer knew the version your tab started from (409, e.g. after a day without reads), so the tab merged your unsaved edits onto the board itself and saved | Nothing to do. Check the shapes you both touched; the banner lists any that were overwritten |
 | The banner says an edit of yours was overwritten | You and someone else changed the same shape (or its label) and theirs was later | Theirs is on the board; yours is in version history (`xcld history export <board>`, the entry's `.meta.json`). Redo it if it should win. See the [user guide](user-guide.md#editing-at-the-same-time-as-agents) |
 | "Save failed: the board kept changing elsewhere (3 retries)" | Something rewrites the board faster than the tab can merge | Stop the other writer, then make any edit to retry; your edits are still in the tab |
+| Writes take seconds; an agent gets `Queued: disk is slow right now (journal fsync 4.2 s); your write is safe and queued`; its edits reach the canvas late | A **disk stall**: something else writes heavily to the same disk, such as other containers, image builds (`build.ps1`, `docker build`) or a large copy. On Docker Desktop every container and volume shares one VM disk, so a busy neighbour stalls the server's fsyncs for seconds | Nothing is lost: each write is in the journal and lands when the disk catches up. Check `curl -s http://127.0.0.1:3100/api/status`: `slowIo.count`, `slowIo.byStage` (which operation, e.g. `journal.fsync`) and `slowIo.recent` (when); the log has one `slow I/O:` line per slow operation (`docker compose logs canvas`). Pause the heavy job, or don't build images while you work in the canvas. Slow on a quiet machine too: check the host disk (free space, antivirus scanning Docker's disk image) |
 | A write gets 409 `unknown-base` | Its base version isn't known to the server: it expired (24 h after the last read), it was never read through the server, or the board was deleted | Read the board again (`GET /api/board`, MCP `read_board`, `xcld read`) and resend with that version as base |
 | The browser doesn't show the agent's edit | The tab missed the update | Wait a second (the server checks every `XCLD_WATCH_POLL_MS`), then reload the page. The top bar shows `SSE disconnected; retrying...` while reconnecting |
 | I deleted a board but it came back | An open tab used to autosave its in-memory copy after the file was removed | The tab now stops autosaving and shows `This board was deleted on disk.` Choose **Restore from this tab** to write the current canvas back, or **Close** to return to the board browser |
