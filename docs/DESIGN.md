@@ -92,7 +92,13 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
       merge since it was dismissed into one line, "Merged from <who>: n added, n changed · n
       overwritten edits (k of yours)", plus details per unit with the winner and loser. It
       reads the `merged` SSE events of other authors (including writes that lost every change:
-      `applied` empty, master unchanged, no reload) and this tab's own save answers.
+      `applied` empty, master unchanged, no reload) and this tab's own save answers. Names come
+      from `tools/author-label.mjs`, worked out across every item on the banner: a person is
+      their display name ("you", "<name> (another tab)"), an agent "<client> (agent)", and the
+      short session or tab id is added only when it tells two authors with one name apart
+      (`copilot-cli#8cb0a4 (agent) overwrote copilot-cli#5d1209 (agent)'s edit`; lead's real
+      check, 2026-10-08). `diff --since` does the same across the board's history authors;
+      `xcld watch` always shows agents' session ids (a stream can't disambiguate earlier lines).
     - **Ctrl+S / Cmd+S** (a capture-phase listener, so Excalidraw's "Save to…" download never
       opens) saves now, then `POST /api/board/<path>/checkpoint` closes the tab's open history
       entry; "Saved checkpoint", or "No changes since the last checkpoint".
@@ -415,7 +421,9 @@ I/O, no clock, the same inputs give the same output, and it runs in Node and in 
 | Rule | Behavior |
 |---|---|
 | Identity | The Excalidraw element id. Mermaid node ids survive conversion, so they match. |
-| Changed | Compared by content against the base, ignoring `version`, `versionNonce`, `updated` and arrow back-references in `boundElements`. Agents that don't bump versions are fine. A tombstone (`isDeleted`) and an absent element both mean deleted. |
+| Changed | Compared by **semantic content** against the base. Not a change: Excalidraw's bookkeeping (`version`, `versionNonce`, `updated`, `seed`, `created`, `index`), xcld's origin stamp `customData.xcldOrigin` (the server writes it), and arrow back-references in `boundElements`. A field set to `null` equals an absent one. User `customData` keys count; `customData.xcldMermaidHash` counts only when both copies carry one (a writer that dropped it didn't change it). Geometry, text, style, bindings, points, `groupIds`, links and deletes all count. Agents that don't bump versions, or that re-send the board they read with bookkeeping dropped, nulled or changed (the lead's real check, 2026-10-08: 20 untouched units counted as edits), are fine. A tombstone (`isDeleted`) and an absent element both mean deleted. |
+| Backfill | Bookkeeping a writer omitted is filled back in from master's copy (or the base's): `version`, `versionNonce`, `updated` and `index` when missing, `seed` and `created` always (they never change for an element id), and `xcldOrigin`/`xcldMermaidHash` when missing. Missing is not changed, and master stays complete Excalidraw. A fast-forward keeps the writer's own elements (a tab save keeps its exact text) except that an element it re-sent unchanged goes back to master's copy and one that lost bookkeeping takes the filled-in copy (`fastForwardElements`); a direct file write that needed that is rewritten. |
+| Attribution | Only units with a semantic change take the writer's `masterMeta` stamp and, on a non-Mermaid write, its canvas origin (`stampCanvasEdits` restores the base's stamps on an element that only lost or redid them). Untouched units keep their previous attribution. |
 | Units | A container and its bound text are one unit (an arrow and its label too), found through `containerId` on any side. Groups (`groupIds`) and frames are **not** units: grouped elements merge one by one, so editing two shapes of one subgraph on two sides doesn't conflict. |
 | One side changed a unit | That side's version is taken. Master still equal to the base is a fast-forward. |
 | Both sides changed a unit | **The later write takes the whole unit.** Master's time for a unit is the latest `writtenAt` in `masterMeta` of its elements (the write that last set each one); the branch's is `branchWrittenAt`. A stale queued write therefore loses to a newer edit of the same unit (D8). Equal times: the greater author key wins, then the greater content, so the result never depends on which side was merged first. The loser's elements are returned in `overwritten`. |
@@ -423,7 +431,8 @@ I/O, no clock, the same inputs give the same output, and it runs in Node and in 
 | Arrows | An arrow whose bound target is gone after the merge is kept with that end unbound, and reported in `unbound`. Deleting a shape unbinds its arrows, and that unbinding counts as part of the deletion, so if a later write keeps the shape, its arrows stay bound. A binding to an element the writer's own board doesn't have counts as unbound. |
 | Back-references | The `boundElements` arrow entries of each element are rebuilt from the merged arrows: entries for arrows that no longer bind are dropped, entries either side listed for arrows that still bind are kept. |
 | Versions | A merged element that differs from master's copy gets a `version` above every known copy, with a deterministic `versionNonce`. An element with master's exact content stays master's object. |
-| Z-order | With a fractional `index` on every element, elements sort by it (ties by id). Otherwise master's order holds (the branch's on a fast-forward), and elements only the branch has follow their nearest preceding branch neighbor. |
+| Z-order | `index` is not content, so it merges per element on its own: a side that set a new index moved the element (one that omitted it didn't), a one-sided move applies, a unit both sides changed takes the winner's index, and an element both sides moved otherwise takes the higher index (deterministic in either merge order). A z-order move alone is not reported in `applied`. With a fractional `index` on every element, elements sort by it (ties by id). Otherwise master's order holds (the branch's on a fast-forward), and elements only the branch has follow their nearest preceding branch neighbor. |
+| Labels | `applied` and `overwritten` name a unit by its text (bound text, or the element's own). A unit without text gets a description from where it sits, with `unlabeled: true`: `unlabeled arrow from "Payments service" to "Fraud detection"`, `unlabeled rectangle near "Ledger v2"` (or `around`, when it encloses the shape), never a bare element id (`tools/unit-label.mjs`, shared with `diff`, `diff --since`, `xcld watch` and the banner). Text a writer typed is kept as written, even if it looks like an id. |
 | Tombstones | Not written to master; `meta` keeps the time and author of a deletion. |
 | `files`, `appState` | Image files: the union of both sides by file id. `appState`: per key, a branch change since the base wins. |
 | Write times | `meta` maps every element id to `{ writtenAt, author }` of the write that last set it. The commit step stores it and passes it back as `masterMeta` on the next merge. |
@@ -431,8 +440,9 @@ I/O, no clock, the same inputs give the same output, and it runs in Node and in 
 The D3 property test (`tests/merge.test.mjs`) runs 60 seeded pairs of edit scripts, one
 tab-like (version bumps, tombstones, unbinding on delete) and one agent-like (no bumps,
 deletion by omission). It checks that repeated runs and shuffled input arrays give identical
-results, that merging A then B equals B then A, and that every change is either in the result
-or reported as overwritten. `node tests/merge-bench.mjs` measures D5.
+results, that merging A then B equals B then A (z-order included), and that every change is
+either in the result or reported as overwritten (a z-order move: unless the other side moved
+the same element too). `node tests/merge-bench.mjs` measures D5.
 
 **D5 budget (lead, 2026-10-06):** the merge step alone stays at **p95 ≤ 250 ms** for a
 1,500-element board. Measured at about 20–35 ms median and 35–75 ms p95 on a loaded machine.
@@ -611,8 +621,9 @@ Decided by the lead on 2026-10-07 (board `sandbox/mermaid-inbox-merge`); built i
   `mermaid: { source, nodeId, hash }`, `canvas: { author, at } | null` (the last canvas edit) and
   `active: "mermaid" | "canvas"` (and still `xcldMermaidHash`). The commit step stamps it on
   every non-Mermaid write (tab saves, `write_board`, CLI): an element changed against the
-  writer's base gets `canvas` active; one that only lacks the stamps (a tab that never saw them)
-  keeps the base's, so it **survives tab saves**; a new element is kept as sent (a human's copy
+  writer's base gets `canvas` active; one that is unchanged apart from bookkeeping and the stamps
+  (a tab that never saw them, an agent that dropped or redid them) keeps the base's, so it
+  **survives tab saves** and agent re-sends; a new element is kept as sent (a human's copy
   of a Mermaid shape has its own id, which no Mermaid write matches or deletes). Direct file
   writes keep their exact bytes and
   aren't stamped. A Mermaid write leaves a canvas-active node alone while **its Mermaid
@@ -935,7 +946,12 @@ The acceptance test of versions and merge (agreed 2026-10-03, revised 2026-10-06
   per seed: the human edits a Mermaid node after the agent read; the agent's write from that read,
   written before the human's edit and queued behind a JSON write, loses that node (kept in
   history) while its disjoint edit applies; (e) D3: the seed runs twice, the final masters are
-  byte-identical. A failure prints the seed, the rerun command and the step log.
+  byte-identical; (f) bookkeeping is not an edit: about half the JSON agent's writes re-send
+  what it read with bookkeeping dropped, nulled or changed and the origin stamp redone (like
+  the real check's agent); such a write applies and wins only the units it changed, and every
+  live element in master keeps a numeric `seed`, `version` and `versionNonce` (setup elements:
+  the same seed). On the pre-fix merge, (f) fails 10/10 seeds. A failure prints the seed, the
+  rerun command and the step log.
 - **Default suite:** 50 seeds × 24 steps (about 15 writes each), each run twice, 4 seeds at a
   time, plus 5 seeds where every agent write answers `queued` (`writeWaitMs: 1`): about 40 s on
   the Windows dev VM. **Long mode:** `node tests/concurrency.mjs --seeds N [--start S]

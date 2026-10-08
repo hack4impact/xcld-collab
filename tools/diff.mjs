@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeOrigin } from "./mermaid-origin.mjs";
 import { collectRuleLegend, formatRuleWarnings, loadEffectiveRulesForBoard, ruleTagText, rulesForChange } from "./rules.mjs";
+import { describeUnlabeled, labelContext, typeWord } from "./unit-label.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
 const STYLE_PROPS = ["strokeColor", "backgroundColor", "fillStyle", "strokeStyle", "strokeWidth", "roughness", "opacity"];
@@ -41,12 +42,16 @@ export const makeModel = (elements) => {
     bucket.sort((left, right) => String(left.id).localeCompare(String(right.id)));
   }
 
-  const nodeLabel = (node) => clean(textByContainer.get(node.id)?.map((item) => textOf(item)).filter(Boolean).join(" ") || textOf(node) || node.id);
+  // A node without label text is described by where it sits ("unlabeled rectangle near "Ledger""),
+  // never by its id; `text` stays empty so a description that changes isn't a relabel.
+  const context = labelContext(live);
+  const nodeText = (node) => clean(textByContainer.get(node.id)?.map((item) => textOf(item)).filter(Boolean).join(" ") || textOf(node) || "");
   const edgeLabel = (edge) => clean(textByContainer.get(edge.id)?.map((item) => textOf(item)).filter(Boolean).join(" ") || textOf(edge) || "");
 
   for (const element of live) {
     if (NODE_TYPES.has(element.type)) {
-      nodes.set(element.id, { id: element.id, element, label: nodeLabel(element), type: isSubgraphContainer(element) ? "subgraph" : element.type });
+      const text = nodeText(element);
+      nodes.set(element.id, { id: element.id, element, text, label: text || describeUnlabeled(element, context), ...(text ? {} : { unlabeled: true }), type: isSubgraphContainer(element) ? "subgraph" : element.type });
     } else if (["arrow", "line", "freedraw"].includes(element.type)) {
       const startId = element.startBinding?.elementId ?? element.start?.id ?? null;
       const endId = element.endBinding?.elementId ?? element.end?.id ?? null;
@@ -56,7 +61,7 @@ export const makeModel = (elements) => {
     }
   }
 
-  const labelFor = (id) => nodes.get(id)?.label || shortId(id);
+  const labelFor = (id) => nodes.get(id)?.text || context.labelOf(id) || (byId.has(id) ? `(unlabeled ${typeWord(byId.get(id))})` : shortId(id));
   const edgePhrase = (edge) => {
     if (!edge.startId && !edge.endId) return `${edge.element.type} mark`;
     const middle = edge.label ? ` --${edge.label}--> ` : " --> ";
@@ -66,7 +71,8 @@ export const makeModel = (elements) => {
     let best = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     const itemCenter = center(element);
-    for (const node of nodes.values()) {
+    const labelled = [...nodes.values()].filter((node) => node.text);
+    for (const node of labelled.length ? labelled : nodes.values()) {
       const nodeCenter = center(node.element);
       const distance = Math.hypot(itemCenter.x - nodeCenter.x, itemCenter.y - nodeCenter.y);
       if (distance < bestDistance) {
@@ -82,7 +88,7 @@ export const makeModel = (elements) => {
 const positionChanged = (oldElement, newElement) => round(oldElement.x) !== round(newElement.x) || round(oldElement.y) !== round(newElement.y) || round(oldElement.width) !== round(newElement.width) || round(oldElement.height) !== round(newElement.height);
 const summarizeGeometry = (element) => `(${round(element.x)},${round(element.y)}) ${round(element.width)}x${round(element.height)}`;
 
-export const diffElements = (oldElements, newElements, files = {}) => {
+export const diffElements = (oldElements, newElements, files = {}, { authorName = null } = {}) => {
   const oldModel = makeModel(oldElements);
   const newModel = makeModel(newElements);
   const diff = { files, nodes: { added: [], removed: [], relabeled: [] }, edges: { added: [], removed: [], rewired: [], relabeled: [] }, notes: { added: [], removed: [], changed: [] }, styles: [], moves: [] };
@@ -93,8 +99,8 @@ export const diffElements = (oldElements, newElements, files = {}) => {
   }
   const originFor = (id) => {
     const element = newModel.byId.get(id);
-    const own = describeOrigin(element);
-    const label = describeOrigin(labelsOf.get(id));
+    const own = describeOrigin(element, { authorName });
+    const label = describeOrigin(labelsOf.get(id), { authorName });
     const origin = own?.active === "canvas" ? own : label?.active === "canvas" ? label : own;
     return origin ? { origin: origin.text, active: origin.active } : {};
   };
@@ -102,17 +108,17 @@ export const diffElements = (oldElements, newElements, files = {}) => {
   for (const node of newModel.nodes.values()) {
     const oldNode = oldModel.nodes.get(node.id);
     if (!oldNode) {
-      diff.nodes.added.push({ id: node.id, label: node.label, type: node.type, ...originFor(node.id) });
+      diff.nodes.added.push({ id: node.id, label: node.label, ...(node.unlabeled ? { unlabeled: true } : {}), type: node.type, ...originFor(node.id) });
     } else {
-      if (oldNode.label !== node.label) diff.nodes.relabeled.push({ id: node.id, from: oldNode.label, to: node.label, ...originFor(node.id) });
+      if (oldNode.text !== node.text) diff.nodes.relabeled.push({ id: node.id, from: oldNode.text, to: node.text, ...originFor(node.id) });
       for (const property of STYLE_PROPS) {
-        if (oldNode.element[property] !== node.element[property]) diff.styles.push({ id: node.id, subject: node.label, kind: "node", property, from: oldNode.element[property] ?? null, to: node.element[property] ?? null, ...originFor(node.id) });
+        if (oldNode.element[property] !== node.element[property]) diff.styles.push({ id: node.id, subject: node.label, ...(node.unlabeled ? { unlabeled: true } : {}), kind: "node", property, from: oldNode.element[property] ?? null, to: node.element[property] ?? null, ...originFor(node.id) });
       }
-      if (positionChanged(oldNode.element, node.element)) diff.moves.push({ id: node.id, subject: node.label, kind: "node", from: summarizeGeometry(oldNode.element), to: summarizeGeometry(node.element), ...originFor(node.id) });
+      if (positionChanged(oldNode.element, node.element)) diff.moves.push({ id: node.id, subject: node.label, ...(node.unlabeled ? { unlabeled: true } : {}), kind: "node", from: summarizeGeometry(oldNode.element), to: summarizeGeometry(node.element), ...originFor(node.id) });
     }
   }
   for (const node of oldModel.nodes.values()) {
-    if (!newModel.nodes.has(node.id)) diff.nodes.removed.push({ id: node.id, label: node.label, type: node.type });
+    if (!newModel.nodes.has(node.id)) diff.nodes.removed.push({ id: node.id, label: node.label, ...(node.unlabeled ? { unlabeled: true } : {}), type: node.type });
   }
 
   for (const edge of newModel.edges.values()) {
@@ -201,9 +207,10 @@ export const diffFiles = async (oldFile, newFile, options = {}) => {
 };
 
 // The same diff for two element arrays (`diff --since`: a history version against master).
-// `labels` names the two sides in the text output; `options.board` enables the rule tags.
+// `labels` names the two sides in the text output; `options.board` enables the rule tags;
+// `options.authorName` names canvas authors in origin tags.
 export const diffScenes = async (oldElements, newElements, labels, options = {}) => {
-  const diff = diffElements(oldElements, newElements, labels);
+  const diff = diffElements(oldElements, newElements, labels, { authorName: options.authorName ?? null });
   return options.board ? annotateRules(diff, oldElements, newElements, options) : diff;
 };
 
@@ -211,10 +218,11 @@ export const formatDiff = (diff) => {
   const lines = [`Semantic diff ${diff.files.old ?? "old"} -> ${diff.files.new ?? "new"}`];
   const section = (title, entries) => { if (entries.length) { lines.push(`${title}:`); for (const entry of entries) lines.push(`  ${entry}`); } };
   const originTag = (item) => (item.origin ? ` [${item.origin}]` : "");
+  const named = (item) => (item.unlabeled ? item.label : `"${item.label}"`);
   section("Nodes", [
-    ...diff.nodes.added.map((item) => `+ added ${item.type} "${item.label}" (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
-    ...diff.nodes.removed.map((item) => `- removed "${item.label}" (${item.id})${ruleTagText(item.rules)}`),
-    ...diff.nodes.relabeled.map((item) => `~ relabeled "${item.from}" -> "${item.to}" (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
+    ...diff.nodes.added.map((item) => `+ added ${item.unlabeled ? item.label : `${item.type} "${item.label}"`} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
+    ...diff.nodes.removed.map((item) => `- removed ${named(item)} (${item.id})${ruleTagText(item.rules)}`),
+    ...diff.nodes.relabeled.map((item) => `~ relabeled ${item.from ? `"${item.from}"` : "(no label)"} -> ${item.to ? `"${item.to}"` : "(no label)"} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
   ]);
   section("Edges", [
     ...diff.edges.added.map((item) => `+ added ${item.edge} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`),
@@ -227,8 +235,9 @@ export const formatDiff = (diff) => {
     ...diff.notes.removed.map((item) => `- removed "${item.text}" (${item.id})${ruleTagText(item.rules)}`),
     ...diff.notes.changed.map((item) => `~ changed "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
-  section("Style", diff.styles.map((item) => `~ ${item.kind} "${item.subject}" ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
-  section("Moves", diff.moves.map((item) => `~ ${item.kind} "${item.subject}": ${item.from} -> ${item.to} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
+  const subject = (item) => (item.unlabeled ? item.subject : `"${item.subject}"`);
+  section("Style", diff.styles.map((item) => `~ ${item.kind} ${subject(item)} ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
+  section("Moves", diff.moves.map((item) => `~ ${item.kind} ${subject(item)}: ${item.from} -> ${item.to} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
   if (lines.length === 1) lines.push("No semantic changes detected.");
   const legend = collectRuleLegend(diff);
   if (legend.length) {

@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { splitBoardPath } from "../../tools/board-path.mjs";
 import { applyDelta, CHECKPOINT_EVERY, encodeDelta, gzipText, HISTORY_SCHEMA, historyEntryFiles, readRecordFile } from "../../tools/history.mjs";
-import { mergeBoard } from "../../tools/merge.mjs";
+import { fastForwardElements, mergeBoard } from "../../tools/merge.mjs";
 import { stampCanvasEdits } from "../../tools/mermaid-origin.mjs";
 import { createSlowIoRecorder } from "./slow-io.mjs";
 
@@ -1131,6 +1131,7 @@ export function createVersionStore({
     let sceneOut = masterScene;
     let version = board.version;
     let result = { applied: [], overwritten: [], unbound: [], meta: board.meta, fastForward: true };
+    let keptRaw = true;
     if (branch.elements !== null) {
       // A non-Mermaid write records its canvas edits in the dual origin of Mermaid shapes
       // (tools/mermaid-origin.mjs). Deterministic from the journal, so a replay matches. A direct
@@ -1156,10 +1157,14 @@ export function createVersionStore({
           result = { ...result, overwritten: [...result.overwritten, ...extra].sort((left, right) => (left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0)) };
         }
       }
-      // A fast-forward keeps the writer's own scene (a tab save keeps its exact text).
+      // A fast-forward keeps the writer's own scene (a tab save keeps its exact text), except
+      // that elements it re-sent unchanged go back to master's copies and omitted bookkeeping is
+      // filled in (tools/merge.mjs fastForwardElements).
+      const ffElements = fastForward ? fastForwardElements({ branch: branchElements, master: masterScene?.elements ?? [], merged: result.elements }) : null;
+      keptRaw = ffElements === branchElements;
       sceneOut = fastForward
         ? sceneObject(branch.template ?? masterScene, {
-            elements: branchElements,
+            elements: ffElements,
             appState: branch.appState === undefined ? result.appState : branch.appState,
             files: branchFiles === undefined ? result.files : branchFiles,
           })
@@ -1168,7 +1173,7 @@ export function createVersionStore({
     }
     let text = null;
     if (version === null) {
-      if (fastForward && branch.rawHash && branch.rawHash === diskAtStart.hash) {
+      if (fastForward && keptRaw && branch.rawHash && branch.rawHash === diskAtStart.hash) {
         // Adopting the file on disk: master keeps its bytes and their hash.
         version = branch.rawHash;
       } else {

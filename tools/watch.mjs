@@ -2,26 +2,35 @@
 // tab's banner is built from) and every new or changed history entry (one per author turn). For
 // the lead's real check (scripts/real-check/README.md): nothing should change on the board
 // without a line here.
+import { authorLabeler } from "./author-label.mjs";
 import { apiUrl, boardHistory } from "./board-client.mjs";
-import { authorLabel } from "./diff-since.mjs";
 
 const clock = (ms) => new Date(Number.isFinite(ms) ? ms : Date.now()).toISOString().slice(11, 23);
 const quote = (text) => JSON.stringify(String(text ?? ""));
+// A unit without label text comes as a description (unlabeled arrow from "A" to "B"): as is.
+const unitText = (item) => (item?.unlabeled ? String(item.label ?? "") : quote(item?.label));
+const keysOf = (item) => [item.author, ...(item.overwritten ?? []).flatMap((lost) => [lost.winner?.author, lost.loser?.author])];
+// Agents always show their short session id here (two sessions of one client are both
+// "copilot-cli", and a later line can't tell an earlier one apart); a person's tab id shows only
+// when the board has seen that name with another tab. `known`: every author key seen so far.
+const labeler = (item, known = []) => authorLabeler([...known, ...keysOf(item)], { agentIds: true });
 const list = (items, limit = 6) => `${items.slice(0, limit).join(", ")}${items.length > limit ? `, +${items.length - limit} more` : ""}`;
 
 /** One line for a `merged` event (also an unchanged write that only lost units). */
-export const formatMergedEvent = (event, at = Date.now()) => {
-  const applied = (event.applied ?? []).map((item) => `${item.kind} ${quote(item.label)}`);
-  const lost = (event.overwritten ?? []).map((item) => `${quote(item.label)}: ${authorLabel(item.loser?.author)} lost to ${authorLabel(item.winner?.author)}`);
-  return `${clock(at)} MERGED  ${event.name} v${String(event.version ?? "").slice(0, 12)} by ${authorLabel(event.author)}: ${applied.length ? `applied ${list(applied)}` : "nothing applied"}${lost.length ? `; OVERWRITTEN ${list(lost)}` : ""}${event.unbound?.length ? `; unbound ${event.unbound.length} arrow end(s)` : ""}`;
+export const formatMergedEvent = (event, at = Date.now(), known = []) => {
+  const who = labeler(event, known);
+  const applied = (event.applied ?? []).map((item) => `${item.kind} ${unitText(item)}`);
+  const lost = (event.overwritten ?? []).map((item) => `${unitText(item)}: ${who(item.loser?.author)} lost to ${who(item.winner?.author)}`);
+  return `${clock(at)} MERGED  ${event.name} v${String(event.version ?? "").slice(0, 12)} by ${who(event.author)}: ${applied.length ? `applied ${list(applied)}` : "nothing applied"}${lost.length ? `; OVERWRITTEN ${list(lost)}` : ""}${event.unbound?.length ? `; unbound ${event.unbound.length} arrow end(s)` : ""}`;
 };
 
 /** One line for a history entry (a turn). `change` says why it is printed (new, grew, closed). */
-export const formatHistoryEntry = (entry, change = "new") => {
+export const formatHistoryEntry = (entry, change = "new", known = []) => {
+  const who = labeler(entry, known);
   const state = entry.open ? "open" : `closed by ${entry.closedBy ?? "?"}`;
   const pins = entry.pins?.length ? ` pinned ${entry.pins.map(quote).join(", ")}` : "";
-  const lost = (entry.overwritten ?? []).map((item) => `${quote(item.label)} (${authorLabel(item.loser?.author)} lost to ${authorLabel(item.winner?.author)})`);
-  return `${clock(entry.lastCommitAt)} HISTORY ${change.padEnd(6)} ${entry.entry} ${entry.record === "none" ? "(no new version)" : `v${String(entry.version ?? "").slice(0, 12)}`} by ${entry.displayName ?? authorLabel(entry.author)} [${entry.author}], ${state}, ${entry.coalescedCount ?? 1} save(s), ${(entry.applied ?? []).length} applied${lost.length ? `, overwritten: ${list(lost)}` : ""}${pins}`;
+  const lost = (entry.overwritten ?? []).map((item) => `${unitText(item)} (${who(item.loser?.author)} lost to ${who(item.winner?.author)})`);
+  return `${clock(entry.lastCommitAt)} HISTORY ${change.padEnd(6)} ${entry.entry} ${entry.record === "none" ? "(no new version)" : `v${String(entry.version ?? "").slice(0, 12)}`} by ${who(entry.author)} [${entry.author}], ${state}, ${entry.coalescedCount ?? 1} save(s), ${(entry.applied ?? []).length} applied${lost.length ? `, overwritten: ${list(lost)}` : ""}${pins}`;
 };
 
 const entryKey = (entry) => `${entry.version}|${entry.coalescedCount}|${entry.lastCommitAt}|${entry.open ? "open" : entry.closedBy}|${(entry.overwritten ?? []).length}|${(entry.pins ?? []).join(",")}`;
@@ -32,6 +41,8 @@ const entryKey = (entry) => `${entry.version}|${entry.coalescedCount}|${entry.la
  */
 export const watchBoard = async (board, { out = (line) => console.log(line), signal, json = false, pollMs = 2000 } = {}) => {
   const seen = new Map();
+  const known = new Set();
+  const learn = (item) => keysOf(item).forEach((key) => key && known.add(key));
   const emit = (type, data, text) => out(json ? JSON.stringify({ type, ...data }) : text);
   const refreshHistory = async (quiet = false) => {
     let data;
@@ -40,6 +51,7 @@ export const watchBoard = async (board, { out = (line) => console.log(line), sig
     } catch {
       return;
     }
+    for (const entry of data.entries ?? []) learn(entry);
     for (const entry of data.entries ?? []) {
       const key = entryKey(entry);
       const before = seen.get(entry.entry);
@@ -47,7 +59,7 @@ export const watchBoard = async (board, { out = (line) => console.log(line), sig
       seen.set(entry.entry, key);
       if (!quiet) {
         const change = before === undefined ? "new" : entry.open ? "grew" : "closed";
-        emit("history", { change, ...entry }, formatHistoryEntry(entry, change));
+        emit("history", { change, ...entry }, formatHistoryEntry(entry, change, [...known]));
       }
     }
     return data;
@@ -55,7 +67,7 @@ export const watchBoard = async (board, { out = (line) => console.log(line), sig
   const initial = await refreshHistory(true);
   const entries = initial?.entries ?? [];
   if (!json) {
-    out(`Watching ${board} on ${apiUrl()}: ${entries.length} history entr${entries.length === 1 ? "y" : "ies"} so far${entries.length ? `, last: ${entries.at(-1).entry} by ${entries.at(-1).displayName ?? authorLabel(entries.at(-1).author)}` : ""}. Ctrl+C to stop.`);
+    out(`Watching ${board} on ${apiUrl()}: ${entries.length} history entr${entries.length === 1 ? "y" : "ies"} so far${entries.length ? `, last: ${entries.at(-1).entry} by ${labeler(entries.at(-1), [...known])(entries.at(-1).author)}` : ""}. Ctrl+C to stop.`);
   }
   const poll = setInterval(() => void refreshHistory(), pollMs);
   try {
@@ -80,7 +92,8 @@ export const watchBoard = async (board, { out = (line) => console.log(line), sig
             }
             if (data.name !== board) continue;
             if (type === "merged") {
-              emit("merged", data, formatMergedEvent(data));
+              learn(data);
+              emit("merged", data, formatMergedEvent(data, Date.now(), [...known]));
               await refreshHistory();
             } else if (type === "mermaid-write") {
               emit("mermaid-write", data, `${clock(Date.now())} MERMAID ${board} ${data.status ?? ""} ${data.id ?? data.pendingId ?? ""}${data.via ? ` via ${data.via}` : ""}`.trimEnd());

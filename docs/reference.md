@@ -290,7 +290,7 @@ Sections appear only when something changed. Otherwise the output is
 
 | Section | Lines | Meaning |
 |---|---|---|
-| `Nodes` | `+ added <type> "<label>"`, `- removed "<label>"`, `~ relabeled "<old>" -> "<new>"` | Shapes: rectangle, diamond, ellipse |
+| `Nodes` | `+ added <type> "<label>"`, `- removed "<label>"`, `~ relabeled "<old>" -> "<new>"` | Shapes: rectangle, diamond, ellipse. A shape without text reads as where it sits, e.g. `+ added unlabeled rectangle near "Ledger v2"`, and `(no label)` in a relabel |
 | `Edges` | `+ added A --> B`, `- removed A --> B`, `~ rewired <old> -> <new>`, `~ label <edge>: "<old>" -> "<new>"` | Arrows attached to shapes at both ends. Labels appear as `A --Yes--> B` |
 | `Notes` | `+ added "<text>" near "<node>"`, `- removed`, `~ changed` | Free text not inside a shape, matched to the nearest node |
 | `Style` | `~ node "<label>" <property>: <old> -> <new>` | `strokeColor`, `backgroundColor`, `fillStyle`, `strokeStyle`, `strokeWidth`, `roughness`, `opacity` |
@@ -326,22 +326,29 @@ losers, each with the history entry that recorded it.
 ```text
 > xcld diff docs/example --since review-1
 Since snapshot "review-1" (2026-10-08 06:39:36 UTC): version 10bec25b8f2f.
-2 history entries since: copilot-cli 1, Ada 1.
+2 history entries since: copilot-cli (agent) 1, Ada 1.
 Semantic diff docs/example@10bec25b8f2f -> docs/example@529ec1779002 (current)
 Nodes:
-  ~ relabeled "Analytics" -> "Analytics (batch)" (Analytics) [canvas edit by agent:copilot-cli (over Mermaid main:Analytics)]
-  ~ relabeled "API" -> "Public API" (API) [canvas edit by human:Ada (over Mermaid main:API)]
+  ~ relabeled "Analytics" -> "Analytics (batch)" (Analytics) [canvas edit by copilot-cli (agent) (over Mermaid main:Analytics)]
+  ~ relabeled "API" -> "Public API" (API) [canvas edit by Ada (over Mermaid main:API)]
 Overwritten since then (1); each losing edit is kept in history only, nothing re-applies it:
-  ! "Public API" (API): copilot-cli#3f9a1c's edit ("API gateway", written 2026-10-08 06:39:06) lost to Ada (written 2026-10-08 06:39:36) [entry 20261008T063936.705Z-human_Ada_tab1]
+  ! "Public API" (API): copilot-cli (agent)'s edit ("API gateway", written 2026-10-08 06:39:06) lost to Ada (written 2026-10-08 06:39:36) [entry 20261008T063936.705Z-human_Ada_tab1]
 ```
 
 Here the agent renamed *API* from the snapshot's version, and Ada, also from the snapshot's
 version, renamed it later: her edit won and the agent's "API gateway" is the loser.
 
+Authors read as in the canvas banner: a person by name, an agent as `<client> (agent)`, a CLI
+writer as `<name> (CLI)`. When the board's history has two sessions of one client (or one name
+with two tabs), the short session or tab id tells them apart: `copilot-cli#8cb0a4 (agent)`,
+`Ada#tabB2`. A unit without text is described instead of named by its id, e.g. `! unlabeled
+arrow from "Payments service" to "Fraud detection" (<id>): …`.
+
 `--json` prints `{ board, current, since: { spec, kind, version, entry, at, author?, label?,
 emptyBoard?, approximate? }, turns: [{ entry, author, displayName, at, version, applied,
-overwritten, open? }], diff, overwritten: [{ entry, unitId, label, elementIds, winner: { author,
-side, writtenAt }, loser: { author, side, writtenAt, deleted, labels } }] }`. For example, the
+overwritten, open? }], authors, diff, overwritten: [{ entry, unitId, label, unlabeled?, elementIds,
+winner: { author, side, writtenAt }, loser: { author, side, writtenAt, deleted, labels, unlabeled? } }] }`
+(`authors`: every author key in the board's history; `unlabeled: true` marks a description). For example, the
 agent's own view (`--since author:copilot-cli --json`, trimmed):
 
 ```json
@@ -367,16 +374,18 @@ lists the board's authors). `xcld diff <board>` without `--since` is unchanged.
 
 Prints, as they happen, every merge on the board (the event the canvas banner is built from)
 and every new, grown or closed history entry, until Ctrl+C. A history line carries the time of
-the entry's last commit (here Ada's turn, closed by the agent's write). `--json` prints one object per
-line. Use it to follow several writers at once, e.g. in the
+the entry's last commit (here Ada's turn, closed by the agent's write). Agents always show their
+short session id here (`copilot-cli#3f9a1c (agent)`), since two sessions of one client share the
+name; a person gets a tab id only when the board has seen their name with another tab. `--json`
+prints one object per line. Use it to follow several writers at once, e.g. in the
 [real check](../scripts/real-check/README.md).
 
 ```text
 > xcld watch docs/example
 Watching docs/example on http://127.0.0.1:3100: 3 history entries so far, last: 20261008T063936.705Z-human_Ada_tab1 by Ada. Ctrl+C to stop.
-06:40:27.361 MERGED  docs/example v03d7dd982dfa by copilot-cli#3f9a1c: applied changed "Ledger v2"
-06:39:36.726 HISTORY closed 20261008T063936.705Z-human_Ada_tab1 v529ec1779002 by Ada [human:Ada#tab1], closed by agent-merge, 1 save(s), 1 applied, overwritten: "Public API" (copilot-cli#3f9a1c lost to Ada)
-06:40:27.323 HISTORY new    20261008T064027.297Z-agent_copilot-cli_3f9a1c v03d7dd982dfa by copilot-cli [agent:copilot-cli#3f9a1c], closed by agent-write, 1 save(s), 1 applied
+06:40:27.361 MERGED  docs/example v03d7dd982dfa by copilot-cli#3f9a1c (agent): applied changed "Ledger v2"
+06:39:36.726 HISTORY closed 20261008T063936.705Z-human_Ada_tab1 v529ec1779002 by Ada [human:Ada#tab1], closed by agent-merge, 1 save(s), 1 applied, overwritten: "Public API" (copilot-cli#3f9a1c (agent) lost to Ada)
+06:40:27.323 HISTORY new    20261008T064027.297Z-agent_copilot-cli_3f9a1c v03d7dd982dfa by copilot-cli#3f9a1c (agent) [agent:copilot-cli#3f9a1c], closed by agent-write, 1 save(s), 1 applied
 ```
 
 ### `xcld rules <board>`
@@ -617,7 +626,10 @@ levels.
 - `POST /api/branch/<path>` (`Content-Type: application/json`) is how agents and scripts
   write: `{ author?, displayName?, base, writtenAt?, kind: "json", elements, appState?, files? }`.
   Send the **whole board** you want; elements you leave out are deleted, unless they were
-  added after your `base`. `base` is the version you read (`null` for a new board). The
+  added after your `base`. Only semantic changes count: bookkeeping you drop, null or change
+  (`version`, `versionNonce`, `updated`, `seed`, `created`, `index`, the `xcldOrigin` stamp)
+  is not an edit, and the server fills omitted bookkeeping back in, so re-sending elements you
+  didn't touch never claims them. `base` is the version you read (`null` for a new board). The
   server merges your write with everything committed since `base`
   ([rules](DESIGN.md#merge-rules)) and waits up to 5 s for the commit:
 

@@ -78,7 +78,7 @@ export const writeBoardBranch = async (board, { author, displayName, base, eleme
 export const describeWrite = (board, result) => {
   if (result.status === "merged") {
     const overwritten = result.overwritten?.length
-      ? ` ${result.overwritten.length} unit(s) changed on both sides went to the later write: ${result.overwritten.map((item) => `"${item.label}" (${item.winner.side === "branch" ? "yours kept" : `overwritten by ${item.winner.author}`})`).join(", ")}.`
+      ? ` ${result.overwritten.length} unit(s) changed on both sides went to the later write: ${result.overwritten.map((item) => `${unitName(item)} (${item.winner.side === "branch" ? "yours kept" : `overwritten by ${item.winner.author}`})`).join(", ")}.`
       : "";
     return `Merged into ${board}: version ${result.version}, ${result.applied?.length ?? 0} change(s) applied.${overwritten} Pass version as base on your next write.`;
   }
@@ -96,6 +96,7 @@ export const describeWrite = (board, result) => {
 };
 
 const quoteLabel = (value) => JSON.stringify(String(value ?? ""));
+const unitName = (item) => (item.unlabeled ? String(item.label ?? "") : `"${item.label}"`);
 // One line per change a Mermaid apply made (the ops of tools/mermaid-apply.mjs).
 export const formatApplyOp = (op) => {
   if (op.op === "relabel") return op.to ? `relabel ${op.kind} ${op.id}: ${quoteLabel(op.from)} -> ${quoteLabel(op.to)}` : `remove ${op.kind} label ${op.id}: ${quoteLabel(op.from)}`;

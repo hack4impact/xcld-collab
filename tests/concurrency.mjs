@@ -18,7 +18,11 @@
 //       `diff --since` from the end of the setup;
 //   (d) D8: once per seed, a queued Mermaid write with a stale base and an older write time loses
 //       the unit the human edited since, while its disjoint edit applies;
-//   (e) D3: the same seed gives the same final master (the caller runs a seed twice).
+//   (e) D3: the same seed gives the same final master (the caller runs a seed twice);
+//   (f) bookkeeping is not an edit: the JSON agent sometimes re-sends what it read with Excalidraw's
+//       bookkeeping dropped, nulled or changed and the origin stamp redone (as LLMs do); its writes
+//       still apply and win only the units it changed, and master keeps every element's seed,
+//       version and nonce (and index).
 // A `queued` answer (a slow disk: issue #36) is correct behaviour; the writer waits for the landing.
 //
 // Determinism: a virtual clock (the version store's `now`), every random choice from the seed, and
@@ -79,6 +83,23 @@ const relabel = (elements, unitId, label, nonce, at) => elements.map((element) =
   : element));
 const markDeleted = (elements, unitId, at) => elements.map((element) => (element.id === unitId || element.containerId === unitId ? { ...element, isDeleted: true, version: (element.version ?? 1) + 1, updated: at } : element));
 const omit = (elements, unitId) => elements.filter((element) => element.id !== unitId && element.containerId !== unitId);
+// What an LLM does to bookkeeping it re-sends (the real check, 2026-10-08): `drop` leaves the
+// fields out, `null` sets them to null, `perturb` changes them; the origin stamp is redone or lost.
+const BOOKKEEPING = ["seed", "created", "index", "updated", "versionNonce"];
+const perturbBookkeeping = (element, mode, { nonce, at }) => {
+  const copy = { ...element };
+  for (const key of BOOKKEEPING) {
+    if (mode === "drop") delete copy[key];
+    else if (mode === "null") copy[key] = null;
+  }
+  if (mode === "perturb") Object.assign(copy, { version: (copy.version ?? 1) + 1, versionNonce: nonce(), seed: nonce(), updated: at });
+  else copy.version = (copy.version ?? 1) + 1;
+  if (copy.customData?.xcldOrigin) {
+    const { xcldOrigin, ...rest } = copy.customData;
+    copy.customData = mode === "drop" ? rest : { ...rest, xcldOrigin: { ...xcldOrigin, canvas: { author: JSON_AGENT, at }, active: "canvas" } };
+  }
+  return copy;
+};
 
 const mermaidText = (model) => [
   "flowchart TD",
@@ -332,13 +353,21 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
       changes.push({ unitId: id, kind: "label", token: label });
     }
     const write = { idx: writes.length, writer: "json", author: JSON_AGENT, base: read.version, baseScene: read.scene, writtenAt: clock, changes, status: null };
+    // Like an LLM re-sending the board it read: sometimes the bookkeeping of what it read is
+    // dropped, set to null, or changed (none of which is an edit), and the origin stamp redone.
+    if (chance(0.5)) {
+      const fresh = new Set(changes.filter((change) => change.kind === "add").flatMap((change) => [change.unitId, `${change.unitId}-t`]));
+      const mode = pick(["drop", "null", "perturb", "mixed"]);
+      elements = elements.map((element) => (fresh.has(element.id) || !chance(0.7) ? element : perturbBookkeeping(element, mode === "mixed" ? pick(["drop", "null", "perturb"]) : mode, { nonce, at: clock })));
+      write.perturbed = mode;
+    }
     writes.push(write);
     const { responded } = await issue(JSON_AGENT, () => fetch(`${base}/api/branch/${BOARD}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ author: JSON_AGENT, base: read.version, writtenAt: clock, elements, appState: read.scene.appState }),
     }));
-    note(`json write base=${short(read.version)}${read === jsonAgent.reads.at(-1) ? "" : " (stale read)"} changes=${changes.map((change) => `${change.unitId}:${change.kind}${change.token ? `=${change.token}` : ""}`).join(",")}`);
+    note(`json write base=${short(read.version)}${read === jsonAgent.reads.at(-1) ? "" : " (stale read)"}${write.perturbed ? ` bookkeeping=${write.perturbed}` : ""} changes=${changes.map((change) => `${change.unitId}:${change.kind}${change.token ? `=${change.token}` : ""}`).join(",")}`);
     // After a write, only reads taken after it count (an agent re-reads before it builds on master).
     jsonAgent.reads = [];
     track("json", settleAgentWrite("json", write, responded));
@@ -440,6 +469,7 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
     advance(1000);
     await humanReload();
     const setupVersion = human.base;
+    const setupScene = structuredClone(human.baseScene);
     note(`setup done at ${short(setupVersion)}`);
     advance(1000);
 
@@ -584,6 +614,32 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
       assert.ok(lost, `seed ${seed}: D8 loser not kept in history`);
       assert.equal(lost.winner.author, HUMAN);
       assert.ok((lost.loser.elements ?? []).some((element) => textOf(element) === contestedLabel), `seed ${seed}: D8 loser lacks the agent's label`);
+    }
+
+    // (f) Bookkeeping is not an edit: a JSON write applies, and wins, only the units it changed,
+    // however it re-sent the rest; and master keeps every element's bookkeeping.
+    const jsonWrites = writes.filter((write) => write.writer === "json");
+    for (const write of jsonWrites) {
+      const own = new Set(write.changes.map((change) => change.unitId));
+      for (const item of write.answer?.applied ?? []) {
+        assert.ok(own.has(item.unitId), `seed ${seed}: json write #${write.idx}${write.perturbed ? ` (bookkeeping ${write.perturbed})` : ""} applied ${item.unitId}, which it didn't change`);
+      }
+    }
+    for (const lost of losers) {
+      if (lost.winner.author !== JSON_AGENT) continue;
+      const write = jsonWrites.find((candidate) => candidate.writtenAt === lost.winner.writtenAt);
+      assert.ok(write?.changes.some((change) => change.unitId === lost.unitId), `seed ${seed}: the json agent overwrote ${lost.unitId} (entry ${lost.entry}) without changing it`);
+    }
+    const setupById = new Map(live(setupScene.elements).map((element) => [element.id, element]));
+    for (const element of live(final.scene.elements)) {
+      for (const key of ["seed", "version", "versionNonce"]) {
+        assert.equal(typeof element[key], "number", `seed ${seed}: master's ${element.id}.${key} is ${JSON.stringify(element[key])}`);
+      }
+      const original = setupById.get(element.id);
+      if (original) {
+        assert.equal(element.seed, original.seed, `seed ${seed}: master's ${element.id} lost its seed`);
+        if (typeof original.index === "string") assert.equal(typeof element.index, "string", `seed ${seed}: master's ${element.id} lost its index`);
+      }
     }
   } catch (error) {
     failure = error;

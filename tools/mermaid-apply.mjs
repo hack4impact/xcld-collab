@@ -25,6 +25,7 @@
 import { MERMAID_HASH_KEY } from "./mermaid-hash.mjs";
 import { DEFAULT_SOURCE, ORIGIN_KEY, mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
 import { mermaidIdMapper } from "./to-mermaid.mjs";
+import { describeUnlabeled, labelContext } from "./unit-label.mjs";
 
 const FONT_SIZE = 20;
 const FONT_FAMILY = 5;
@@ -515,7 +516,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     const label = unit.members.filter((member) => member.type === "text").map((member) => textOf(member).replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
     canvasLosses.set(unit.container.id, {
       unitId: unit.container.id,
-      label: label || `${unit.container.type ?? "element"} ${unit.container.id}`,
+      ...(label ? { label } : { label: describeUnlabeled(unit.container, labelContext(sourceElements)), unlabeled: true }),
       elementIds: unit.members.map((member) => member.id).sort(),
       loser: { author: String(canvas.author ?? ""), writtenAt: Number(canvas.at ?? 0), elements: clone(unit.members) },
     });

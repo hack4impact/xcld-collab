@@ -4,7 +4,22 @@
 // are inputs. It has no Node-only imports, so the server and the browser bundle can both
 // import it.
 
-const BOOKKEEPING_KEYS = new Set(["version", "versionNonce", "updated", "isDeleted", "boundElements"]);
+import { describeUnlabeled, labelContext } from "./unit-label.mjs";
+
+// Bookkeeping that Excalidraw (or a writer) maintains per element: never a change, and a writer
+// that omits it gets it back from the copy it started from (docs/DESIGN.md#merge-rules). `seed`
+// and `created` never change for an element id; the others are the writer's when it sent them.
+const BOOKKEEPING_FIELDS = ["version", "versionNonce", "updated", "seed", "created", "index"];
+const IDENTITY_FIELDS = ["seed", "created"];
+// Compared separately: `isDeleted` (liveness), `boundElements` (arrow back-references are
+// derived), `customData` (xcld's stamps in it are bookkeeping).
+const SKIP_KEYS = new Set([...BOOKKEEPING_FIELDS, "isDeleted", "boundElements", "customData"]);
+// xcld's own keys in customData. The origin stamp (tools/mermaid-origin.mjs) is written by the
+// server, so it never counts. The Mermaid hash counts when both sides carry one; a writer that
+// dropped it didn't change it. Both are backfilled when omitted.
+const ORIGIN_DATA_KEY = "xcldOrigin";
+const HASH_DATA_KEY = "xcldMermaidHash";
+const STAMP_DATA_KEYS = [HASH_DATA_KEY, ORIGIN_DATA_KEY];
 const HEAD = Symbol("head");
 
 // Canonical JSON: object keys sorted at every level, so key order from different writers
@@ -41,10 +56,15 @@ const compareStrings = (left, right) => (left < right ? -1 : left > right ? 1 : 
 const isLive = (element) => element !== undefined && element.isDeleted !== true;
 const isArrowEntry = (entry) => entry?.type === "arrow";
 
-// What counts as a change: every property except the version bookkeeping and the arrow
-// back-references in `boundElements` (those are derived from the arrows' own bindings, so an
-// arrow attached on one side doesn't make the target shape "changed"). A deleted element
-// (tombstone or absent) has no content.
+const EMPTY = Object.freeze({});
+const STAMP_SKIP = new Set(STAMP_DATA_KEYS);
+const dataOf = (element) => (element.customData !== null && typeof element.customData === "object" && !Array.isArray(element.customData) ? element.customData : null);
+
+// What counts as a change: the semantic fields. Not the bookkeeping above, not xcld's origin
+// stamp, not the arrow back-references in `boundElements` (those are derived from the arrows' own
+// bindings, so an arrow attached on one side doesn't make the target shape "changed"). A field
+// set to null and an absent one are the same. A deleted element (tombstone or absent) has no
+// content. Used to break ties and to derive version nonces; sameContent() is the change test.
 const contentKey = (element, { withArrowRefs = false } = {}) => {
   if (!isLive(element)) {
     return null;
@@ -56,14 +76,31 @@ const contentKey = (element, { withArrowRefs = false } = {}) => {
       if (refs.length) {
         copy.boundElements = canonical(refs);
       }
-    } else if (!BOOKKEEPING_KEYS.has(key)) {
+    } else if (key === "customData") {
+      const data = dataOf(element);
+      if (!data) {
+        if (element.customData != null) {
+          copy.customData = canonical(element.customData);
+        }
+        continue;
+      }
+      const kept = {};
+      for (const dataKey of Object.keys(data).sort()) {
+        if (dataKey !== ORIGIN_DATA_KEY && data[dataKey] != null) {
+          kept[dataKey] = canonical(data[dataKey]);
+        }
+      }
+      if (Object.keys(kept).length) {
+        copy.customData = kept;
+      }
+    } else if (!SKIP_KEYS.has(key) && element[key] != null) {
       copy[key] = canonical(element[key]);
     }
   }
   return JSON.stringify(copy);
 };
 
-// Structural equality, key order ignored, undefined values same as absent. Used on the hot
+// Structural equality, key order ignored, null and undefined values same as absent. Used on the hot
 // path instead of serializing: most elements are unchanged, and this allocates nothing.
 const deepEqual = (left, right) => {
   if (left === right) {
@@ -92,7 +129,7 @@ const deepEqual = (left, right) => {
 const sameFields = (left, right, skip) => {
   let count = 0;
   for (const key of Object.keys(left)) {
-    if ((skip && skip.has(key)) || left[key] === undefined) {
+    if ((skip && skip.has(key)) || left[key] === undefined || left[key] === null) {
       continue;
     }
     if (!deepEqual(left[key], right[key])) {
@@ -101,7 +138,7 @@ const sameFields = (left, right, skip) => {
     count++;
   }
   for (const key of Object.keys(right)) {
-    if (!(skip && skip.has(key)) && right[key] !== undefined) {
+    if (!(skip && skip.has(key)) && right[key] !== undefined && right[key] !== null) {
       count--;
     }
   }
@@ -110,13 +147,112 @@ const sameFields = (left, right, skip) => {
 
 const refsOf = (element, withArrowRefs) => (Array.isArray(element.boundElements) ? element.boundElements.filter((entry) => withArrowRefs || !isArrowEntry(entry)) : []);
 
-// The same test as comparing contentKey()s. Exported for the tab (app/src/tab-merge.mjs).
+// customData without xcld's origin stamp; the Mermaid hash only when both sides have one.
+const sameData = (left, right) => {
+  if (left.customData === right.customData) {
+    return true;
+  }
+  const leftSide = dataOf(left) ?? (left.customData == null ? EMPTY : null);
+  const rightSide = dataOf(right) ?? (right.customData == null ? EMPTY : null);
+  if (!leftSide || !rightSide) {
+    return deepEqual(left.customData ?? null, right.customData ?? null);
+  }
+  const leftHash = leftSide[HASH_DATA_KEY];
+  const rightHash = rightSide[HASH_DATA_KEY];
+  if (leftHash != null && rightHash != null && !deepEqual(leftHash, rightHash)) {
+    return false;
+  }
+  return sameFields(leftSide, rightSide, STAMP_SKIP);
+};
+
+/**
+ * True when two copies of an element have the same semantic content: what decides whether a writer
+ * changed it. Bookkeeping (`version`, `versionNonce`, `updated`, `seed`, `created`, `index`) and
+ * xcld's origin stamp never count, null equals absent, arrow back-references count only with
+ * `withArrowRefs`. Exported for the tab (app/src/tab-merge.mjs) and the origin stamps.
+ */
 export const sameContent = (left, right, { withArrowRefs = false } = {}) => {
   const leftLive = isLive(left);
   if (!leftLive || !isLive(right)) {
     return leftLive === isLive(right);
   }
-  return left === right || (sameFields(left, right, BOOKKEEPING_KEYS) && deepEqual(refsOf(left, withArrowRefs), refsOf(right, withArrowRefs)));
+  return left === right || (sameFields(left, right, SKIP_KEYS) && sameData(left, right) && deepEqual(refsOf(left, withArrowRefs), refsOf(right, withArrowRefs)));
+};
+
+/**
+ * `element` with the bookkeeping its writer omitted taken from `from` (the copy the writer
+ * started from, or master's): `version`, `versionNonce`, `updated` and `index` when missing,
+ * `seed` and `created` always (they never change for an element id), and xcld's customData
+ * stamps when missing. Returns `element` itself when nothing is missing.
+ */
+export const backfillBookkeeping = (element, from) => {
+  if (!isLive(element) || !from || typeof from !== "object" || element === from) {
+    return element;
+  }
+  let next = element;
+  const set = (key, value) => {
+    if (next === element) {
+      next = { ...element };
+    }
+    next[key] = value;
+  };
+  for (const key of BOOKKEEPING_FIELDS) {
+    if (from[key] == null) {
+      continue;
+    }
+    if (element[key] == null || (IDENTITY_FIELDS.includes(key) && !deepEqual(element[key], from[key]))) {
+      set(key, from[key]);
+    }
+  }
+  const fromData = dataOf(from);
+  if (fromData && (element.customData == null || dataOf(element))) {
+    const own = dataOf(element);
+    let data = null;
+    for (const key of STAMP_DATA_KEYS) {
+      if (fromData[key] != null && own?.[key] == null) {
+        data ??= { ...(own ?? {}) };
+        data[key] = fromData[key];
+      }
+    }
+    if (data) {
+      set("customData", data);
+    }
+  }
+  return next;
+};
+
+// True when `element` lacks bookkeeping that `from` has (or has another seed or created).
+const needsBackfill = (element, from) => backfillBookkeeping(element, from) !== element;
+
+/**
+ * The elements a fast-forward stores: the writer's own (its order, tombstones and objects),
+ * except that an element whose content master already has goes back to master's copy, and one
+ * that omitted bookkeeping takes the merge's filled-in copy. `merged` is mergeBoard's `elements`
+ * for that write; `master` the master it merged into. Returns `branch` itself when nothing changed.
+ */
+export const fastForwardElements = ({ branch, master, merged }) => {
+  const mergedById = new Map((merged ?? []).map((element) => [element.id, element]));
+  const masterById = new Map((master ?? []).filter(isLive).map((element) => [element.id, element]));
+  let changed = false;
+  const out = branch.map((element) => {
+    if (!isLive(element)) {
+      return element;
+    }
+    const next = mergedById.get(element.id);
+    if (!next || next === element) {
+      return element;
+    }
+    const own = masterById.get(element.id);
+    if (!own || deepEqual(element, own)) {
+      return element;
+    }
+    if (next === own || needsBackfill(element, own)) {
+      changed = true;
+      return next;
+    }
+    return element;
+  });
+  return changed ? out : branch;
 };
 
 const sceneParts = (input, name) => {
@@ -185,20 +321,36 @@ const hash31 = (text) => {
 
 const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
 
-const unitLabel = (unitId, members, sides) => {
+// A unit's label: its text (bound text, or the element's own), else a description from where it
+// sits on the board ("unlabeled arrow from "A" to "B"", "unlabeled rectangle near "C"", with
+// `unlabeled: true`), never a bare element id. `contextOf(side)` gives tools/unit-label.mjs's
+// lookups for a side.
+const unitLabel = (unitId, members, sides, contextOf) => {
   for (const side of sides) {
     const texts = members.map((id) => side.get(id)).filter((element) => isLive(element) && element.type === "text").map((element) => clean(element.originalText ?? element.text)).filter(Boolean);
     if (texts.length) {
-      return texts.join(" ");
+      return { label: texts.join(" ") };
     }
   }
   for (const side of sides) {
     const element = side.get(unitId);
     if (element) {
-      return `${element.type ?? "element"} ${unitId}`;
+      return { label: describeUnlabeled(element, contextOf(side)), unlabeled: true };
     }
   }
-  return unitId;
+  return { label: "unlabeled element", unlabeled: true };
+};
+
+const labelContexts = () => {
+  const cache = new Map();
+  return (side) => {
+    let context = cache.get(side);
+    if (!context) {
+      context = labelContext(side);
+      cache.set(side, context);
+    }
+    return context;
+  };
 };
 
 const groupUnits = (ids, sides) => {
@@ -337,9 +489,9 @@ const mergeFiles = (masterFiles, branchFiles) => {
  *   appState: object | undefined,
  *   meta: Record<string, { writtenAt: number, author: string }>,
  *   fastForward: boolean,
- *   applied: { unitId: string, label: string, kind: "added" | "changed" | "deleted", elementIds: string[] }[],
+ *   applied: { unitId: string, label: string, unlabeled?: true, kind: "added" | "changed" | "deleted", elementIds: string[] }[],
  *   overwritten: {
- *     unitId: string, label: string, elementIds: string[],
+ *     unitId: string, label: string, unlabeled?: true, elementIds: string[],
  *     winner: { side: "master" | "branch", author: string, writtenAt: number },
  *     loser: { side: "master" | "branch", author: string, writtenAt: number, elements: object[] },
  *   }[],
@@ -384,6 +536,9 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
   const metaOut = new Map(metaIn);
   const applied = [];
   const overwritten = [];
+  // Per element id of a unit both sides changed: the side that won it (for its z-order).
+  const winnerSide = new Map();
+  const contextOf = labelContexts();
   const units = groupUnits(ids, [branchSide.map, masterSide.map, baseSide.map]);
 
   for (const { unitId, members } of units) {
@@ -404,11 +559,14 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
       const state = (side) => members.map((id) => `${id}=${contentKey(side.get(id)) ?? "-"}`).join("\n");
       takeBranch = (compareStamps(branchStamp, masterStamp) || compareStrings(state(branchSide.map), state(masterSide.map))) > 0;
       report = takeBranch && !same;
+      for (const id of members) {
+        winnerSide.set(id, takeBranch ? "branch" : "master");
+      }
       if (!same) {
         const [winner, loser] = takeBranch ? [["branch", branchStamp], ["master", masterStamp, masterOriginal]] : [["master", masterStamp], ["branch", branchStamp, branchOriginal]];
         overwritten.push({
           unitId,
-          label: unitLabel(unitId, members, takeBranch ? [branchSide.map, masterSide.map, baseSide.map] : [masterSide.map, branchSide.map, baseSide.map]),
+          ...unitLabel(unitId, members, takeBranch ? [branchSide.map, masterSide.map, baseSide.map] : [masterSide.map, branchSide.map, baseSide.map], contextOf),
           elementIds: members,
           winner: { side: winner[0], author: winner[1].author, writtenAt: winner[1].writtenAt },
           loser: {
@@ -425,7 +583,9 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
         metaOut.set(id, { ...branchStamp });
         const element = branchSide.map.get(id);
         if (isLive(element)) {
-          chosen.set(id, element);
+          // A writer that omitted bookkeeping (agents re-sending a board often do) keeps master's.
+          const from = isLive(masterOriginal.get(id)) ? masterOriginal.get(id) : baseSide.map.get(id);
+          chosen.set(id, backfillBookkeeping(element, from));
           source.set(id, branchOriginal.get(id));
         }
       }
@@ -433,7 +593,7 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
         const liveIn = (side) => members.some((id) => isLive(side.get(id)));
         applied.push({
           unitId,
-          label: unitLabel(unitId, members, [branchSide.map, masterSide.map, baseSide.map]),
+          ...unitLabel(unitId, members, [branchSide.map, masterSide.map, baseSide.map], contextOf),
           kind: !liveIn(masterSide.map) ? "added" : !liveIn(branchSide.map) ? "deleted" : "changed",
           elementIds: members,
         });
@@ -535,6 +695,36 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
       const version = Math.max(known, own, branchVersion) + 1;
       chosen.set(id, { ...element, version, versionNonce: hash31(`${id}:${version}:${contentKey(element, { withArrowRefs: true })}`) });
     }
+  }
+
+  // Z-order is not content: `index` never makes a unit changed, so it merges on its own, per
+  // element. A side that set a new index moved the element; one that omitted it didn't. A unit
+  // both sides changed takes the winner's index; an element both sides moved otherwise takes the
+  // higher index (deterministic, whatever the merge order). A new index bumps the version.
+  const indexOf = (element) => (isLive(element) && typeof element.index === "string" ? element.index : null);
+  for (const [id, element] of chosen) {
+    const baseIndex = indexOf(baseSide.map.get(id));
+    const masterIndex = indexOf(masterOriginal.get(id));
+    const branchIndex = indexOf(branchOriginal.get(id));
+    const masterMoved = masterIndex !== null && masterIndex !== baseIndex;
+    const branchMoved = branchIndex !== null && branchIndex !== baseIndex;
+    const winner = winnerSide.get(id);
+    let index;
+    if (winner) {
+      index = (winner === "branch" ? branchIndex ?? masterIndex : masterIndex ?? branchIndex) ?? baseIndex;
+    } else if (masterMoved && branchMoved) {
+      index = compareStrings(masterIndex, branchIndex) >= 0 ? masterIndex : branchIndex;
+    } else if (branchMoved) {
+      index = branchIndex;
+    } else {
+      index = masterIndex ?? baseIndex ?? branchIndex;
+    }
+    if (index === null || index === element.index) {
+      continue;
+    }
+    const known = Math.max(0, ...[baseSide.map.get(id), masterOriginal.get(id), branchOriginal.get(id), element].map((copy) => (typeof copy?.version === "number" ? copy.version : 0)));
+    const version = known + 1;
+    chosen.set(id, { ...element, index, version, versionNonce: hash31(`${id}:${version}:${index}:${contentKey(element, { withArrowRefs: true })}`) });
   }
 
   const elements = orderElements(chosen, fastForward ? branchSide.order : masterSide.order, fastForward ? masterSide.order : branchSide.order);

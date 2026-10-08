@@ -83,8 +83,9 @@ const withOrigin = (element, origin, hash) => {
 /**
  * Records canvas edits in a non-Mermaid write (a tab save, write_board, a CLI write). Pure.
  * Per element of `branch`, against the same element in `base` (what the writer started from):
- * - unchanged apart from the origin keys (a tab that never saw the server's stamps): the base's
- *   origin is kept, so the write doesn't count as a change of that element;
+ * - unchanged apart from bookkeeping and the origin keys (a tab that never saw the server's
+ *   stamps, or an agent that re-sent the board with them dropped or redone): the base's origin is
+ *   kept, so the write doesn't count as a change of that element;
  * - changed: the canvas origin becomes `{ author, at }` and `canvas` active (the Mermaid origin
  *   stays, so a later Mermaid write that changes the node can win it back);
  * - new (a board written in one go, or a human's copy of a Mermaid shape): left as sent. A copy
@@ -108,13 +109,16 @@ export const stampCanvasEdits = ({ base, branch, author, at }) => {
     // origin: kept as the writer sent it.
     if (!previous || !baseOrigin) return element;
     // The common case, allocation-free: the element is exactly as the writer read it.
-    if (sameContent(element, previous)) return element;
+    if (element === previous) return element;
     const keep = previous.customData?.[ORIGIN_KEY] ?? null;
     const keepHash = previous.customData?.[MERMAID_HASH_KEY] ?? null;
-    const restored = withOrigin(element, keep, keepHash);
-    if (sameContent(restored, previous)) {
+    // Unchanged apart from bookkeeping and stamps (a tab that never saw the stamps, or a writer that
+    // dropped or redid them, as agents re-sending a board do): the base's stamps come back, so the
+    // write doesn't count as a canvas edit of that element.
+    if (sameContent(element, previous)) {
+      if (sameStamp(element.customData?.[ORIGIN_KEY], keep) && sameStamp(element.customData?.[MERMAID_HASH_KEY], keepHash)) return element;
       changed = true;
-      return restored;
+      return withOrigin(element, keep, keepHash);
     }
     changed = true;
     return withOrigin(element, { mermaid: baseOrigin.mermaid ?? null, canvas: { author, at }, active: "canvas" }, keepHash);
@@ -122,13 +126,20 @@ export const stampCanvasEdits = ({ base, branch, author, at }) => {
   return changed ? out : branch;
 };
 
-/** A short description of the active origin, for to-mermaid and diff: null when not useful. */
-export const describeOrigin = (element) => {
+const sortedJson = (value) => JSON.stringify(value ?? null, (_key, item) => (item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item));
+const sameStamp = (left, right) => left === right || sortedJson(left) === sortedJson(right);
+
+/**
+ * A short description of the active origin, for to-mermaid and diff: null when not useful.
+ * `authorName` names a canvas author key (diff --since passes one that tells two sessions of one
+ * client apart); by default the key without its `#id`.
+ */
+export const describeOrigin = (element, { authorName = null } = {}) => {
   const origin = originOf(element);
   if (!origin) return null;
   const mermaid = origin.mermaid ? `Mermaid ${origin.mermaid.source}${origin.mermaid.nodeId ? `:${origin.mermaid.nodeId}` : ""}` : null;
   if (origin.active === "canvas") {
-    const who = origin.canvas?.author ? String(origin.canvas.author).replace(/#.*$/, "") : "canvas";
+    const who = origin.canvas?.author ? (authorName ? authorName(String(origin.canvas.author)) : String(origin.canvas.author).replace(/#.*$/, "")) : "canvas";
     return { active: "canvas", text: `canvas edit by ${who}${mermaid ? ` (over ${mermaid})` : ""}`, source: origin.mermaid?.source ?? null };
   }
   return mermaid ? { active: "mermaid", text: mermaid, source: origin.mermaid.source } : null;

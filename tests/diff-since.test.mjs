@@ -111,7 +111,9 @@ test("diff --since a snapshot label, a version prefix, a time and an author list
     const text = formatDiffSince(bySnapshot);
     assert.match(text, /Since snapshot "review"/);
     assert.match(text, /\+ added rectangle "Audit log"/);
-    assert.match(text, /! "Log in \(Ada\)" \(A\): copilot-cli#a1b2c3's edit \("Sign in", written .*\) lost to Ada/);
+    // One copilot-cli session on this board: no session id needed.
+    assert.match(text, /! "Log in \(Ada\)" \(A\): copilot-cli \(agent\)'s edit \("Sign in", written .*\) lost to Ada/);
+    assert.match(text, /2 history entries since: copilot-cli \(agent\) 1, Ada 1\./);
 
     // The same point by version prefix (explicit and bare), and as snapshot:<label>.
     for (const spec of [created.version.slice(0, 10), `version:${created.version.slice(0, 8)}`, "snapshot:review"]) {
@@ -207,7 +209,7 @@ test("xcld snapshot pins through the server; xcld diff --since prints the losers
     const text = await run(["diff", "ds/b", "--since", "review"]);
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Overwritten since then \(1\)/);
-    assert.match(text.stdout, /copilot-cli#a1b2c3's edit \("Sign in"/);
+    assert.match(text.stdout, /copilot-cli \(agent\)'s edit \("Sign in"/);
     const json = JSON.parse((await run(["diff", "ds/b", "--since", "author:Ada", "--json"])).stdout);
     assert.equal(json.since.kind, "author");
     // Since the snapshot just taken: nothing changed, nothing lost.
@@ -243,7 +245,7 @@ test("xcld snapshot pins through the server; xcld diff --since prints the losers
 
 test("watch lines name merges, losers and history entries", () => {
   const merged = formatMergedEvent({ name: "b", version: "abcdef0123456789", author: "human:Ada#t1", applied: [{ kind: "changed", label: "Login" }], overwritten: [{ label: "Login", winner: { author: "human:Ada#t1" }, loser: { author: AGENT } }], unbound: [] }, Date.UTC(2026, 9, 7, 21, 0, 0));
-  assert.equal(merged, `21:00:00.000 MERGED  b vabcdef012345 by Ada: applied changed "Login"; OVERWRITTEN "Login": copilot-cli#a1b2c3 lost to Ada`);
+  assert.equal(merged, `21:00:00.000 MERGED  b vabcdef012345 by Ada: applied changed "Login"; OVERWRITTEN "Login": copilot-cli#a1b2c3 (agent) lost to Ada`);
   const entry = formatHistoryEntry({ entry: "20261007T210000000Z-human_Ada_t1", version: "abcdef0123456789", author: "human:Ada#t1", displayName: "Ada", open: true, coalescedCount: 3, lastCommitAt: Date.UTC(2026, 9, 7, 21), applied: [{}], overwritten: [] }, "grew");
   assert.match(entry, /HISTORY grew {3}20261007T210000000Z-human_Ada_t1 vabcdef012345 by Ada \[human:Ada#t1\], open, 3 save\(s\), 1 applied/);
 });

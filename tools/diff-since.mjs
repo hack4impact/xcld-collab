@@ -13,7 +13,9 @@
 // `overwritten` lists of the entries committed after it (for `author:`, from that entry on). An
 // entry stands for a whole author turn, so a time inside a human's coalesced turn resolves to the
 // entry before it, and the turn counts as "since".
+import { authorLabeler } from "./author-label.mjs";
 import { diffScenes, formatDiff } from "./diff.mjs";
+import { describeUnlabeled, labelContext } from "./unit-label.mjs";
 
 const HEX = /^[0-9a-f]{4,64}$/i;
 const RELATIVE = /^(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)$/i;
@@ -83,10 +85,13 @@ const commitAt = (item) => Number(item.meta.lastCommitAt ?? item.meta.openedAt ?
 const iso = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null);
 const textOf = (element) => String(element?.originalText ?? element?.text ?? "").replace(/\s+/g, " ").trim();
 
-const loserLabels = (elements = []) => {
+// What the losing version said: its texts, or for a unit without text a description of where it
+// was (on the board as it is now), never a bare element id.
+const loserLabels = (elements = [], board = []) => {
   const texts = elements.filter((element) => element?.type === "text").map(textOf).filter(Boolean);
   if (texts.length) return texts;
-  return elements.map((element) => `${element.type ?? "element"} ${element.id}`);
+  const context = labelContext([...elements, ...board]);
+  return elements.map((element) => describeUnlabeled(element, context));
 };
 
 const turnOf = (item) => ({
@@ -227,6 +232,7 @@ export const diffSince = async ({ history, master, since, now = Date.now(), reso
         entry: candidate.entry,
         unitId: lost.unitId,
         label: lost.label,
+        ...(lost.unlabeled ? { unlabeled: true } : {}),
         elementIds: lost.elementIds ?? [],
         winner: { author: winner.author ?? null, side: winner.side ?? null, writtenAt: winner.writtenAt ?? null },
         loser: {
@@ -234,13 +240,16 @@ export const diffSince = async ({ history, master, since, now = Date.now(), reso
           side: loser.side ?? null,
           writtenAt: loser.writtenAt ?? null,
           deleted: Array.isArray(loser.elements) && loser.elements.length === 0,
-          labels: loserLabels(loser.elements),
+          labels: loserLabels(loser.elements, master.scene?.elements ?? []),
+          ...(Array.isArray(loser.elements) && loser.elements.length && !loser.elements.some((element) => element?.type === "text" && textOf(element)) ? { unlabeled: true } : {}),
         },
       });
     }
   }
   const short = (value) => (value ? value.slice(0, 12) : "empty board");
-  const diff = await diffScenes(scene?.elements ?? [], master.scene?.elements ?? [], { old: `${history.board}@${short(version)}`, new: `${history.board}@${short(master.version)} (current)` }, diffOptions);
+  const authors = [...new Set(history.entries.map((candidate) => candidate.meta.author).filter(Boolean))];
+  const authorName = authorLabeler(authors);
+  const diff = await diffScenes(scene?.elements ?? [], master.scene?.elements ?? [], { old: `${history.board}@${short(version)}`, new: `${history.board}@${short(master.version)} (current)` }, { ...diffOptions, authorName });
   return {
     board: history.board,
     current: master.version,
@@ -257,6 +266,8 @@ export const diffSince = async ({ history, master, since, now = Date.now(), reso
       ...(approximate ? { approximate: true } : {}),
     },
     turns: window.map(turnOf),
+    // Every author in the board's history, so names that need a session or tab id get one.
+    authors,
     diff,
     overwritten,
   };
@@ -267,8 +278,18 @@ const clock = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString(
 /** Text for people and agents: the point, the turns since, the semantic diff, then the losers. */
 export const formatDiffSince = (result) => {
   const { since } = result;
+  // One labeler for the whole answer: two sessions of one agent client (or two tabs of one
+  // person) get their short ids, e.g. copilot-cli#8cb0a4 (agent).
+  const who = authorLabeler([
+    ...(result.authors ?? []),
+    since.author,
+    since.by,
+    ...result.turns.map((turn) => turn.author),
+    ...result.overwritten.flatMap((item) => [item.winner.author, item.loser.author]),
+  ]);
+  const quoted = (text, unlabeled) => (unlabeled ? text : `"${text}"`);
   const what = since.kind === "author"
-    ? `${authorLabel(since.author)}'s last entry`
+    ? `${who(since.author)}'s last entry`
     : since.kind === "snapshot"
       ? `snapshot "${since.label}"`
       : since.kind === "time"
@@ -278,8 +299,8 @@ export const formatDiffSince = (result) => {
   const lines = [`Since ${what}${at}: ${since.emptyBoard ? "an empty board (before the first entry)" : `version ${since.version ? since.version.slice(0, 12) : "?"}`}${since.approximate ? " (approximate: that exact version is folded into a turn; compared from the nearest one kept)" : ""}.`];
   if (result.turns.length) {
     const counts = new Map();
-    for (const turn of result.turns) counts.set(turn.displayName ?? authorLabel(turn.author), (counts.get(turn.displayName ?? authorLabel(turn.author)) ?? 0) + 1);
-    lines.push(`${result.turns.length} history entr${result.turns.length === 1 ? "y" : "ies"} since: ${[...counts].map(([who, count]) => `${who} ${count}`).join(", ")}.`);
+    for (const turn of result.turns) counts.set(who(turn.author), (counts.get(who(turn.author)) ?? 0) + 1);
+    lines.push(`${result.turns.length} history entr${result.turns.length === 1 ? "y" : "ies"} since: ${[...counts].map(([name, count]) => `${name} ${count}`).join(", ")}.`);
   } else {
     lines.push("No history entries since then.");
   }
@@ -287,8 +308,8 @@ export const formatDiffSince = (result) => {
   if (result.overwritten.length) {
     lines.push(`Overwritten since then (${result.overwritten.length}); each losing edit is kept in history only, nothing re-applies it:`);
     for (const item of result.overwritten) {
-      const lost = item.loser.deleted ? "a delete" : `"${item.loser.labels.join(" / ")}"`;
-      lines.push(`  ! "${item.label}" (${item.unitId}): ${authorLabel(item.loser.author)}'s edit (${lost}, written ${clock(item.loser.writtenAt)}) lost to ${authorLabel(item.winner.author)} (written ${clock(item.winner.writtenAt)}) [entry ${item.entry}]`);
+      const lost = item.loser.deleted ? "a delete" : quoted(item.loser.labels.join(" / "), item.loser.unlabeled);
+      lines.push(`  ! ${quoted(item.label, item.unlabeled)} (${item.unitId}): ${who(item.loser.author)}'s edit (${lost}, written ${clock(item.loser.writtenAt)}) lost to ${who(item.winner.author)} (written ${clock(item.winner.writtenAt)}) [entry ${item.entry}]`);
     }
   } else {
     lines.push("Nothing overwritten since then.");

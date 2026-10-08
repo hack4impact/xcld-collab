@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergeBoard } from "../tools/merge.mjs";
+import { backfillBookkeeping, fastForwardElements, mergeBoard, sameContent } from "../tools/merge.mjs";
 import { arrow, editBoard, makeBoard, mulberry32, shape, shuffled, text } from "./merge-fixtures.mjs";
 
 const find = (elements, id) => elements.find((element) => element.id === id);
@@ -23,9 +23,10 @@ const smallBoard = () => {
 
 const merge = (input) => mergeBoard({ branchAuthor: "agent#1", branchWrittenAt: 2000, masterMeta: {}, ...input });
 
-// Content the merge must agree on: no version bookkeeping, no arrow back-references.
+// Content the merge must agree on: no bookkeeping (z-order merges separately), no arrow
+// back-references.
 const content = (element) => {
-  const { version, versionNonce, updated, isDeleted, boundElements, ...rest } = element;
+  const { version, versionNonce, updated, seed, created, index, isDeleted, boundElements, ...rest } = element;
   const refs = (boundElements ?? []).filter((entry) => entry.type !== "arrow");
   return JSON.stringify(Object.keys(rest).sort().reduce((copy, key) => ({ ...copy, [key]: rest[key] }), refs.length ? { boundElements: refs } : {}));
 };
@@ -194,6 +195,120 @@ test("key order, version bookkeeping and tombstone-vs-absent are not changes", (
   assert.deepEqual(result.elements, base, "master's objects are kept");
 });
 
+// The real check (2026-10-08): an agent re-sent the whole board with Excalidraw's bookkeeping
+// dropped or changed. Only semantic fields decide whether a side changed a unit.
+const stripped = (element, position = 0) => {
+  const copy = { ...element, version: element.version + 1, versionNonce: 900 + position, customData: { ...(element.customData ?? {}), xcldOrigin: { canvas: { author: "agent#1", at: 1 }, active: "canvas" } } };
+  for (const key of ["seed", "created", "index", "updated"]) {
+    if (position % 2) delete copy[key];
+    else copy[key] = null;
+  }
+  return copy;
+};
+const stamped = (elements) => elements.map((element) => ({ ...element, created: 5, customData: { xcldMermaidHash: "m1-x", xcldOrigin: { mermaid: { source: "main", nodeId: element.id, hash: "m1-x" }, canvas: null, active: "mermaid" } } }));
+
+test("bookkeeping stripped or changed is not a change; the merge fills it back in from master", () => {
+  const base = stamped(smallBoard());
+  const human = edit(base, "b", { x: 40, version: 2 });
+  const resent = base.map(stripped);
+  const branch = [...edit(resent, "a-t", { text: "Alpha 2", originalText: "Alpha 2" }), text("n2", undefined, "new")];
+  const result = merge({ base, master: human, branch, masterMeta: { ...metaFor(base, 1000, "seed"), b: stamp(1500, "human#t1") }, branchWrittenAt: 3000 });
+  assert.deepEqual(result.applied.map((item) => [item.unitId, item.kind]), [["a", "changed"], ["n2", "added"]]);
+  assert.deepEqual(result.overwritten, [], "the human's move is not overwritten by an untouched copy");
+  assert.equal(find(result.elements, "b").x, 40);
+  for (const element of base) {
+    const merged = find(result.elements, element.id);
+    for (const key of ["seed", "created", "index", "updated"]) {
+      assert.equal(merged[key], (element.id === "b" ? human : base).find((item) => item.id === element.id)[key], `${element.id}.${key}`);
+    }
+    if (element.id !== "a-t") {
+      // (The pipeline stamps changed elements: tools/mermaid-origin.mjs stampCanvasEdits.)
+      assert.deepEqual(merged.customData.xcldOrigin, element.customData.xcldOrigin, `${element.id}: the writer's restamped origin doesn't stick`);
+    }
+  }
+  const label = find(result.elements, "a-t");
+  assert.equal(label.originalText, "Alpha 2");
+  assert.ok(label.version > find(base, "a-t").version, "a changed element still gets a higher version");
+  assert.equal(find(result.elements, "a"), find(human, "a"), "an untouched element stays master's object");
+  assert.equal(result.meta.a.author, "agent#1");
+  assert.equal(result.meta.b.author, "human#t1");
+  assert.equal(result.meta.note.author, "seed", "untouched units keep their attribution");
+});
+
+test("real changes are still detected next to stripped bookkeeping: geometry, text, style, bindings, deletes", () => {
+  const base = smallBoard();
+  const changes = [
+    ["move", (elements) => edit(elements, "b", { x: 7 }), "b", "changed"],
+    ["resize", (elements) => edit(elements, "b", { width: 999 }), "b", "changed"],
+    ["text", (elements) => edit(elements, "note", { text: "x", originalText: "x" }), "note", "changed"],
+    ["style", (elements) => edit(elements, "a", { backgroundColor: "#ffc9c9" }), "a", "changed"],
+    ["binding", (elements) => edit(elements, "ab", { endBinding: { elementId: "a", focus: 0, gap: 8 } }), "ab", "changed"],
+    ["points", (elements) => edit(elements, "ab", { points: [[0, 0], [50, 50]] }), "ab", "changed"],
+    ["tombstone", (elements) => edit(elements, "note", { isDeleted: true }), "note", "deleted"],
+    ["omission", (elements) => without(elements, "note"), "note", "deleted"],
+    ["user customData", (elements) => edit(elements, "a", { customData: { owner: "payments" } }), "a", "changed"],
+  ];
+  for (const [name, change, unitId, kind] of changes) {
+    const branch = change(base.map(stripped));
+    const result = merge({ base, master: base, branch });
+    assert.deepEqual(result.applied.map((item) => [item.unitId, item.kind]), [[unitId, kind]], name);
+  }
+});
+
+test("sameContent: null equals absent, xcld's origin stamp never counts, the Mermaid hash only when both have one", () => {
+  const element = { id: "a", type: "rectangle", x: 1, link: null, customData: { xcldMermaidHash: "m1-a", owner: "me" } };
+  assert.ok(sameContent(element, { id: "a", type: "rectangle", x: 1, customData: { owner: "me", xcldMermaidHash: "m1-a" } }));
+  assert.ok(sameContent(element, { ...element, customData: { owner: "me" } }), "a dropped hash is not a change");
+  assert.ok(sameContent(element, { ...element, customData: { ...element.customData, xcldOrigin: { active: "canvas" } } }));
+  assert.ok(!sameContent(element, { ...element, customData: { ...element.customData, xcldMermaidHash: "m1-b" } }), "another hash is");
+  assert.ok(!sameContent(element, { ...element, customData: { xcldMermaidHash: "m1-a" } }), "user customData counts");
+  assert.ok(!sameContent(element, { ...element, link: "https://example.com" }));
+  assert.ok(sameContent({ id: "t", type: "text", customData: null }, { id: "t", type: "text" }));
+});
+
+test("backfillBookkeeping fills what was omitted and keeps seed and created, without mutating", () => {
+  const from = { id: "a", type: "rectangle", seed: 7, created: 5, index: "a1", version: 3, versionNonce: 33, updated: 9, customData: { xcldMermaidHash: "m1-a", xcldOrigin: { active: "mermaid" } } };
+  const element = { id: "a", type: "rectangle", seed: 99, index: null, version: 4, customData: { owner: "me" } };
+  const filled = backfillBookkeeping(element, from);
+  assert.deepEqual(filled, { id: "a", type: "rectangle", seed: 7, created: 5, index: "a1", version: 4, versionNonce: 33, updated: 9, customData: { owner: "me", xcldMermaidHash: "m1-a", xcldOrigin: { active: "mermaid" } } });
+  assert.deepEqual(element, { id: "a", type: "rectangle", seed: 99, index: null, version: 4, customData: { owner: "me" } });
+  assert.equal(backfillBookkeeping(from, from), from);
+  assert.equal(backfillBookkeeping({ ...from, version: 8 }, from).version, 8, "a value the writer sent is kept");
+});
+
+test("z-order merges on its own: a move survives a concurrent edit; an omitted index is no move", () => {
+  const base = smallBoard();
+  const master = edit(base, "b", { x: 77, version: 2 });
+  const raised = merge({ base, master, branch: edit(base, "b", { index: "a9" }), masterMeta: { b: stamp(1500, "human") } });
+  assert.equal(find(raised.elements, "b").x, 77, "the human's move stays");
+  assert.equal(find(raised.elements, "b").index, "a9", "the branch's raise applies too");
+  assert.deepEqual(raised.overwritten, []);
+  assert.deepEqual(raised.applied, [], "a z-order move alone is not reported");
+  assert.ok(find(raised.elements, "b").version > 2);
+  const omitted = merge({ base, master, branch: base.map(({ index, ...element }) => element) });
+  assert.deepEqual(omitted.elements.map((element) => element.index), master.map((element) => element.index));
+  assert.equal(omitted.elements.find((element) => element.id === "b"), find(master, "b"));
+});
+
+test("fastForwardElements: re-sent copies go back to master's, filled-in copies replace stripped ones, tombstones and order stay", () => {
+  const base = stamped(smallBoard());
+  const branch = edit(edit(base.map(stripped), "note", { isDeleted: true }), "b-t", { text: "n2", originalText: "n2" });
+  const merged = merge({ base, master: base, branch });
+  assert.equal(merged.fastForward, true);
+  const out = fastForwardElements({ branch, master: base, merged: merged.elements });
+  assert.deepEqual(out.map((element) => element.id), branch.map((element) => element.id));
+  assert.equal(find(out, "note"), find(branch, "note"), "a tombstone stays as written");
+  for (const element of out.filter((item) => item.id !== "note")) {
+    const original = find(base, element.id);
+    assert.equal(element.seed, original.seed, element.id);
+    assert.equal(element.index, original.index, element.id);
+    if (element.id !== "b-t") assert.equal(element, original, `${element.id} is master's object`);
+  }
+  assert.equal(find(out, "b-t").originalText, "n2");
+  const tab = edit(base, "a", { x: 3, version: 2 });
+  assert.equal(fastForwardElements({ branch: tab, master: base, merged: merge({ base, master: base, branch: tab }).elements }), tab, "a tab's complete save is kept as is");
+});
+
 test("agent edits without version bumps are detected by content, and the merged copy gets a higher version", () => {
   const base = smallBoard();
   const master = edit(base, "a", { x: 10, version: 4, versionNonce: 44 });
@@ -287,6 +402,7 @@ test(`D3: ${SEEDS} seeded edit scripts merge deterministically, order-independen
     assert.deepEqual(permuted.two.overwritten, humanFirst.two.overwritten, `${context}: input element order (report)`);
     assert.deepEqual(permuted.two.meta, humanFirst.two.meta, `${context}: input element order (meta)`);
     assert.deepEqual(humanFirst.two.elements.map(content), agentFirst.two.elements.map(content), `${context}: merge order`);
+    assert.deepEqual(humanFirst.two.elements.map((element) => [element.id, element.index]), agentFirst.two.elements.map((element) => [element.id, element.index]), `${context}: merge order (z-order)`);
     assert.deepEqual(humanFirst.two.meta, agentFirst.two.meta, `${context}: merge order (meta)`);
 
     for (const { one, two } of [humanFirst, agentFirst]) {
@@ -330,6 +446,23 @@ function assertNoSilentLoss({ base, master, branch, result, context }) {
       }
       const final = finalById.get(id);
       assert.equal(final && content(final), written && content(settle(written)), `${context}: ${side} change to ${id} silently lost`);
+    }
+    // Z-order: a move (new index) survives unless the other side moved the element too, or the
+    // unit went to the other side.
+    const other = side === "master" ? branch : master;
+    const otherById = new Map(other.filter((element) => !element.isDeleted).map((element) => [element.id, element]));
+    for (const [id, element] of live) {
+      const final = finalById.get(id);
+      if (!final || element.index === baseById.get(id)?.index || typeof element.index !== "string") {
+        continue;
+      }
+      if (result.overwritten.some((entry) => entry.loser.side === side && entry.elementIds.includes(id))) {
+        continue;
+      }
+      if (typeof otherById.get(id)?.index === "string" && otherById.get(id).index !== baseById.get(id)?.index) {
+        continue;
+      }
+      assert.equal(final.index, element.index, `${context}: ${side} z-order move of ${id} silently lost`);
     }
   }
 }

@@ -91,6 +91,7 @@ const publicRecord = (record) => ({
 const overwrittenFrom = (canvasOverwritten, author, writtenAt) => canvasOverwritten.map((item) => ({
   unitId: item.unitId,
   label: item.label,
+  ...(item.unlabeled ? { unlabeled: true } : {}),
   elementIds: item.elementIds,
   winner: { side: "branch", author, writtenAt },
   loser: { side: "master", ...item.loser },

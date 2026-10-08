@@ -2,6 +2,7 @@
 // `human:<name>#<tabId>`: the name is shared by all of a person's tabs (remembered per
 // browser), the tab id is hidden and unique per tab (stable across reloads of that tab).
 // Random names and a server-checked unique name are for future shared servers, not here.
+import { authorLabeler } from "../../tools/author-label.mjs";
 
 export const NAME_STORAGE_KEY = "xcld.authorName";
 export const TAB_STORAGE_KEY = "xcld.tabId";
@@ -83,32 +84,8 @@ export const identityHeaders = ({ name, tabId }) => ({
   "X-Xcld-Tab": tabId,
 });
 
-/** A readable name for an author key, relative to this tab (`self`: `{ name, tabId }`). */
-export const describeAuthor = (key, self = null) => {
-  const text = String(key ?? "");
-  const human = /^human:(.+)#([A-Za-z0-9_-]+)$/.exec(text);
-  if (human) {
-    if (self && human[1] === self.name) {
-      return human[2] === self.tabId ? "you" : `${human[1]} (another tab)`;
-    }
-    return human[1];
-  }
-  const agent = /^agent:(.+)#[A-Za-z0-9_.-]+$/.exec(text);
-  if (agent) {
-    return `${agent[1]} (agent)`;
-  }
-  const cli = /^cli:(.+)$/.exec(text);
-  if (cli) {
-    return `${cli[1]} (CLI)`;
-  }
-  if (text === "external") {
-    return "a direct file edit";
-  }
-  if (text === "init") {
-    return "the first snapshot";
-  }
-  return text || "someone";
-};
+/** A readable name for one author key, relative to this tab (`self`: `{ name, tabId }`). */
+export const describeAuthor = (key, self = null) => authorLabeler([key], { self })(key);
 
 /**
  * "Duplicate tab" copies sessionStorage, so two tabs can start with one id. A new tab announces

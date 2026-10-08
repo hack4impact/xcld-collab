@@ -217,7 +217,13 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   merged board. You can keep dragging or typing meanwhile.
 - **The banner** above your name lists what merged and from whom, e.g. "Merged from
   copilot-cli (agent): 1 added, 1 changed · 1 overwritten edit (1 of yours)". It doesn't take
-  focus. **details** lists each change with its time; **×** dismisses it.
+  focus. **details** lists each change with its time; **×** dismisses it. When two sessions of
+  one agent client (or two tabs with one name) appear on it, each gets its short id:
+  "copilot-cli#8cb0a4 (agent) overwrote copilot-cli#5d1209 (agent)'s edit". A shape without
+  text is described by where it is, e.g. `unlabeled arrow from "Payments service" to "Fraud
+  detection"` or `unlabeled rectangle near "Ledger v2"`. Only real edits are listed: an agent
+  that re-sends shapes it didn't change (even with Excalidraw's bookkeeping fields dropped or
+  changed) doesn't claim them, and doesn't overwrite your edits with them.
 - **Overwritten** means you and someone else changed the same shape (or its label) since you
   last had the same board, and the whole shape went to the later edit. "Your edit was
   overwritten by …" means theirs is on the board; "your newer edit overwrote …'s" means yours
