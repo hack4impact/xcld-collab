@@ -23,7 +23,10 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
 - **A board URL does not seed a diagram.** Opening `?board=<path>` without first writing an
   inbox starts an empty, unsaved canvas. The first real edit saves it.
 - **Feedback comes out through `xcld diff`.** It compares the board with a snapshot and lists
-  what changed, by meaning rather than by pixel.
+  what changed, by meaning rather than by pixel. `xcld diff <board> --since <when>` compares
+  with any point in version history and also lists every edit that was overwritten.
+- **You and several agents can edit one board at the same time.** Writes merge; see
+  [the walkthrough](#walkthrough-you-and-two-agents-on-one-board).
 
 ## The loop
 
@@ -193,7 +196,9 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   `?board=myproject/flow`. Board path segments allow letters, digits, `.`, `_` and `-`
   (e.g. `auth-flow`, `v2.data-model`).
 - **Snapshot at every hand-off.** Each agent → human → agent switch is a natural point.
-  Snapshots are cheap, and `diff` always compares against the latest one.
+  Snapshots are cheap: `diff` compares against the latest one, and each snapshot is also a
+  pinned version in history, so `diff --since <snapshot name>` finds any of them later
+  (`xcld snapshot <board> --name review-1` picks the name).
 - **Editing the same board as an agent works.** Your saves and the agent's writes are merged
   by the server: different shapes never clash, and when you both changed the same shape (or
   its label), the later change wins and the other one stays in version history. Agents should
@@ -217,15 +222,64 @@ covered by the [decision tree](reference.md#saving-and-exporting).
   last had the same board, and the whole shape went to the later edit. "Your edit was
   overwritten by …" means theirs is on the board; "your newer edit overwrote …'s" means yours
   is. The losing version is kept in **version history only**: the canvas never puts it back by
-  itself, and your tab never sends it again. To see it, copy the history out with
-  `docker exec xcld-collab xcld history export <board>` (each entry's `.meta.json` lists the
-  `overwritten` units with the losing elements), or `--full` for every version as a board.
+  itself, and your tab never sends it again. To see what lost, run
+  `docker exec xcld-collab xcld diff <board> --since 30m` (or `--since author:<your name>`):
+  it lists each overwritten shape with who won, who lost and the losing label. For everything,
+  copy the history out with `docker exec xcld-collab xcld history export <board>` (each entry's
+  `.meta.json` lists the `overwritten` units with the losing elements), or `--full` for every
+  version as a board.
 - **"An edit you made while saving was replaced"** is rare: you changed a shape in the split
   second while a save was on its way, and the merge changed that same shape. The merged shape
   wins; that edit is not in history, so redo it if you still want it.
 - **Ctrl+S** (Cmd+S) saves now and closes your current turn in version history: the status
   says "Saved checkpoint", or "No changes since the last checkpoint". Without Ctrl+S a turn
   closes by itself after 3 minutes without edits, or when someone else writes.
+
+## Walkthrough: you and two agents on one board
+
+You keep the canvas open while two agents work on the same board, one in Mermaid and one in
+board JSON. Nothing needs to wait for anyone; this is what you see.
+
+1. **Start from a pinned version.** With the board open at
+   `http://127.0.0.1:3100/?board=myproject/arch`:
+
+   ```powershell
+   docker exec xcld-collab xcld snapshot myproject/arch --name kickoff
+   docker exec xcld-collab xcld watch myproject/arch     # optional, in a second terminal
+   ```
+
+   `watch` prints a line for every merge and every history entry from now on.
+2. **Give each agent its part.** For example, agent A: "Read `myproject/arch`, then add the
+   caching layer as Mermaid source `cache` and rename *API* to *API gateway*." Agent B: "Read
+   `myproject/arch`, then add a note box *Owner: payments team* next to *Ledger* and recolor
+   *API* red, with `write_board`." Both edit *API*; everything else is disjoint.
+3. **Keep drawing.** Rename *Ledger* to *Ledger v2* while they work. Your edits save as usual;
+   when an agent's write lands, your tab saves first, then shows the merged board.
+4. **Read the banner.** Each merge shows "Merged from copilot-cli (agent): …". Agent A's rename
+   and agent B's recolor of *API* touch the same shape. If B read the board before A's rename
+   landed, the two edits conflict: the later one takes the whole shape (label and color), and the
+   banner says "1 overwritten edit" with who won. The losing agent's answer says the same
+   ("overwritten by …"). If B read after A's write, B's recolor simply applies on top.
+5. **Ask what happened**, at any time:
+
+   ```powershell
+   docker exec xcld-collab xcld diff myproject/arch --since kickoff
+   ```
+
+   This lists every change since the snapshot (the new cache shapes, the note, *Ledger v2*,
+   *API*'s final label and color) and, under "Overwritten since then", the losing edit of
+   *API* with its author and label. Nothing else is missing: if a shape changed and isn't
+   listed as overwritten, the later writer had seen the earlier change.
+6. **Agents check their own losses** the same way: `diff` with `since: "author:<their author
+   key>"` (each write's answer names it; the skill tells them to) shows what changed since their last write, including
+   their own edits that lost. They re-read the board and decide whether to write again.
+7. **A `queued` answer is fine.** If the disk is slow (Docker Desktop on a busy machine), an agent
+   may get `queued` instead of `merged` after 5 s. Its write is safe in the journal and lands
+   shortly; the banner and `watch` show it when it does.
+
+What goes to the later edit is always a whole shape with its label; edits to different shapes
+never conflict. A Mermaid write that sat in a queue counts by when it was written, so it loses
+to the edit you made after it.
 
 ## What doesn't work yet
 

@@ -524,7 +524,7 @@ export function createVersionStore({
     const files = entryFiles(board.name, entry);
     const delta = await timeIo("history.read", board.name, () => readRecordFile(files.delta));
     if (delta?.data?.xcld?.version === version) {
-      const parent = await versionScene(board, delta.data.xcld.parent, { keep: false, guard: guard + 1 });
+      const parent = await versionScene(board, delta.data.xcld.parent, { keep: false, guard: guard + 1, before: entry });
       if (parent) {
         const scene = applyDelta(parent.scene, delta.data);
         scene.files = await loadFiles(board.name, delta.data.xcld.files);
@@ -594,10 +594,32 @@ export function createVersionStore({
     return board.index;
   };
 
+  // The newest closed entry before `before` that holds `version`. A board that returns to an earlier
+  // state (A, B, A again) repeats a version id; the index then names the newest entry, and a delta's
+  // parent must come from an older one. Only history written before that case became a checkpoint
+  // (see commitBranch) needs this scan.
+  const olderEntryFor = async (board, version, before) => {
+    let names = [];
+    try {
+      names = await timeIo("history.list", board.name, () => fs.readdir(historyDir(board.name)));
+    } catch {
+      return null;
+    }
+    const older = names.filter((item) => item.endsWith(".meta.json")).map((item) => item.slice(0, -".meta.json".length)).filter((entry) => entry < before).sort().reverse();
+    for (const entry of older) {
+      const meta = await readJson(path.join(historyDir(board.name), `${entry}.meta.json`)).catch(() => null);
+      if (meta?.version === version && meta.record !== "none") {
+        return entry;
+      }
+    }
+    return null;
+  };
+
   // Resolves a version id (the sha256 of master's bytes, the ETag) to its scene: the cached
   // master, master on disk, the base store, then history. `text` is set only when the exact
   // master bytes are known. `keep: false` (a delta's parent) leaves the recent cache alone.
-  const versionScene = async (board, version, { keep = true, guard = 0 } = {}) => {
+  // `before` (a delta's parent) only takes history entries older than that entry.
+  const versionScene = async (board, version, { keep = true, guard = 0, before = null } = {}) => {
     if (!version) {
       return null;
     }
@@ -625,7 +647,11 @@ export function createVersionStore({
       }
       return record;
     }
-    const entries = [...new Set([(await historyIndex(board)).get(version), board.last?.entry].filter(Boolean))];
+    let indexed = (await historyIndex(board)).get(version);
+    if (before && indexed && !(indexed < before)) {
+      indexed = await olderEntryFor(board, version, before);
+    }
+    const entries = [...new Set([indexed, before && board.last?.entry && !(board.last.entry < before) ? null : board.last?.entry].filter(Boolean))];
     for (const entry of entries) {
       const found = await readEntry(board, entry, version, guard);
       if (found) {
@@ -1184,7 +1210,14 @@ export function createVersionStore({
     let record = "checkpoint";
     let depth = 0;
     let parentScene = null;
-    if (coalesce) {
+    // A version already in history (the board went back to an earlier state: A, B, A) is a
+    // checkpoint: as a delta, the index (newest entry per version) would make the chain loop.
+    const knownEntry = (await historyIndex(board)).get(version);
+    // (A replay of a commit that crashed mid-history finds its own entry: not a repeat.)
+    const repeated = Boolean(knownEntry && knownEntry !== entry && knownEntry !== board.open?.entry) || (coalesce && board.open.parents?.[0] === version);
+    if (repeated) {
+      // Stays a checkpoint.
+    } else if (coalesce) {
       if (board.open.record === "delta" && Number.isInteger(board.open.depth) && board.open.parents?.[0]) {
         const parentVersion = board.open.parents[0];
         parentScene = board.chainBase?.version === parentVersion
@@ -1588,6 +1621,17 @@ export function createVersionStore({
     return { version, text: found.text ?? canonicalText(found.scene), scene: found.scene };
   });
 
+  // When a version in the base store was first kept (birth time where the file system has one,
+  // else its last hand-out): `diff --since` dates a read version that history folded into a turn.
+  const baseKeptAt = async (name, version) => {
+    try {
+      const stat = await fs.stat(basePath(name, version));
+      return stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+    } catch {
+      return null;
+    }
+  };
+
   const readMaster = async (name) => {
     await ensureLoaded(name);
     const cached = await cachedMaster(name);
@@ -1650,8 +1694,13 @@ export function createVersionStore({
   // Ctrl+S: closes the open entry. `pin` (a label) also makes the current version's entry a full
   // checkpoint, so a pinned version never depends on deltas (snapshots as pinned versions).
   // With `author`, only that author's open entry is closed (a tab closes its own turn).
+  // A pin first adopts master as it is on disk (a direct write not adopted yet, or the `init`
+  // snapshot of a board that existed before versions), so the pinned version is what is there.
   const checkpoint = (name, { pin = null, author = null } = {}) => enqueue(name, async () => {
     const board = await loadBoard(name);
+    if (pin && !closed) {
+      await syncExternal(board);
+    }
     const own = !author || board.open?.author === author;
     const entry = own ? board.open?.entry ?? null : null;
     const closedEntry = own ? await closeOpenEntry(board, "checkpoint") : false;
@@ -1685,7 +1734,9 @@ export function createVersionStore({
       await writeCheckpoint(board.name, files.checkpoint, board.version, found.scene, found.text);
     }
     const pinnedAt = now();
-    await writeAtomic(files.meta, `${JSON.stringify({ ...meta, record: wasDelta ? "checkpoint" : meta.record ?? "checkpoint", depth: 0, pinned: label, pinnedAt }, null, 2)}\n`, { kind: "history", board: board.name });
+    // `pinned` is the latest label; `pins` keeps every label this version was pinned under.
+    const pins = [...(Array.isArray(meta.pins) ? meta.pins : meta.pinned ? [{ label: meta.pinned, at: meta.pinnedAt ?? null }] : []), { label, at: pinnedAt }];
+    await writeAtomic(files.meta, `${JSON.stringify({ ...meta, record: wasDelta ? "checkpoint" : meta.record ?? "checkpoint", depth: 0, pinned: label, pinnedAt, pins }, null, 2)}\n`, { kind: "history", board: board.name });
     if (wasDelta) {
       await timeIo("history.unlink", board.name, () => unlinkIfExists(files.delta));
     }
@@ -1760,5 +1811,5 @@ export function createVersionStore({
     }
   };
 
-  return { start, submitBranch, readVersion, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, slowIo, whenIdle, close, parseAuthorKey, stateDir: xcld };
+  return { start, submitBranch, readVersion, baseKeptAt, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, slowIo, whenIdle, close, parseAuthorKey, stateDir: xcld };
 }

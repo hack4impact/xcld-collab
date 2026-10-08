@@ -1,0 +1,9 @@
+flowchart TD
+  Client["Web client"] --> API["API"]
+  API --> Orders["Orders service"]
+  API --> Payments["Payments service"]
+  Orders --> OrdersDB["Orders DB"]
+  Payments --> Ledger["Ledger"]
+  Orders --> Queue["Event queue"]
+  Queue --> Notify["Notifications"]
+  Queue --> Analytics["Analytics"]

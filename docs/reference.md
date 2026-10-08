@@ -232,7 +232,7 @@ it; browser saves and CLI writes are not agent writes for this rule.
 
 ## Commands
 
-### `xcld snapshot <board>`
+### `xcld snapshot <board> [--name <label>]`
 
 Copies the board to `boards/.snapshots/<board>.<timestamp>.excalidraw` and prints the path.
 Nested boards mirror their folders, e.g.
@@ -241,10 +241,25 @@ it also writes the Mermaid twin `<timestamp>.mmd` alongside and prints that path
 [Saving and exporting](#saving-and-exporting)). Take one at every hand-off. `diff`
 compares against the latest one.
 
+**It also pins the version** in the board's history under `--name` (default: the copy's
+timestamp, e.g. `20261008T063936443Z`) and prints the version id: the history entry becomes a
+full checkpoint, found again by [`xcld diff <board> --since <label>`](#xcld-diff-board---since-since---json)
+(it will be kept by history pruning, #23, once that is built). A version can be pinned under
+several names. If the server isn't reachable, only the copy is made and the last line says
+"Not pinned in version history: …".
+
+How the two relate: the `.snapshots/` copy is a plain file next to your boards, used by
+`xcld diff <board>` (no `--since`) and kept for compatibility; the pinned version lives in
+version history ([where history lives](../README.md#where-history-lives)) with the board's
+other versions and its overwritten edits, which is what `--since` reads. Both hold the same
+board unless a write lands between the copy and the pin (then a `note:` line says the pin is
+the newer one).
+
 ```text
-> xcld snapshot examples/demo
-/boards/.snapshots/examples/demo.20261003T001424894Z.excalidraw
-/boards/.snapshots/examples/demo.20261003T001424894Z.mmd
+> xcld snapshot docs/example --name review-1
+/boards/.snapshots/docs/example.20261008T063936443Z.excalidraw
+/boards/.snapshots/docs/example.20261008T063936443Z.mmd
+pinned version 10bec25b8f2f3ddfcef4d6d1e7b6f2ee2275aef657c80b197770d2d58596c250 as "review-1" (xcld diff docs/example --since "review-1")
 ```
 
 ### `xcld diff <board> [--json]`
@@ -288,6 +303,81 @@ Mermaid, it's the Mermaid node ID (`Fix`, `Req`), so agents can map it straight 
 (`added`/`removed`/`relabeled`), `edges` (`added`/`removed`/`rewired`/`relabeled`),
 `notes` (`added`/`removed`/`changed`), `styles`, `moves`. Each change also has `rules: []`
 or matching rule objects when a design rule applies.
+
+### `xcld diff <board> --since <since> [--json]`
+
+Compares the board now with the board at a point in its version history, and lists every edit
+**overwritten** since then: units (a shape and its label) that two writers changed without
+seeing each other's change, where the later edit won. The losing edit lives in history only;
+this is how you see it. `<since>` is:
+
+| Form | Point |
+|---|---|
+| `author:<name or key>` | that author's last history entry, e.g. `author:Ada`, `author:copilot-cli`, `author:agent:copilot-cli#3f9a1c`. Losers from that entry on, so the author's own losses show |
+| a snapshot name (`snapshot:<name>` to be explicit) | the version `xcld snapshot` pinned under that name |
+| a version id prefix, 4+ hex digits (`version:<prefix>`) | that version (the `version` from `xcld read` / `read_board`, an `ETag`) |
+| `90s`, `10m`, `2h`, `1d`, or an ISO time (`time:<when>`) | the last history entry at or before that time; before the first one, an empty board |
+
+History has one entry per author turn (a person's saves fold into one), so a time inside
+someone's turn counts that whole turn as "since". The first lines say which entry the point
+resolved to and who wrote since; then the [semantic diff](#xcld-diff-board---json); then the
+losers, each with the history entry that recorded it.
+
+```text
+> xcld diff docs/example --since review-1
+Since snapshot "review-1" (2026-10-08 06:39:36 UTC): version 10bec25b8f2f.
+2 history entries since: copilot-cli 1, Ada 1.
+Semantic diff docs/example@10bec25b8f2f -> docs/example@529ec1779002 (current)
+Nodes:
+  ~ relabeled "Analytics" -> "Analytics (batch)" (Analytics) [canvas edit by agent:copilot-cli (over Mermaid main:Analytics)]
+  ~ relabeled "API" -> "Public API" (API) [canvas edit by human:Ada (over Mermaid main:API)]
+Overwritten since then (1); each losing edit is kept in history only, nothing re-applies it:
+  ! "Public API" (API): copilot-cli#3f9a1c's edit ("API gateway", written 2026-10-08 06:39:06) lost to Ada (written 2026-10-08 06:39:36) [entry 20261008T063936.705Z-human_Ada_tab1]
+```
+
+Here the agent renamed *API* from the snapshot's version, and Ada, also from the snapshot's
+version, renamed it later: her edit won and the agent's "API gateway" is the loser.
+
+`--json` prints `{ board, current, since: { spec, kind, version, entry, at, author?, label?,
+emptyBoard?, approximate? }, turns: [{ entry, author, displayName, at, version, applied,
+overwritten, open? }], diff, overwritten: [{ entry, unitId, label, elementIds, winner: { author,
+side, writtenAt }, loser: { author, side, writtenAt, deleted, labels } }] }`. For example, the
+agent's own view (`--since author:copilot-cli --json`, trimmed):
+
+```json
+{
+  "since": { "spec": "author:copilot-cli", "kind": "author", "version": "5ff18e9debbc…", "entry": "20261008T063936.658Z-agent_copilot-cli_3f9a1c", "author": "agent:copilot-cli#3f9a1c" },
+  "turns": [
+    { "entry": "20261008T063936.658Z-agent_copilot-cli_3f9a1c", "author": "agent:copilot-cli#3f9a1c", "applied": 2, "overwritten": 0 },
+    { "entry": "20261008T063936.705Z-human_Ada_tab1", "author": "human:Ada#tab1", "applied": 1, "overwritten": 1, "open": true }
+  ],
+  "overwritten": [
+    { "unitId": "API", "label": "Public API", "winner": { "author": "human:Ada#tab1", "side": "branch", "writtenAt": 1791441576704 },
+      "loser": { "author": "agent:copilot-cli#3f9a1c", "side": "master", "writtenAt": 1791441546637, "deleted": false, "labels": ["API gateway"] } }
+  ]
+}
+```
+
+It asks the server (`GET /api/diff`); if the server isn't reachable it reads the history folder
+and the board file itself and says so on stderr. Errors: a spec that matches nothing ("…is not
+in the history of …"), an ambiguous version prefix, an author with no entries (the message
+lists the board's authors). `xcld diff <board>` without `--since` is unchanged.
+
+### `xcld watch <board> [--json]`
+
+Prints, as they happen, every merge on the board (the event the canvas banner is built from)
+and every new, grown or closed history entry, until Ctrl+C. A history line carries the time of
+the entry's last commit (here Ada's turn, closed by the agent's write). `--json` prints one object per
+line. Use it to follow several writers at once, e.g. in the
+[real check](../scripts/real-check/README.md).
+
+```text
+> xcld watch docs/example
+Watching docs/example on http://127.0.0.1:3100: 3 history entries so far, last: 20261008T063936.705Z-human_Ada_tab1 by Ada. Ctrl+C to stop.
+06:40:27.361 MERGED  docs/example v03d7dd982dfa by copilot-cli#3f9a1c: applied changed "Ledger v2"
+06:39:36.726 HISTORY closed 20261008T063936.705Z-human_Ada_tab1 v529ec1779002 by Ada [human:Ada#tab1], closed by agent-merge, 1 save(s), 1 applied, overwritten: "Public API" (copilot-cli#3f9a1c lost to Ada)
+06:40:27.323 HISTORY new    20261008T064027.297Z-agent_copilot-cli_3f9a1c v03d7dd982dfa by copilot-cli [agent:copilot-cli#3f9a1c], closed by agent-write, 1 save(s), 1 applied
+```
 
 ### `xcld rules <board>`
 
@@ -582,6 +672,12 @@ levels.
   `closed: false` means nothing changed since the last checkpoint. 404 if the board doesn't
   exist. Only `POST` takes the `/checkpoint` suffix, so a board named `<path>/checkpoint` still
   works with `GET` and `PUT`.
+  With `Content-Type: application/json` and `{ "pin": "<label>" }` (what `xcld snapshot` sends),
+  it also **pins** the current version: a direct write not adopted yet is adopted first, any
+  open entry is closed, and the version's history entry becomes a full checkpoint labelled
+  `<label>` (a letter or digit, then up to 99 letters, digits, spaces, `.`, `_`, `:` or `-`;
+  400 `invalid-pin` otherwise). The answer adds `pinned: { label, entry, version, pinnedAt }`.
+  A version can carry several labels.
 
   ```text
   > curl -si -X POST -H "X-Xcld-Author-Name: Ada%20Lovelace" -H "X-Xcld-Tab: tab1" http://127.0.0.1:3100/api/board/sandbox/guard/checkpoint
@@ -591,6 +687,15 @@ levels.
   {"ok":true,"closed":false,"entry":null,"version":"660b905aec1d…"}
   ```
 
+- `GET /api/diff/<path>?since=<spec>` is [`xcld diff --since`](#xcld-diff-board---since-since---json)
+  as JSON: `{ board, current, since, turns, diff, overwritten }`. 400 `since-required`,
+  `invalid-since` or `ambiguous-since`, 404 `since-not-found` or `board-not-found`, each with a
+  `message`.
+- `GET /api/history/<path>` lists the board's history entries, oldest first:
+  `{ name, version, entries: [{ entry, version, author, displayName, kind, record, openedAt,
+  lastCommitAt, closedBy, coalescedCount, applied, overwritten, open?, pinned?, pins? }] }`
+  (`overwritten` without the losing elements; `version: null` for an entry that only recorded
+  losers). `xcld watch` reads it.
 - `GET /api/config` returns `{ authorName, writeWaitMs, timing }` (`authorName` is
   `XCLD_AUTHOR_NAME`, the canvas's default author name).
 - `GET /api/status` returns `{ ok, pending, failing, slowIo }`: writes waiting in the journal per
@@ -680,8 +785,8 @@ label, never `<br/>`.
 | `write_board` | `board`, `base` (version from `read_board`, `null` for a new board), `elements` (the whole board), optional `appState`, `files` | Writes through `POST /api/branch` as `agent:<MCP client name>#<process id>`; returns `status` (`merged` or `queued`), `version`, `applied`, `overwritten`. Errors (unknown base, bad input) are tool errors |
 | `write_mermaid` | `board`, `mermaid`, optional `base` (version from `read_board`; absent: the board as it is now), `source` (the diagram's name on the board, default `main`), `position` (`below`, `right` or `near:<id>`, for a diagram that isn't on the board yet) | Writes through `POST /api/mermaid` as `agent:<MCP client name>#<process id>`, with this process's clock as the write time: the server applies the Mermaid to the board and merges it. Returns `status` (`merged`, `queued`, or `needs-tab` with a `pendingId` for a diagram that isn't on the board yet: open `url`, or the server lays a flowchart out after about 2 minutes), `version`, `applied`, `overwritten`, `ops`, `source`, `noop` (this exact Mermaid was already applied), `hint` (a new source name, when the write deleted most of its source), `url` and the design-rules briefing; snapshots first when `snapshot,on-agent-write` is on. A syntax error (with its line), an unknown base, a bad `source` or `position`, or a server that isn't reachable are tool errors; nothing is written |
 | `mermaid_status` | `board`, `pendingId` | Where a pending write is: `pending` (with `layoutAt`), `landing`, `landed` (`via` tab, grid or server, `version`), `superseded` or `waiting-for-tab` |
-| `snapshot` | `board` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path |
-| `diff` | either `board`, or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings |
+| `snapshot` | `board`, optional `name` | Same as `xcld snapshot`: snapshot path and, unless `XCLD_AUTO_EXPORT=off`, Mermaid twin path, plus the pinned `label` and `version` (`warning` when the server couldn't pin it) |
+| `diff` | either `board` (optional `since`), or `from` + `to`; optional `format` = `text` (default) or `json` | Same semantic diff as `xcld diff`, including tags/legend/warnings. With `since` (a version prefix, a snapshot label, `author:<name>` or a time), the same as `xcld diff --since`: changes since that point plus every overwritten unit, with winner, loser and the loser's labels. `since: "author:<the author key your writes return>"` shows what you lost since your last write |
 | `check_board` | `board` | Same open-item result and `<br>` label warnings as `xcld check` |
 | `board_url` | `board` | `XCLD_PUBLIC_URL/?board=<path>`, defaulting to `http://127.0.0.1:3100/?board=<path>` |
 | `open_in_canvas` | `checkpointId`, required `board`, optional `overwrite` = `false` | Writes `boards/<path>.view.json` from an Excalidraw MCP checkpoint and returns the canvas URL |
@@ -842,6 +947,46 @@ issue #9 / the widget network spike. Fonts come from the canvas container's
 `/excalidraw-assets/` endpoint. Do **not** claim the widget is zero-egress yet. The switch
 points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.external` /
 `output.paths`) and `src/server.ts` (`resourceDomains` / `connectDomains`).
+
+## Concurrency acceptance test
+
+`tests/concurrency.mjs` is the acceptance test of parallel editing
+([design](DESIGN.md#concurrency-acceptance-wave-2)). A seeded scheduler runs a simulated human
+tab (`PUT` with its base, author headers and edit age, saving before every reload), a JSON
+agent (`POST /api/branch`, sometimes from an older read) and a Mermaid agent (`POST
+/api/mermaid`, the default source and a named one, sometimes an old write time) against one board on an
+in-process server, interleaved at random. Every change carries a unique label. Per seed it
+checks that nothing is silently lost (each change is in the final board, kept in history as
+overwritten, or replaced by a later writer who had seen it), that history rebuilds every entry
+and every author turn, that every overwritten unit is in a `merged` event and in
+`diff --since`, D8 (a queued stale Mermaid write loses the unit the human edited since, its
+disjoint edit applies) and D3 (the seed run twice gives a byte-identical board). A `queued`
+answer is expected on a slow disk; the writer waits for the landing.
+
+- **Default suite** (`node --test tests`): 50 seeds × 24 steps, each twice, plus 5 seeds where
+  every agent write answers `queued`. About 40 s.
+- **Long mode:**
+
+  ```powershell
+  node tests/concurrency.mjs --seeds 1000                 # seeds 1..1000, each run twice
+  node tests/concurrency.mjs --start 5000 --seeds 200 --parallel 8
+  node tests/concurrency.mjs --seeds 50 --wait-ms 1       # every agent write answers queued
+  node tests/concurrency.mjs --start 157 --seeds 1 --once # rerun one seed
+  ```
+
+  Options: `--seeds N` (default 50), `--start S` (default 1), `--steps K` (default 24),
+  `--parallel P` seeds at a time (default 4), `--wait-ms MS` (the server's write wait; 1 makes
+  agents get `queued`), `--once` (skip the D3 rerun). It prints a summary and exits 1 on any
+  failure:
+
+  ```text
+  concurrency: 200/200 seeds passed (1..200, 24 steps, each run twice), 3126 writes, 0 queued, 1133 overwritten units kept in history, 120.8 s
+  ```
+
+  A failure prints the seed, the rerun command, the folder it kept (under `.test-run/`) and
+  the step log (each read, edit and write with its base, write time and labels).
+- **CI:** `gh workflow run ci.yml --ref main -f concurrency_seeds=1000` runs only this test
+  (plus a tenth as many all-`queued` seeds) on a Linux runner; dispatch only, on `main`.
 
 ## Troubleshooting
 

@@ -11,9 +11,11 @@ import { listBoards } from "./board-index.mjs";
 import { diffFiles, formatDiff } from "./diff.mjs";
 import { checkBoardRules, effectiveRulesBriefing, effectiveSnapshotMode, formatCheckResult } from "./rules.mjs";
 import { sceneToMermaid } from "./to-mermaid.mjs";
-import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { snapshotAndPin, snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { formatDiffSince } from "./diff-since.mjs";
+import { stateDirFromEnv } from "./storage.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeMermaidStatus, describeMermaidWrite, describeWrite, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
+import { describeMermaidStatus, describeMermaidWrite, describeWrite, diffSinceBoard, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
 
 // Author key for this process's writes: agent:<MCP clientInfo.name>#<id>. The id is new for
 // every `xcld mcp` process, so two sessions of the same client never share a branch.
@@ -83,9 +85,17 @@ const formatSnapshotResult = (result) => {
   const paths = { board: result.board, mermaid: result.mermaid };
   return {
     paths,
-    reminder: "Snapshot captured. Ask the human to review the board, then run diff before rewriting the board inbox .mmd.",
+    ...(result.label !== undefined ? { label: result.label, version: result.version, pinned: result.pinned ?? null } : {}),
+    ...(result.pinWarning ? { warning: result.pinWarning } : {}),
+    ...(result.note ? { note: result.note } : {}),
+    reminder: result.pinned
+      ? `Snapshot captured and pinned in version history as "${result.label}". Ask the human to review the board, then call diff with since "${result.label}" (or without since, against this copy).`
+      : "Snapshot captured. Ask the human to review the board, then run diff before rewriting the board inbox .mmd.",
   };
 };
+
+// Agents find their own losses with diff since "author:<this key>".
+const authorNote = (author) => `Written as ${author}: diff with since "author:${author}" later lists what changed since, including any of your edits that lost.`;
 
 const briefingFor = async (board) => (await effectiveRulesBriefing(board, boardsDir())).text;
 
@@ -166,12 +176,13 @@ export const createXcldMcpServer = () => {
       if (!validateBoardName(board)) {
         throw new Error(`Invalid board name: ${board} (use path segments with letters, digits, ".", "_" or "-"; start each segment with a letter or digit)`);
       }
-      const result = await writeBoardBranch(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, elements, appState, files });
+      const author = agentAuthor(server.server.getClientVersion()?.name);
+      const result = await writeBoardBranch(board, { author, base, elements, appState, files });
       const message = describeWrite(board, result);
       if (result.status !== "merged" && result.status !== "queued") {
         return toolError(message);
       }
-      return okText(message, { ...result, url: boardUrl(board) });
+      return okText(`${message} ${authorNote(author)}`, { ...result, author, url: boardUrl(board) });
     },
   );
 
@@ -199,7 +210,8 @@ export const createXcldMcpServer = () => {
           preWriteSnapshot = formatSnapshotResult(await snapshotBoard(board, boardsDir()));
         }
       }
-      const written = await writeMermaid(board, { author: agentAuthor(server.server.getClientVersion()?.name), base, mermaid, source, position });
+      const author = agentAuthor(server.server.getClientVersion()?.name);
+      const written = await writeMermaid(board, { author, base, mermaid, source, position });
       const url = boardUrl(board);
       const message = describeMermaidWrite(board, written, { url });
       if (!["merged", "queued", "needs-tab"].includes(written.status)) {
@@ -218,12 +230,13 @@ export const createXcldMcpServer = () => {
         overwritten: written.overwritten ?? [],
         ops: written.ops ?? [],
         ...(written.deletesSkipped ? { deletesSkipped: true } : {}),
+        author,
         url,
         preWriteSnapshot,
         message,
         briefing: await briefingFor(board),
       };
-      return okText(`${message}\n\n${result.briefing}`, result);
+      return okText(`${message} ${authorNote(author)}\n\n${result.briefing}`, result);
     },
   );
 
@@ -255,12 +268,14 @@ export const createXcldMcpServer = () => {
     server,
     "snapshot",
     {
-      description: `Capture a snapshot of a board, like "xcld snapshot"; respects XCLD_AUTO_EXPORT. ${conventions}`,
-      inputSchema: { board: z.string().describe("Board path without extension.") },
-      annotations: { readOnlyHint: true },
+      description: `Capture a snapshot of a board, like "xcld snapshot": a copy for diff, and the current version pinned in version history under a label (default: the snapshot's UTC stamp), so diff with since "<label>" finds it later. Returns the label and the pinned version id. Respects XCLD_AUTO_EXPORT. ${conventions}`,
+      inputSchema: {
+        board: z.string().describe("Board path without extension."),
+        name: z.string().optional().describe('Optional label for the pinned version, e.g. "before-review". A letter or digit, then letters, digits, spaces, ".", "_", ":" or "-".'),
+      },
     },
-    async ({ board }) => {
-      const result = formatSnapshotResult(await snapshotBoard(board, boardsDir()));
+    async ({ board, name }) => {
+      const result = formatSnapshotResult(await snapshotAndPin(board, boardsDir(), { label: name }));
       return okText(JSON.stringify(result, null, 2), result);
     },
   );
@@ -269,17 +284,24 @@ export const createXcldMcpServer = () => {
     server,
     "diff",
     {
-      description: `Show semantic changes. Pass board to compare latest snapshot to current board, or pass from/to files or board names. ${conventions}`,
+      description: `Show semantic changes. Pass board to compare the latest snapshot to the current board; add since to compare against a point in version history instead and list every edit overwritten since then (who won, who lost, the losing labels). since "author:<the author key your writes return>" shows what changed since your last write, including your own edits that lost. Or pass from/to files or board names. ${conventions}`,
       inputSchema: {
-        board: z.string().optional().describe("Board path to compare against its latest snapshot."),
+        board: z.string().optional().describe("Board path to compare against its latest snapshot (or, with since, against its history)."),
+        since: z.string().optional().describe('With board: a version id (prefix) from read_board, a snapshot label, author:<name or key> (since that author\'s last history entry), or a time (10m, 2h, 2026-10-07T21:00Z).'),
         from: z.string().optional().describe("Older board/file. Use with to."),
         to: z.string().optional().describe("Newer board/file. Use with from."),
         format: z.enum(["text", "json"]).default("text").describe("Default: text."),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ board, from, to, format }) => {
+    async ({ board, since, from, to, format }) => {
       const outputFormat = format ?? "text";
+      if (since !== undefined) {
+        if (!board || from || to) throw new Error('since needs "board" (and no from/to).');
+        if (!validateBoardName(board)) throw new Error("Single-board diff expects a board name");
+        const result = await diffSinceBoard(board, since, { file: boardPath(board), stateDir: stateDirFromEnv(process.env, boardsDir()), boardsDir: boardsDir() });
+        return okText(outputFormat === "json" ? JSON.stringify(result, null, 2) : `${result.warning ? `${result.warning}\n` : ""}${formatDiffSince(result)}`, result);
+      }
       let oldFile;
       let newFile;
       if (board) {

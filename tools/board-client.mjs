@@ -3,6 +3,8 @@
 // through POST /api/branch (so the server merges instead of the file being overwritten).
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { diffSince } from "./diff-since.mjs";
+import { openHistory } from "./history.mjs";
 
 export const apiUrl = () => (process.env.XCLD_API_URL || "http://127.0.0.1:3100").replace(/\/+$/g, "");
 
@@ -153,6 +155,85 @@ export const mermaidWriteStatus = async (board, id) => {
 };
 
 const clock = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(11, 19) : "?");
+
+/**
+ * Pins the board's current version under `label` (POST /api/board/<board>/checkpoint `{ pin }`):
+ * its history entry becomes a full checkpoint, found again by `diff --since <label>`. Resolves to
+ * `{ pinned: { label, entry, version, pinnedAt } | null, version }`, or `{ error }` when the server
+ * isn't reachable or refuses (the caller still has its `.snapshots/` copy).
+ */
+export const pinVersion = async (board, label) => {
+  let response;
+  try {
+    response = await fetch(`${apiUrl()}/api/board/${encodeBoard(board)}/checkpoint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: label }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    return { error: describeFetchError(error) };
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { error: `HTTP ${response.status}: ${data.error ?? "unexpected response"}${data.hint ? ` (${data.hint})` : ""}` };
+  }
+  return { pinned: data.pinned ?? null, version: data.version ?? null };
+};
+
+/**
+ * `diff --since` through the server (GET /api/diff/<board>?since=). Resolves to the result of
+ * tools/diff-since.mjs, or throws with the server's message. `unreachable` is set on the error
+ * when the server could not be reached (the CLI then reads the history folder itself).
+ */
+export const diffSinceRemote = async (board, since) => {
+  let response;
+  try {
+    response = await fetch(`${apiUrl()}/api/diff/${encodeBoard(board)}?since=${encodeURIComponent(since)}`, { signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    const failure = new Error(describeFetchError(error));
+    failure.unreachable = true;
+    throw failure;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.message ?? `${data.error ?? `HTTP ${response.status}`}${data.name ? ` (${data.name})` : ""}`);
+  }
+  return data;
+};
+
+/**
+ * `diff --since` for the CLI and MCP: through the server, or, when it can't be reached, from the
+ * history folder and the board file directly (`stateDir`, `file`; inside the container both are
+ * where the server keeps them).
+ */
+export const diffSinceBoard = async (board, since, { file, stateDir, boardsDir } = {}) => {
+  try {
+    return await diffSinceRemote(board, since);
+  } catch (error) {
+    if (!error.unreachable || !file || !stateDir) {
+      throw error;
+    }
+    let text;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      throw new Error(`Board not found: ${board} (${error.message})`);
+    }
+    const history = await openHistory({ stateDir, board });
+    const result = await diffSince({ history, master: { version: createHash("sha256").update(text).digest("hex"), scene: JSON.parse(text) }, since, diffOptions: { board, boardsDir } });
+    return { ...result, warning: `Read from the history folder: ${error.message}` };
+  }
+};
+
+/** The board's history entries (GET /api/history/<board>), oldest first. */
+export const boardHistory = async (board) => {
+  const response = await fetch(`${apiUrl()}/api/history/${encodeBoard(board)}`, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) {
+    throw new Error(`GET /api/history/${board}: HTTP ${response.status}`);
+  }
+  return response.json();
+};
 export const describeMermaidStatus = (board, result) => {
   if (result.httpStatus === 404) return `No pending Mermaid write ${result.id ?? ""} on ${board} (unknown id, or it landed before the server restarted and its record is gone).`;
   if (result.status === "landed") return `Landed on ${board}${result.via ? ` (${result.via === "tab" ? "laid out by a tab" : result.via === "grid" ? "laid out by the server in a grid" : result.via === "server" ? "applied node by node" : result.via})` : ""}${result.version ? `: version ${result.version}` : ""}.`;

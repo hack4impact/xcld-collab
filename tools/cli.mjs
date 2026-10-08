@@ -9,10 +9,12 @@ import { exportHistory } from "./history.mjs";
 import { mermaidSourceHash } from "./mermaid-hash.mjs";
 import { checkBoardRules, effectiveRulesBriefing, formatCheckResult, formatRulesCheckDiagnostics, validateApplicableRules } from "./rules.mjs";
 import { fileToMermaid } from "./to-mermaid.mjs";
-import { snapshotBoard, snapshotsFor, validateBoardName } from "./snapshot.mjs";
+import { snapshotAndPin, snapshotsFor, validateBoardName, formatSnapshot } from "./snapshot.mjs";
 import { exportRoot, hostPathOf, stateDirFromEnv } from "./storage.mjs";
 import { openInCanvas } from "./open-in-canvas.mjs";
-import { describeMermaidStatus, describeMermaidWrite, describeWrite, formatApplyOp, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
+import { describeMermaidStatus, describeMermaidWrite, describeWrite, diffSinceBoard, formatApplyOp, mermaidWriteStatus, readBoardVersion, writeBoardBranch, writeMermaid } from "./board-client.mjs";
+import { formatDiffSince } from "./diff-since.mjs";
+import { watchBoard } from "./watch.mjs";
 
 const boardsDir = () => path.resolve(process.env.XCLD_BOARDS_DIR || path.resolve("boards"));
 // Versions data and the export root, as the server sees them (tools/storage.mjs).
@@ -20,10 +22,18 @@ const stateDir = () => stateDirFromEnv(process.env, boardsDir());
 const helpText = `xcld - local Excalidraw workspace tools
 
 Usage:
-  xcld diff <board> [--json]
+  xcld diff <board> [--json]           (against the latest xcld snapshot copy)
+  xcld diff <board> --since <since> [--json]
+                                     (master against a point in version history, plus every edit
+                                      overwritten since then; <since>: a version id prefix, a time
+                                      like 10m, 2h or 2026-10-07T21:00Z, author:<name or key>, or a
+                                      snapshot label)
   xcld diff <a.excalidraw> <b.excalidraw> [--json]
   xcld to-mermaid <board|file>
-  xcld snapshot <board>
+  xcld snapshot <board> [--name <label>]
+                                     (a .snapshots copy, and the version pinned in history under
+                                      the label, default its UTC stamp)
+  xcld watch <board> [--json]        (prints every merge and history entry as it happens)
   xcld check <board>
   xcld rules <board>
   xcld rules check [board]
@@ -104,9 +114,23 @@ const run = async (argv) => {
     return;
   }
   if (command === "snapshot") {
-    if (args.length !== 1) throw new Error("Usage: xcld snapshot <board>");
-    const result = await snapshotBoard(args[0], boardsDir());
-    console.log([result.board, result.mermaid].filter(Boolean).join("\n"));
+    const usage = "Usage: xcld snapshot <board> [--name <label>]";
+    const nameAt = args.indexOf("--name");
+    if (nameAt >= 0 && (args[nameAt + 1] === undefined || args[nameAt + 1].startsWith("--"))) throw new Error(usage);
+    const names = args.filter((arg, index) => nameAt < 0 || (index !== nameAt && index !== nameAt + 1));
+    if (names.length !== 1) throw new Error(usage);
+    const result = await snapshotAndPin(names[0], boardsDir(), { label: nameAt >= 0 ? args[nameAt + 1] : undefined });
+    console.log(formatSnapshot(result));
+    return;
+  }
+  if (command === "watch") {
+    const jsonMode = args.includes("--json");
+    const names = args.filter((arg) => arg !== "--json");
+    if (names.length !== 1 || !validateBoardName(names[0])) throw new Error("Usage: xcld watch <board> [--json]");
+    const controller = new AbortController();
+    process.once("SIGINT", () => controller.abort());
+    process.once("SIGTERM", () => controller.abort());
+    await watchBoard(names[0], { signal: controller.signal, json: jsonMode });
     return;
   }
   if (command === "check") {
@@ -260,7 +284,16 @@ const run = async (argv) => {
   }
   if (command === "diff") {
     const jsonMode = args.includes("--json");
-    const names = args.filter((arg) => arg !== "--json");
+    const sinceAt = args.indexOf("--since");
+    if (sinceAt >= 0 && (args[sinceAt + 1] === undefined || args[sinceAt + 1] === "--json")) throw new Error("Usage: xcld diff <board> --since <version|time|author:<name>|snapshot label> [--json]");
+    const names = args.filter((arg, index) => arg !== "--json" && (sinceAt < 0 || (index !== sinceAt && index !== sinceAt + 1)));
+    if (sinceAt >= 0) {
+      if (names.length !== 1 || !validateBoardName(names[0])) throw new Error("Usage: xcld diff <board> --since <version|time|author:<name>|snapshot label> [--json]");
+      const result = await diffSinceBoard(names[0], args[sinceAt + 1], { file: boardPath(names[0]), stateDir: stateDir(), boardsDir: boardsDir() });
+      if (result.warning && !jsonMode) console.error(result.warning);
+      console.log(jsonMode ? JSON.stringify(result, null, 2) : formatDiffSince(result));
+      return;
+    }
     let oldFile;
     let newFile;
     if (names.length === 1) {

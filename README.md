@@ -94,9 +94,10 @@ recolor, add notes. Every change saves automatically.
 ### 4. Ask what changed
 
 ```powershell
-docker exec xcld-collab xcld snapshot sandbox/demo     # remember this version
+docker exec xcld-collab xcld snapshot sandbox/demo     # remember this version (pinned in history)
 # ...edit the drawing in the browser...
 docker exec xcld-collab xcld diff sandbox/demo         # what changed since the snapshot
+docker exec xcld-collab xcld diff sandbox/demo --since 10m   # ...or since any point, with what was overwritten
 docker exec xcld-collab xcld to-mermaid sandbox/demo   # the drawing as Mermaid again
 docker exec xcld-collab xcld open-in-canvas <checkpointId> sandbox/from-chat
 docker exec -i xcld-collab xcld mcp                    # optional: MCP tools over stdio
@@ -186,19 +187,32 @@ Put these in `.env` next to `compose.yaml`, then run `docker compose up -d --wai
 
 ## Working in parallel
 
-The server merges writes instead of letting the last one win. The tab's saves, agents'
-`write_board` and `write_mermaid` (MCP), `xcld write` and `xcld write-mermaid` (CLI), and
-direct edits of a board or `.mmd` file all go through one commit pipeline:
+**Parallel editing is supported.** You can draw in the canvas while several agents write to the
+same board; nothing is silently lost. The server merges writes instead of letting the last one
+win. The tab's saves, agents' `write_board` and `write_mermaid` (MCP), `xcld write` and
+`xcld write-mermaid` (CLI), and direct edits of a board or `.mmd` file all go through one
+commit pipeline:
 
 - Every write names the version it started from (`base`). The server merges it with
-  anything committed since. A shape and its label edited on both sides go to the later
-  write, and the other side's version is kept in history and reported as overwritten.
+  anything committed since. Edits to different shapes all apply.
+- **Overwritten** means: the same shape (or its label) was changed on both sides since the
+  writer's base. The later edit (by when it was made, not when it arrived) takes the whole
+  shape and its label; the other edit **loses**. A queued write made earlier loses to a newer
+  edit even when it lands later.
+- **Losers live in version history only**: the losing shape is kept in the history entry of the
+  write that overwrote it (or lost), nothing re-applies it, and it is reported three ways: the
+  canvas banner ("overwritten by …"), the write's answer, and `xcld diff <board> --since …`
+  (below). `xcld history export` copies it out with everything else.
 - Every change is kept: version history keeps one entry per author turn (a person's autosaves
   fold into one restore point until someone else writes, 3 minutes pass or a checkpoint). Each
   entry stores only what changed, with a full copy every 20 entries: 100 small turns on a
   1,500-element board take about 1 MB. See [where history lives](#where-history-lives).
-- A slow merge never drops a write: after 5 s an agent gets `queued`, and the write lands
-  later.
+- **`queued`** answers: a write is safe once the server has it in its journal. If the merge takes
+  longer than 5 s, typically because the disk is slow (Docker Desktop shares one disk among all
+  containers; cloud VMs throttle), an agent gets `queued` with a branch id instead of
+  `merged`, and the write lands as soon as the disk catches up. Nothing is dropped; read the
+  board again before building on it. `GET /api/status` lists slow file operations (see
+  [Troubleshooting](docs/reference.md#troubleshooting)).
 - **Mermaid merges too, with no tab open.** The server applies an agent's Mermaid to the
   board: your layout, notes and colors stay, existing shapes keep their place, new nodes go
   next to a connected one, and only shapes that came from that Mermaid are ever removed (a copy
@@ -220,6 +234,20 @@ The canvas takes part like any other writer:
   losing edit is kept in version history only; nothing re-applies it.
 - **Ctrl+S** (Cmd+S) closes your current turn as a restore point ("Saved checkpoint"). It no
   longer downloads a file.
+
+**See what happened:**
+
+```powershell
+docker exec xcld-collab xcld diff myproject/demo --since 30m           # changes and losers in the last 30 minutes
+docker exec xcld-collab xcld diff myproject/demo --since author:Ada    # since Ada's last turn, incl. what she lost
+docker exec xcld-collab xcld snapshot myproject/demo --name review-1   # pin this version under a name...
+docker exec xcld-collab xcld diff myproject/demo --since review-1      # ...and diff against it later
+docker exec xcld-collab xcld watch myproject/demo                      # every merge and history entry, live
+```
+
+`--since` takes a version id prefix, a time (`10m`, `2h`, an ISO time), `author:<name>` or a
+snapshot name; add `--json` for agents. Agents use MCP `diff` with `since` the same way. See
+[the reference](docs/reference.md#xcld-diff-board---since-since---json).
 
 Caveats:
 
@@ -266,9 +294,11 @@ open: exports, and on Linux the history itself.
 
 These are designed but **not built yet**. Don't rely on them.
 
-- **Version browsing.** History is recorded and `xcld history export` copies it out (see
-  above); `xcld diff --since` and snapshots as pinned versions come next. Ctrl+S closes a
-  restore point; Excalidraw's menu "Save to…" still downloads a separate copy.
+- **Version browsing in the canvas.** History is recorded; `xcld diff --since`, pinned snapshots
+  and `xcld history export` read it (see above), but the canvas can't open an old version yet.
+  Ctrl+S closes a restore point; Excalidraw's menu "Save to…" still downloads a separate copy.
+- **History pruning** (keep every version 48 hours, then pinned snapshots only; #23). Today
+  nothing is pruned.
 - **More diagram types:** sequence, class, ER, state.
 
 ## Development

@@ -14,6 +14,11 @@
 #                record (p95 <= 450 ms at 50 and 1,500 elements, plain and --mermaid) on a
 #                clean Linux runner. About 16 runner minutes; never on push or pull requests.
 #                Run it with: gh workflow run ci.yml --ref main -f load_gate=true
+#   concurrency-long  manual dispatch on main with `concurrency_seeds` > 0 only: the concurrency
+#                acceptance test (tests/concurrency.mjs) over that many seeds, each run twice, plus
+#                a tenth of them with every agent write answering `queued`. The default suite
+#                already runs 50 seeds. About 2 runner minutes per 100 seeds after the app build.
+#                Run it with: gh workflow run ci.yml --ref main -f concurrency_seeds=1000
 name: CI
 
 on:
@@ -29,12 +34,16 @@ on:
         description: "Only run the versions load gate (the gate of record, about 16 minutes)"
         type: boolean
         default: false
+      concurrency_seeds:
+        description: "Only run the concurrency acceptance test with this many seeds (0: off)"
+        type: number
+        default: 0
 
 permissions: {}
 
 concurrency:
   # The load gate gets its own group, so a push to main doesn't cancel it halfway.
-  group: ci-${{ github.ref }}${{ inputs.load_gate && '-load-gate' || '' }}
+  group: ci-${{ github.ref }}${{ inputs.load_gate && '-load-gate' || '' }}${{ inputs.concurrency_seeds > 0 && '-concurrency' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -104,7 +113,7 @@ jobs:
   build-test:
     name: Build, test, smoke
     needs: hygiene
-    if: needs.hygiene.outputs.build == 'true' && !inputs.mermaid_latest && !inputs.load_gate
+    if: needs.hygiene.outputs.build == 'true' && !inputs.mermaid_latest && !inputs.load_gate && !(inputs.concurrency_seeds > 0)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -199,6 +208,78 @@ jobs:
 
       - name: Mermaid checks
         run: node --test tests/mermaid-ci.test.mjs tests/mermaid-parse.test.mjs tests/mermaid-apply.test.mjs
+
+  # Manual, main only: the concurrency acceptance test in long mode (tests/concurrency.mjs). Needs
+  # the app build for the Mermaid parser bundle; no image, no Compose.
+  concurrency-long:
+    name: Concurrency acceptance (long mode)
+    needs: hygiene
+    if: github.event_name == 'workflow_dispatch' && inputs.concurrency_seeds > 0 && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      SEEDS: ${{ inputs.concurrency_seeds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      # npm ci needs the vendor tarballs the lockfile points at.
+      - name: build.sh --target vendor
+        run: ./build.sh --target vendor
+
+      - name: App install and build (Mermaid parser bundle)
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Concurrency, ${{ inputs.concurrency_seeds }} seeds
+        run: |
+          set -o pipefail
+          node tests/concurrency.mjs --seeds "$SEEDS" --parallel 4 2>&1 | tee concurrency.txt
+
+      - name: Concurrency, every agent write queued
+        run: |
+          set -o pipefail
+          queued=$(( SEEDS / 10 > 5 ? SEEDS / 10 : 5 ))
+          node tests/concurrency.mjs --start 100001 --seeds "$queued" --wait-ms 1 --parallel 4 2>&1 | tee concurrency-queued.txt
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Concurrency acceptance (long mode)"
+            for file in concurrency.txt concurrency-queued.txt; do
+              [ -f "$file" ] || continue
+              echo
+              echo '```text'
+              grep -E '^concurrency:' "$file" || tail -n 20 "$file"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: concurrency-${{ github.run_id }}
+          path: |
+            concurrency*.txt
+            .test-run/
+          if-no-files-found: warn
+          retention-days: 14
 
   # Manual, main only: the versions load gate of record (docs/DESIGN.md#performance). Builds the
   # image, starts it with XCLD_TIMING=1 on scratch boards and history folders, and runs

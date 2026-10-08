@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "xcld-w2r": {
+      "type": "local",
+      "command": "docker",
+      "args": ["exec", "-i", "xcld-w2r", "xcld", "mcp"],
+      "tools": ["*"]
+    }
+  }
+}

@@ -82,8 +82,26 @@ the CLI `xcld to-mermaid` or automatic exports are the non-destructive export pa
 
 ## Editing a board in parallel
 
-The server merges writes; the human and other agents may be drawing on the same board while
-you write. Parallel Mermaid writes are merged too.
+Parallel editing is supported: the server merges writes, and the human and other agents may be
+drawing on the same board while you write. Always:
+
+1. **Read → base → write.** `read_board`, keep its `version`, and pass it as `base` to
+   `write_board` or `write_mermaid`. Never write from memory of an older read without a base.
+2. **Handle `queued`.** `status: "queued"` means the server has your write safely in its journal
+   and merges it as soon as it can (usually a slow disk). Don't send it again. Call
+   `read_board` before you build on it; your change shows up once it lands.
+3. **Check what you lost.** Every write result names your author key ("Written as
+   agent:<client>#<id>"). Before your next change, and when the user asks what happened, call
+   `diff` with `board` and `since: "author:<that key>"`: it lists what changed since your last
+   write and every overwritten unit, yours included, with who won and the losing label. If your
+   edit lost to a newer human edit, tell the user and ask before redoing it; don't silently
+   write it again.
+4. **Snapshot with a name** at a hand-off (`snapshot` with `name`): the version is pinned, and
+   `diff` with `since: "<name>"` compares against it later.
+
+"Overwritten" means two writers changed the same shape (or its label) without seeing each
+other's change; the later edit, by write time, took the whole shape. The loser is kept in
+version history only and nothing puts it back by itself.
 
 **With Mermaid** (`write_mermaid`):
 
@@ -144,8 +162,9 @@ override in their own folder's file; follow it, but don't treat it as fixed.
 
 - Use `list_boards` when the board path is unknown.
 - Use `read_board` before proposing changes.
-- Use `snapshot` at each agent-to-human handoff.
-- Use `diff` at each human-to-agent handoff.
+- Use `snapshot` at each agent-to-human handoff (it returns the pinned `label` and `version`).
+- Use `diff` at each human-to-agent handoff: without `since` against the latest snapshot, or
+  with `since` (a snapshot label, a version, `author:<key>`, or a time like `30m`).
 - Never assume a URL, a saved banner, or an existing file means the board contains diagram
   elements; verify its content with `read_board`.
 

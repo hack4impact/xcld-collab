@@ -200,6 +200,13 @@ export const diffFiles = async (oldFile, newFile, options = {}) => {
   return annotateRules(diff, oldElements, newElements, options);
 };
 
+// The same diff for two element arrays (`diff --since`: a history version against master).
+// `labels` names the two sides in the text output; `options.board` enables the rule tags.
+export const diffScenes = async (oldElements, newElements, labels, options = {}) => {
+  const diff = diffElements(oldElements, newElements, labels);
+  return options.board ? annotateRules(diff, oldElements, newElements, options) : diff;
+};
+
 export const formatDiff = (diff) => {
   const lines = [`Semantic diff ${diff.files.old ?? "old"} -> ${diff.files.new ?? "new"}`];
   const section = (title, entries) => { if (entries.length) { lines.push(`${title}:`); for (const entry of entries) lines.push(`  ${entry}`); } };

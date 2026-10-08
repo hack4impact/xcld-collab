@@ -58,8 +58,8 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
       `master`);
     - only an unknown base is 409.
 
-    The board's commit queue serializes saves. `PUT` without either header is unguarded (the
-    last write wins) for scripts.
+    The board's commit queue serializes saves. `PUT` without either header is unguarded (it
+    replaces master as sent, without a merge), kept for scripts.
   - **The tab's side (slice 5, `app/src/App.tsx`, `identity.mjs`, `tab-merge.mjs`,
     `merge-banner.mjs`):**
     - **Identity.** Every save sends `X-Xcld-Author-Name` and `X-Xcld-Tab`, so the author key
@@ -403,7 +403,8 @@ structured `%% xcld:` comments carry annotations through Mermaid.
 the write API are built: tab saves, `POST /api/branch` (MCP `write_board`, `xcld write`),
 Mermaid writes (`POST /api/mermaid`: MCP `write_mermaid`, `xcld write-mermaid`, slice 4b) and
 direct file writes all merge, and the tab saves before it reloads, with its author overlay and the
-merged banner (slice 5). The concurrency test comes next.
+merged banner (slice 5). The [concurrency acceptance test](#concurrency-acceptance-wave-2) passes
+(slice 6b); the lead's real check is the last step.
 
 Every writer (tab, MCP, CLI, a direct file write) produces a branch: its full scene plus the
 master version it started from (the base) and when it was written. One merge runs at a time
@@ -628,7 +629,8 @@ Decided by the lead on 2026-10-07 (board `sandbox/mermaid-inbox-merge`); built i
 write API (`POST /api/branch`), tab saves that merge, identities, MCP/CLI writes through
 the server, history v2 (change-only entries), Mermaid writes through the same pipeline
 (slice 4b, `POST /api/mermaid`), and the tab's side (slice 5: author overlay, banner, save before
-reload, Ctrl+S checkpoints). Still to come: the 50-seed concurrency test.
+reload, Ctrl+S checkpoints), `diff --since` and snapshots as pinned versions (slice 6b), checked by
+the [concurrency acceptance test](#concurrency-acceptance-wave-2).
 
 **Where it lives** (lead, 2026-10-07: one setting). The user-facing setting is the cache
 folder, `XCLD_CACHE_DIR`, a host path (default `~/.excalidraw`) that compose bind-mounts at
@@ -664,7 +666,7 @@ lines, prints a one-line notice and adds the mapped settings when they're missin
 | `history/<path>/<UTC>-<authorKeySafe>.delta.json.gz` | One entry per author turn, as a **delta** against the version the entry started from (history v2, below). |
 | `history/<path>/<…>.excalidraw.gz` | Or the entry as a full **checkpoint** record. |
 | `history/<path>/<…>.excalidraw` | An entry written before history v2: a full record, read as a checkpoint. |
-| `history/<path>/<…>.meta.json` | `{ version, author, displayName, base, parents, applied, overwritten, coalescedCount, closedBy, openedAt, lastCommitAt, lastBranchId, kind, record, depth, pinned?, pinnedAt? }`. An open (human) entry's meta lives in the state until it closes. `record: "none"` marks a meta-only entry (below). |
+| `history/<path>/<…>.meta.json` | `{ version, author, displayName, base, parents, applied, overwritten, coalescedCount, closedBy, openedAt, lastCommitAt, lastBranchId, kind, record, depth, pinned?, pinnedAt?, pins? }`. `pinned` is the latest snapshot label of the version, `pins` every `{ label, at }`. An open (human) entry's meta lives in the state until it closes. `record: "none"` marks a meta-only entry (below). |
 | `state/<path>.json` | Per board, the commit point: the committed `version`, `masterMeta` (element id → `{ writtenAt, author }`, fed to `mergeBoard`), `last` (the last commit), `open` (the open entry's meta), `mermaid` (the last applied Mermaid source), `records` (record format), `depth` (deltas from the nearest checkpoint to the current version's entry). |
 | `bases/<path>/<version>.excalidraw` | The base store: versions that left the server and could otherwise be folded away (full records). |
 | `files/<path>/<fileId>.<hash16>.json` | Images (`files` entries), stored once per board. |
@@ -676,10 +678,17 @@ lines, prints a one-line notice and adds the mapped settings when they're missin
     new ones, `appState` only when it changed, and the scene's other top-level fields. A
     coalesced human entry rewrites its delta against the same parent each save.
   - A **checkpoint** is the whole board. One is written for a board's first entry, every 20
-    entries (`checkpointEvery`), for an entry whose parent can't be read, and when a version
+    entries (`checkpointEvery`), for an entry whose parent can't be read, when a version
     is pinned (`checkpoint(board, { pin: label })` rewrites the current entry as a
-    checkpoint; snapshots as pinned versions will call it). So a version is rebuilt from the
-    nearest checkpoint plus **at most 19 deltas**.
+    checkpoint; `xcld snapshot` and MCP `snapshot` call it, see below), and for a version that
+    is already in history. So a version is rebuilt from the nearest checkpoint plus **at most
+    19 deltas**.
+  - **A repeated version** (the board went back to an earlier state: add a shape, delete it
+    again) has the same id as an older entry, because the id is the hash of the bytes. Such an
+    entry is a checkpoint, and a delta's parent always resolves to the newest entry *older* than
+    the delta. Before this (found by the concurrency test, seed 157), the repeated entry was a
+    delta and its parent chain looped; history written that way still rebuilds
+    (`tests/history-repeat.test.mjs`).
   - Both are gzipped JSON. Rebuilt versions are byte-identical to what was committed (they
     hash to their id); the property test checks that for every version.
   - **Migration:** entries from slices 2 and 3 are full records and stay valid as
@@ -781,6 +790,12 @@ The pipeline, per write:
   - `X-Xcld-Edit-Age` (ms since the tab's last edit): the branch's `writtenAt`, see Ingest.
 - **`POST /api/board/<path>/checkpoint`** (Ctrl+S): `checkpoint(board, { author })` for the caller's
   author key (from its identity headers; none: any author). Answers `{ ok, closed, entry, version }`.
+  A JSON body `{ "pin": "<label>" }` (`xcld snapshot`) also pins the current version: see
+  [snapshots as pinned versions](#snapshots-as-pinned-versions-and-diff---since).
+- **`GET /api/diff/<path>?since=<spec>`**: master against a point in history with the losers since
+  then (`tools/diff-since.mjs`). 400 for a spec that isn't one, 404 when it's not in history.
+- **`GET /api/history/<path>`**: the board's entries, oldest first (the open one included), with
+  `applied` and the `overwritten` summary but no loser elements. `xcld watch` polls it.
 - `GET /api/config` exposes `XCLD_AUTHOR_NAME`, which the build seeds from
   `git config user.name` (or the OS user) and never overwrites.
 
@@ -861,6 +876,94 @@ The pipeline, per write:
   `status()`, `timings()`, `whenIdle()`.
 - A `status: "unchanged"` result can carry `overwritten` (every change lost); its `post`
   still sends the `merged` event.
+
+### Snapshots as pinned versions and `diff --since`
+
+Slice 6b (lead, Wave 2 build decisions, 2026-10-06).
+
+- **`xcld snapshot <board> [--name <label>]`** and MCP `snapshot` (optional `name`) still write
+  the `.snapshots/<path>.<UTC>.excalidraw` copy (and `.mmd` per `XCLD_AUTO_EXPORT`), which
+  `xcld diff <board>` and MCP `diff` without `since` compare against, unchanged. Then they call
+  `POST .../checkpoint { pin }`: the store first adopts master as it is on disk (a direct write
+  not adopted yet, or the `init` snapshot), closes the open entry, and rewrites the current
+  version's entry as a full checkpoint labelled with the snapshot name (default: the copy's UTC
+  stamp, e.g. `20261007T210000123Z`). They print or return the label and the version id.
+  Without a reachable server only the copy is made, with a warning.
+- A pinned entry will be kept by 48 h pruning (#23, not built: today nothing is pruned).
+  The `.snapshots/` copies stay for compatibility; they are plain files, outside history.
+- **`xcld diff <board> --since <spec> [--json]`** and MCP `diff` with `since` call
+  `GET /api/diff` (offline, the CLI reads the history folder and the board file itself). A spec
+  resolves to a history entry (one per author turn):
+
+  | Spec | Point | Losers listed |
+  |---|---|---|
+  | `author:<key or name>` | that author's latest entry (key, key without `#id`, name or display name, any case) | from that entry on, so the author's own losses show |
+  | `snapshot:<label>` (or `pin:`), or a bare label | the newest entry pinned with that label | entries after it |
+  | `version:<prefix>`, or bare hex (4+ digits) | the entry with that version; a full id that history folded into a human turn resolves through the base store (approximate window: from when it was kept) | entries after it |
+  | `time:<when>`, or a bare `90s`/`10m`/`2h`/`1d` or ISO time | the newest entry committed at or before that time (a turn still going on at that time counts as after; before the first entry: an empty board) | entries committed after it |
+
+  A bare spec is tried as a label, then a version prefix, then a time. The answer is the
+  semantic diff (as `xcld diff`, with rule tags) plus `turns` (the entries since) and
+  `overwritten`: per lost unit, the entry, winner and loser authors and write times, and the
+  loser's labels (a delete loses with `deleted: true`). Loser elements stay in history only.
+- **`xcld watch <board>`** prints every `merged` event and every new, grown or closed history
+  entry as it happens (for the lead's real check, `scripts/real-check/`).
+
+### Concurrency acceptance (Wave 2)
+
+The acceptance test of versions and merge (agreed 2026-10-03, revised 2026-10-06):
+`tests/concurrency.mjs`, run by `tests/concurrency.test.mjs`.
+
+- **Writers**, interleaved by a seeded scheduler over HTTP against one board on an in-process
+  server: a human tab (local edits; `PUT` with `If-Match`, identity headers and
+  `X-Xcld-Edit-Age`; saves before it reloads; adopts the merged master a save returns; sometimes
+  Ctrl+S), a JSON agent (`POST /api/branch` from a read, sometimes an older read) and a Mermaid
+  agent (`POST /api/mermaid`, the default source `main` and a named source `beta`, both laid out by
+  the server's grid during setup, sometimes a write time 2–20 s old). Changes relabel, add and delete units (shapes with bound
+  text) across all three writers' shapes, so writes overlap and are disjoint at random.
+- **Determinism.** A virtual clock (the store's `now`), all choices from the seed, and a fixed
+  arrival order: each write is in the journal before the next step starts. Commits still run
+  concurrently with later writes and queue up; a read waits until the writes before it have
+  landed, so it sees a defined master. A `queued` answer is correct (a slow disk, #36): the
+  writer waits for the landing.
+- **Checks per seed:** (a) every change carries a unique label, and is in master, or kept in
+  history as an overwritten loser, or replaced by a later write whose base already had it;
+  (b) every history entry rebuilds from checkpoints and deltas to its version id and to the
+  exact text the server handed out for it, every author turn ends at an entry, every merged
+  agent write has one; (c) every loser in history is in a `merged` event (the banner's
+  payload) and in `diff --since` from the end of the setup, and the counts match; (d) D8, once
+  per seed: the human edits a Mermaid node after the agent read; the agent's write from that read,
+  written before the human's edit and queued behind a JSON write, loses that node (kept in
+  history) while its disjoint edit applies; (e) D3: the seed runs twice, the final masters are
+  byte-identical. A failure prints the seed, the rerun command and the step log.
+- **Default suite:** 50 seeds × 24 steps (about 15 writes each), each run twice, 4 seeds at a
+  time, plus 5 seeds where every agent write answers `queued` (`writeWaitMs: 1`): about 40 s on
+  the Windows dev VM. **Long mode:** `node tests/concurrency.mjs --seeds N [--start S]
+  [--steps K] [--parallel P] [--wait-ms 1] [--once]`, or CI `workflow_dispatch` with
+  `concurrency_seeds` (main only).
+- **Mutation check** (2026-10-07): the oracle fails on a silent last-arrival-wins merge (10/10
+  seeds), unrecorded losers of an all-lost write (1/10), merged events without losers (10/10),
+  a delta codec that drops elements (10/10) and a random `versionNonce` (D3, 10/10).
+- **Not covered here:** arrows as tracked changes (merge-module tests cover them), images,
+  direct file writes (D2 and adoption tests cover them), two humans (`tests/tab-merge.test.mjs`).
+
+**Wave 2 acceptance status (2026-10-07):**
+
+| Item | Status |
+|---|---|
+| Concurrency test: human + two agents, interleaved at random, no silent loss, history per turn, losers in diff and banner | **passes**: 50 seeds in the suite; 200 seeds (each twice) plus 20 all-`queued` seeds in `node:22-bookworm-slim`; it found the repeated-version bug above |
+| D1 stale save merges (409 only for an unknown base) | passes (`tests/stale-save.test.mjs`, `tests/tab-merge.test.mjs`) |
+| D2 killed mid-merge, nothing lost | passes (`tests/versions.test.mjs`, real `SIGKILL` per step) |
+| D3 same result on every run | passes (`tests/merge.test.mjs`, and (e) above) |
+| D4 48 h pruning | follow-up, #23 |
+| D5 merge p95 ≤ 250 ms at 1,500 elements; end-to-end p95 ≤ 450 ms | passes (`tests/merge-bench.mjs`; Linux CI gate of record, run 37730286968); Mermaid-only p95 waived (#34) |
+| D6 two tabs with one name, two MCP sessions of one client | passes (`tests/tab-merge.test.mjs`, `tests/write-api.test.mjs`) |
+| D7 Mermaid with no tab open | passes (`tests/mermaid-write.test.mjs`, `tests/mermaid-ingest.test.mjs`, grid layout here in setup) |
+| D8 a stale queued write loses to a newer edit of the same unit | passes (`tests/merge.test.mjs`, `tests/mermaid-write.test.mjs`, and (d) above) |
+| D9 an MCP write waits 5 s, then `queued`, never dropped | passes (`tests/write-api.test.mjs`; the all-`queued` seeds above) |
+| `diff --since`, snapshots as pinned versions | built (`tests/diff-since.test.mjs`) |
+| The lead's real check (a tab, a file watcher, two live Sonnet agents) | **open**: `scripts/real-check/README.md` |
+| `protect` rule kind | follow-up, #24 |
 
 ## Performance
 
@@ -1239,6 +1342,8 @@ Signed off by the lead, 2026-10-02:
    v2 relational and fuzzy predicates.
 4. **Merge conflicts.** When the agent deletes or rewrites a node the human annotated since the
    last snapshot, the change is not applied. It is flagged in the diff, and the human is asked.
+   *Superseded 2026-10-06:* the later write takes the whole unit; the loser is kept in history
+   and reported by the banner and `diff --since` ([merge rules](#merge-rules)).
 5. **Reproducibility.**
    - `build --pinned` reads a committed `pins.json` of known-good SHAs. This is the default
      for team and class use.

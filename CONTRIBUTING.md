@@ -91,6 +91,17 @@ off TLS verification.
   maintainer before a release: `gh workflow run ci.yml --ref main -f load_gate=true`
   ([Performance](docs/DESIGN.md#performance)).
 
+- **Versions and merge changes** (the merge, the commit pipeline, history, Mermaid apply, the
+  tab's saves): the default suite runs the concurrency acceptance test with 50 seeds; run more
+  before you open the PR, and a failing seed prints the command that reruns it:
+
+  ```powershell
+  node tests/concurrency.mjs --seeds 500 --start 1000
+  ```
+
+  See [the reference](docs/reference.md#concurrency-acceptance-test). A maintainer can run it
+  on Linux CI: `gh workflow run ci.yml --ref main -f concurrency_seeds=1000`.
+
 ## What a good pull request looks like
 
 - **One topic.** Small diffs review faster; split unrelated fixes.

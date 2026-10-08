@@ -278,21 +278,26 @@ export const openHistory = async ({ stateDir, board }) => {
   // being the entry before it.
   const memo = new Map();
   const MEMO_LIMIT = 32;
-  const sceneOf = async (version, guard = 0) => {
+  // `before` (a delta's parent) takes the newest entry older than that entry: a board that went
+  // back to an earlier state repeats a version id, and the newest entry with it may come later.
+  const sceneOf = async (version, guard = 0, before = null) => {
     if (memo.has(version)) {
       return memo.get(version);
     }
     if (guard > 4 * CHECKPOINT_EVERY) {
       throw new Error(`history of ${board}: delta chain too long at ${version}`);
     }
-    const item = byVersion.get(version);
+    let item = byVersion.get(version);
+    if (before && item && !(item.entry < before)) {
+      item = entries.filter((candidate) => candidate.entry < before && candidate.meta.record !== "none" && candidate.meta.version === version).at(-1);
+    }
     const raw = item ? await readRaw(item) : null;
     if (!raw) {
       return null;
     }
     let scene;
     if (raw.record === "delta") {
-      const parent = await sceneOf(raw.data.xcld.parent, guard + 1);
+      const parent = await sceneOf(raw.data.xcld.parent, guard + 1, item.entry);
       if (!parent) {
         throw new Error(`history of ${board}: the parent of ${item.entry} (${raw.data.xcld.parent}) is missing`);
       }

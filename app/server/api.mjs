@@ -4,6 +4,8 @@ import path from "node:path";
 import { boardFilePath, maxDepthFromEnv, validateBoardPath } from "../../tools/board-path.mjs";
 import { boardInfoForRelativeFile, listBoards, walkBoardFiles } from "../../tools/board-index.mjs";
 import { autoExportFromEnv, exportFilePath, writeMermaidFromBoard } from "../../tools/export.mjs";
+import { diffSince, SinceError } from "../../tools/diff-since.mjs";
+import { openHistory } from "../../tools/history.mjs";
 import { effectiveExportMode } from "../../tools/rules.mjs";
 import { mermaidSourceHash } from "../../tools/mermaid-hash.mjs";
 import { stateDirFromEnv } from "../../tools/storage.mjs";
@@ -71,6 +73,9 @@ export function isAllowedHostHeader(hostHeader) {
 }
 
 export const validateBoardName = (name) => validateBoardPath(name, { maxDepth: maxDepthFromEnv() }).ok;
+
+// A snapshot (pin) label: `xcld snapshot` uses the snapshot's UTC stamp unless --name is given.
+export const isValidPinLabel = (label) => typeof label === "string" && /^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,99}$/.test(label) && !/\s$/.test(label);
 
 const etagFor = (hash) => `"${hash}"`;
 
@@ -639,8 +644,34 @@ export function createBoardApi({
             sendError(res, 404, "board-not-found", { name });
             return true;
           }
-          const result = await versions.checkpoint(name, { author });
-          sendJson(res, 200, { ok: true, closed: result.closed, entry: result.closed ? result.entry : null, version: result.version });
+          // An optional JSON body `{ "pin": "<label>" }` (xcld snapshot) also pins the current
+          // version: its entry becomes a full checkpoint with that label (snapshots as pinned versions).
+          let pinLabel = null;
+          if (isJsonRequest(req)) {
+            let parsed;
+            try {
+              const body = await readRequestBody(req);
+              parsed = body.trim() ? JSON.parse(body) : {};
+            } catch {
+              sendError(res, 400, "invalid-json");
+              return true;
+            }
+            if (parsed?.pin !== undefined && parsed?.pin !== null) {
+              if (!isValidPinLabel(parsed.pin)) {
+                sendError(res, 400, "invalid-pin", { hint: "a letter or digit, then up to 99 letters, digits, spaces, \".\", \"_\", \":\" or \"-\"" });
+                return true;
+              }
+              pinLabel = parsed.pin;
+            }
+          }
+          const result = await versions.checkpoint(name, { author, pin: pinLabel });
+          sendJson(res, 200, {
+            ok: true,
+            closed: result.closed,
+            entry: result.closed ? result.entry : null,
+            version: result.version,
+            ...(pinLabel ? { pinned: result.pinned ? { label: result.pinned.label, entry: result.pinned.entry, version: result.version, pinnedAt: result.pinned.pinnedAt } : null } : {}),
+          });
           return true;
         }
         const name = decodeURIComponent(rawName);
@@ -797,6 +828,75 @@ export function createBoardApi({
           files: parsed.files,
         };
         await respondToBranchWrite(res, name, input, receiveMs);
+        return true;
+      }
+
+      // GET /api/diff/<path>?since=<spec>: master against a point in the board's history, with
+      // the edits overwritten since then (tools/diff-since.mjs; `xcld diff --since`, MCP diff).
+      const diffPrefix = "/api/diff/";
+      if (rawPathname.startsWith(diffPrefix) && req.method === "GET") {
+        const name = decodeURIComponent(rawPathname.slice(diffPrefix.length));
+        filePathFor(root, name, ".excalidraw");
+        const since = url.searchParams.get("since");
+        if (!since) {
+          sendError(res, 400, "since-required", { hint: "?since=<version prefix | time (10m, 2h, ISO) | author:<name> | snapshot label>" });
+          return true;
+        }
+        const master = await versions.readMaster(name);
+        if (!master) {
+          sendError(res, 404, "board-not-found", { name });
+          return true;
+        }
+        try {
+          const history = await openHistory({ stateDir: versions.stateDir, board: name });
+          const result = await diffSince({
+            history,
+            master,
+            since,
+            resolveVersion: async (version) => {
+              const found = await versions.readVersion(name, version);
+              return found ? { scene: found.scene, at: await versions.baseKeptAt(name, version) } : null;
+            },
+            diffOptions: { board: name, boardsDir: root },
+          });
+          sendJson(res, 200, result);
+        } catch (error) {
+          if (error instanceof SinceError) {
+            sendError(res, error.code === "since-not-found" ? 404 : 400, error.code, { message: error.message });
+            return true;
+          }
+          throw error;
+        }
+        return true;
+      }
+
+      // GET /api/history/<path>: the board's history entries (turns), oldest first, without the
+      // losers' elements (`xcld watch`; `xcld history export` has everything).
+      const historyPrefix = "/api/history/";
+      if (rawPathname.startsWith(historyPrefix) && req.method === "GET") {
+        const name = decodeURIComponent(rawPathname.slice(historyPrefix.length));
+        filePathFor(root, name, ".excalidraw");
+        const history = await openHistory({ stateDir: versions.stateDir, board: name });
+        sendJson(res, 200, {
+          name,
+          version: history.state?.version ?? null,
+          entries: history.entries.map(({ entry, meta, open }) => ({
+            entry,
+            version: meta.record === "none" ? null : meta.version,
+            author: meta.author,
+            displayName: meta.displayName ?? null,
+            kind: meta.kind ?? null,
+            record: meta.record ?? null,
+            openedAt: meta.openedAt ?? null,
+            lastCommitAt: meta.lastCommitAt ?? null,
+            closedBy: open ? null : meta.closedBy ?? null,
+            coalescedCount: meta.coalescedCount ?? 1,
+            applied: (meta.applied ?? []).map(({ unitId, label, kind }) => ({ unitId, label, kind })),
+            overwritten: overwrittenSummary(meta.overwritten ?? []),
+            ...(open ? { open: true } : {}),
+            ...(meta.pinned ? { pinned: meta.pinned, pins: (meta.pins ?? [{ label: meta.pinned }]).map((pin) => pin.label) } : {}),
+          })),
+        });
         return true;
       }
 
