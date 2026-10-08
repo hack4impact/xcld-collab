@@ -218,7 +218,9 @@ const foldApplied = (previous, next) => {
     if (before?.kind === "added" && item.kind === "deleted") {
       byUnit.delete(item.unitId);
     } else {
-      byUnit.set(item.unitId, before?.kind === "added" ? { ...item, kind: "added" } : item);
+      // Style words of one turn add up ("made dashed", then "made curved").
+      const styled = [...new Set([...(before?.styled ?? []), ...(item.styled ?? [])])];
+      byUnit.set(item.unitId, { ...item, ...(before?.kind === "added" ? { kind: "added" } : {}), ...(styled.length ? { styled } : {}) });
     }
   }
   return [...byUnit.values()].sort((left, right) => (left.unitId < right.unitId ? -1 : left.unitId > right.unitId ? 1 : 0));

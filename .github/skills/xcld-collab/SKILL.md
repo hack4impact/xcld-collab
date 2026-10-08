@@ -107,7 +107,12 @@ version history only and nothing puts it back by itself.
 
 1. Call `read_board` (Mermaid is the default format) and keep its `version`.
 2. Edit that Mermaid: keep the node ids (a node id is the shape's id on the board), relabel,
-   restyle, add or remove nodes and edges.
+   restyle, add or remove nodes and edges. **Leave edge forms you didn't mean to change exactly
+   as `read_board` gave them:** don't normalise `-.-`, `===`, `<==>`, `--o` and the like to `-->`,
+   and keep edge ids and their `e1@{ curve: linear }` / `curve: step` lines (straight and elbow
+   arrows). Each of those is the human's style; rewriting it changes the arrow. A `%% Canvas-only
+   style` comment lists what Mermaid can't show (dotted vs dashed, widths, triangle heads); the
+   board keeps it whatever you write.
 3. Call `write_mermaid` with the whole Mermaid and `base` = that `version`. Without `base` it
    applies to the board as it is now.
 4. The server applies it on the board: existing shapes keep their position and the human's
@@ -126,7 +131,9 @@ version history only and nothing puts it back by itself.
 
 1. Call `read_board` with `format: "json"` and keep its `version`.
 2. Change the elements: keep every element id, keep bound text with its container
-   (`containerId`) and arrows bound with `startBinding`/`endBinding`.
+   (`containerId`) and arrows bound with `startBinding`/`endBinding`. Don't "tidy" arrows and
+   lines you aren't changing: keep their `strokeStyle`, `strokeWidth`, `roundness`, `elbowed`,
+   arrowheads and points as you read them.
 3. Call `write_board` with the **whole board** and `base` = that `version`. Elements you leave
    out are deleted; elements others added after your `version` are kept.
 4. Read the result. `overwritten` lists units you and someone else both changed: the later

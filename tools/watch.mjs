@@ -19,7 +19,7 @@ const list = (items, limit = 6) => `${items.slice(0, limit).join(", ")}${items.l
 /** One line for a `merged` event (also an unchanged write that only lost units). */
 export const formatMergedEvent = (event, at = Date.now(), known = []) => {
   const who = labeler(event, known);
-  const applied = (event.applied ?? []).map((item) => `${item.kind} ${unitText(item)}`);
+  const applied = (event.applied ?? []).map((item) => `${item.kind} ${unitText(item)}${item.styled?.length ? ` (${item.styled.join(", ")})` : ""}`);
   const lost = (event.overwritten ?? []).map((item) => `${unitText(item)}: ${who(item.loser?.author)} lost to ${who(item.winner?.author)}`);
   return `${clock(at)} MERGED  ${event.name} v${String(event.version ?? "").slice(0, 12)} by ${who(event.author)}: ${applied.length ? `applied ${list(applied)}` : "nothing applied"}${lost.length ? `; OVERWRITTEN ${list(lost)}` : ""}${event.unbound?.length ? `; unbound ${event.unbound.length} arrow end(s)` : ""}`;
 };
@@ -30,7 +30,8 @@ export const formatHistoryEntry = (entry, change = "new", known = []) => {
   const state = entry.open ? "open" : `closed by ${entry.closedBy ?? "?"}`;
   const pins = entry.pins?.length ? ` pinned ${entry.pins.map(quote).join(", ")}` : "";
   const lost = (entry.overwritten ?? []).map((item) => `${unitText(item)} (${who(item.loser?.author)} lost to ${who(item.winner?.author)})`);
-  return `${clock(entry.lastCommitAt)} HISTORY ${change.padEnd(6)} ${entry.entry} ${entry.record === "none" ? "(no new version)" : `v${String(entry.version ?? "").slice(0, 12)}`} by ${who(entry.author)} [${entry.author}], ${state}, ${entry.coalescedCount ?? 1} save(s), ${(entry.applied ?? []).length} applied${lost.length ? `, overwritten: ${list(lost)}` : ""}${pins}`;
+  const styled = (entry.applied ?? []).filter((item) => item.styled?.length).map((item) => `${unitText(item)} ${item.styled.join(", ")}`);
+  return `${clock(entry.lastCommitAt)} HISTORY ${change.padEnd(6)} ${entry.entry} ${entry.record === "none" ? "(no new version)" : `v${String(entry.version ?? "").slice(0, 12)}`} by ${who(entry.author)} [${entry.author}], ${state}, ${entry.coalescedCount ?? 1} save(s), ${(entry.applied ?? []).length} applied${styled.length ? ` (${list(styled)})` : ""}${lost.length ? `, overwritten: ${list(lost)}` : ""}${pins}`;
 };
 
 const entryKey = (entry) => `${entry.version}|${entry.coalescedCount}|${entry.lastCommitAt}|${entry.open ? "open" : entry.closedBy}|${(entry.overwritten ?? []).length}|${(entry.pins ?? []).join(",")}`;

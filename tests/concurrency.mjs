@@ -22,7 +22,11 @@
 //   (f) bookkeeping is not an edit: the JSON agent sometimes re-sends what it read with Excalidraw's
 //       bookkeeping dropped, nulled or changed and the origin stamp redone (as LLMs do); its writes
 //       still apply and win only the units it changed, and master keeps every element's seed,
-//       version and nonce (and index).
+//       version and nonce (and index);
+//   (g) arrow styles: the human also restyles the setup arrows (dashed, dotted, straight, elbow,
+//       arrowheads, width, colour), and the Mermaid agent sometimes writes its edges as it read them
+//       on the board (to-mermaid's forms and curves, as read_board shows them). A style is in
+//       master, or kept in history as overwritten, or replaced by a later write that saw it: (a).
 // A `queued` answer (a slow disk: issue #36) is correct behaviour; the writer waits for the landing.
 //
 // Determinism: a virtual clock (the version store's `now`), every random choice from the seed, and
@@ -39,6 +43,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBoardApi } from "../app/server/api.mjs";
 import { canonicalText, contentHash } from "../app/server/versions.mjs";
+import { edgeForm, edgeOperator } from "../tools/edge-style.mjs";
 import { openHistory } from "../tools/history.mjs";
 
 export const DEFAULT_STEPS = 24;
@@ -101,12 +106,28 @@ const perturbBookkeeping = (element, mode, { nonce, at }) => {
   return copy;
 };
 
-const mermaidText = (model) => [
-  "flowchart TD",
-  ...[...model.nodes].map(([id, label]) => `  ${id}["${label}"]`),
-  ...model.edges.map(([from, to]) => `  ${from} --> ${to}`),
-  "",
-].join("\n");
+// `shown`: the board the agent read, to write each edge as read_board shows it (to-mermaid's
+// form and curve of the arrow there); otherwise every edge is a plain `-->`.
+const mermaidText = (model, { shown = null, prefix = "" } = {}) => {
+  const arrows = new Map(live(shown?.elements).filter((element) => element.type === "arrow").map((element) => [element.id, element]));
+  const curves = [];
+  const edges = model.edges.map(([from, to], index) => {
+    const arrow = shown ? arrows.get(`${prefix}${from}_${to}`) : null;
+    const form = arrow ? edgeForm(arrow) : null;
+    if (form?.curve) curves.push(`  e${index}@{ curve: ${form.curve} }`);
+    return `  ${from} ${form?.curve ? `e${index}@` : ""}${form ? edgeOperator(form) : "-->"} ${to}`;
+  });
+  return ["flowchart TD", ...[...model.nodes].map(([id, label]) => `  ${id}["${label}"]`), ...edges, ...curves, ""].join("\n");
+};
+// Arrow styles a human sets in the tab, and the arrows of the setup it restyles (never deleted).
+const STYLE_KEYS = ["strokeStyle", "strokeWidth", "strokeColor", "roundness", "elbowed", "startArrowhead", "endArrowhead"];
+const ARROW_STYLES = [
+  { strokeStyle: "dashed" }, { strokeStyle: "dotted" }, { strokeStyle: "solid" }, { roundness: null, elbowed: false }, { roundness: { type: 2 }, elbowed: false },
+  { elbowed: true, roundness: null }, { endArrowhead: null }, { endArrowhead: "triangle" }, { endArrowhead: "arrow" }, { startArrowhead: "arrow" }, { startArrowhead: null },
+  { strokeWidth: 1 }, { strokeWidth: 4 }, { strokeWidth: 2 }, { strokeColor: "#e03131" }, { strokeWidth: 4, strokeStyle: "dashed" }, { endArrowhead: null, strokeStyle: "dashed" },
+];
+const SETUP_ARROWS = ["A_B", "B_C", "beta:A_B", "beta:B_C"];
+const sameStyle = (element, style) => Boolean(element) && Object.entries(style).every(([key, value]) => JSON.stringify(element[key] ?? null) === JSON.stringify(value ?? null));
 const cloneModel = (model) => ({ nodes: new Map(model.nodes), edges: model.edges.map((edge) => [...edge]), added: model.added });
 
 const readSse = async (base, events, signal) => {
@@ -271,6 +292,8 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
       edits.push({ add: true });
     } else if (chance(0.12) && human.added.some((id) => unitState(human.local, id).present)) {
       edits.push({ delete: pick(human.added.filter((id) => unitState(human.local, id).present)) });
+    } else if (chance(0.3) && live(human.local.elements).some((element) => SETUP_ARROWS.includes(element.id))) {
+      edits.push({ restyle: pick(live(human.local.elements).filter((element) => SETUP_ARROWS.includes(element.id)).map((element) => element.id)) });
     } else {
       for (let count = int(1, 2); count > 0; count--) edits.push({ relabel: pick(units) });
     }
@@ -284,6 +307,12 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
       } else if (edit.delete) {
         human.local = { ...human.local, elements: markDeleted(human.local.elements, edit.delete, at) };
         human.pending.set(edit.delete, { unitId: edit.delete, kind: "delete" });
+      } else if (edit.restyle) {
+        // Excalidraw's properties panel: the arrow's own style changes and its version bumps.
+        const patch = pick(ARROW_STYLES);
+        human.local = { ...human.local, elements: human.local.elements.map((element) => (element.id === edit.restyle ? { ...element, ...patch, version: (element.version ?? 1) + 1, versionNonce: nonce(), updated: at } : element)) };
+        const arrow = human.local.elements.find((element) => element.id === edit.restyle);
+        human.pending.set(edit.restyle, { unitId: edit.restyle, kind: "style", style: Object.fromEntries(STYLE_KEYS.map((key) => [key, arrow[key] ?? null])) });
       } else {
         const label = edit.label ?? token("H");
         human.local = { ...human.local, elements: relabel(human.local.elements, edit.relabel, label, nonce(), at) };
@@ -292,7 +321,7 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
       }
     }
     human.lastEditAt = at;
-    note(`human edit ${edits.map((edit) => (edit.add ? "add" : edit.delete ? `delete ${edit.delete}` : `relabel ${edit.relabel}`)).join(", ")}`);
+    note(`human edit ${edits.map((edit) => (edit.add ? "add" : edit.delete ? `delete ${edit.delete}` : edit.restyle ? `restyle ${edit.restyle} ${JSON.stringify(human.pending.get(edit.restyle)?.style)}` : `relabel ${edit.relabel}`)).join(", ")}`);
   };
   const humanCheckpoint = async () => {
     await humanSave("before Ctrl+S");
@@ -414,14 +443,16 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
     }
     const stale = forced ? true : chance(0.3);
     const writtenAt = forced?.writtenAt ?? (stale ? clock - int(2_000, 20_000) : clock);
-    const write = { idx: writes.length, writer: "mermaid", author: MERMAID_AGENT, base: read.version, baseScene: read.scene, writtenAt, changes, source, status: null };
+    // Half the time the agent writes its edges as it read them on the board (read_board's Mermaid).
+    const asRead = !forced && chance(0.5);
+    const write = { idx: writes.length, writer: "mermaid", author: MERMAID_AGENT, base: read.version, baseScene: read.scene, writtenAt, changes, source, asRead, status: null };
     writes.push(write);
     const { responded } = await issue(MERMAID_AGENT, () => fetch(`${base}/api/mermaid/${BOARD}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ author: MERMAID_AGENT, base: read.version, writtenAt, mermaid: mermaidText(model), source }),
+      body: JSON.stringify({ author: MERMAID_AGENT, base: read.version, writtenAt, mermaid: mermaidText(model, asRead ? { shown: read.scene, prefix: source === "main" ? "" : `${source}:` } : {}), source }),
     }));
-    note(`mermaid write ${source} base=${short(read.version)}${read === mermaidAgent.reads.at(-1) ? "" : " (stale read)"} writtenAt=t+${writtenAt - START}${stale ? " (old)" : ""} changes=${changes.map((change) => `${change.unitId}:${change.kind}${change.token ? `=${change.token}` : ""}`).join(",")}`);
+    note(`mermaid write ${source}${asRead ? " (edges as read)" : ""} base=${short(read.version)}${read === mermaidAgent.reads.at(-1) ? "" : " (stale read)"} writtenAt=t+${writtenAt - START}${stale ? " (old)" : ""} changes=${changes.map((change) => `${change.unitId}:${change.kind}${change.token ? `=${change.token}` : ""}`).join(",")}`);
     mermaidAgent.reads = [];
     const done = settleAgentWrite("mermaid", write, responded).then(() => {
       // The source as the server now knows it (each source keeps its last applied Mermaid).
@@ -560,6 +591,14 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
     for (const write of writes) {
       assert.ok(write.status, `seed ${seed}: write #${write.idx} (${write.writer}) never answered`);
       for (const change of write.changes) {
+        if (change.kind === "style") {
+          const arrowNow = live(final.scene.elements).find((element) => element.id === change.unitId);
+          if (sameStyle(arrowNow, change.style)) continue;
+          if (losers.some((lost) => lost.unitId === change.unitId && lost.loser.author === write.author && (lost.loser.elements ?? []).some((element) => element.id === change.unitId && sameStyle(element, change.style)))) continue;
+          const replaced = writes.find((later) => later.idx > write.idx && later.changes.some((other) => other.unitId === change.unitId) && sameStyle(live(later.baseScene?.elements).find((element) => element.id === change.unitId), change.style));
+          if (replaced) continue;
+          assert.fail(`seed ${seed}: silent loss: write #${write.idx} (${write.writer}, ${write.status}) styled ${change.unitId} ${JSON.stringify(change.style)}; master has ${JSON.stringify(arrowNow ? Object.fromEntries(STYLE_KEYS.map((key) => [key, arrowNow[key] ?? null])) : null)}, no overwritten record, no later write saw it`);
+        }
         const expected = stateAfter(change);
         if (sameState(unitState(final.scene, change.unitId), expected)) continue;
         if (loserHas(change, write)) continue;
@@ -656,7 +695,9 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
     error.seed = seed;
     throw error;
   }
-  return { seed, finalVersion, writes: writes.length, queued: queuedCount, overwritten: overwrittenCount, ms: Date.now() - started };
+  const restyles = writes.reduce((sum, write) => sum + write.changes.filter((change) => change.kind === "style").length, 0);
+  const asRead = writes.filter((write) => write.asRead).length;
+  return { seed, finalVersion, writes: writes.length, restyles, asRead, queued: queuedCount, overwritten: overwrittenCount, ms: Date.now() - started };
 };
 
 /** Runs seeds [start, start + count) with `parallel` at a time; each seed twice when `twice` (D3). */
@@ -714,7 +755,9 @@ const main = async (argv) => {
   const writes = results.reduce((sum, result) => sum + result.writes, 0);
   const queued = results.reduce((sum, result) => sum + result.queued, 0);
   const overwritten = results.reduce((sum, result) => sum + result.overwritten, 0);
-  console.log(`concurrency: ${results.length}/${count} seeds passed (${start}..${start + count - 1}, ${steps} steps, ${twice ? "each run twice" : "once"}${writeWaitMs ? `, write wait ${writeWaitMs} ms` : ""}), ${writes} writes, ${queued} queued, ${overwritten} overwritten units kept in history, ${((Date.now() - began) / 1000).toFixed(1)} s`);
+  const restyles = results.reduce((sum, result) => sum + result.restyles, 0);
+  const asRead = results.reduce((sum, result) => sum + result.asRead, 0);
+  console.log(`concurrency: ${results.length}/${count} seeds passed (${start}..${start + count - 1}, ${steps} steps, ${twice ? "each run twice" : "once"}${writeWaitMs ? `, write wait ${writeWaitMs} ms` : ""}), ${writes} writes (${restyles} arrow restyles saved, ${asRead} Mermaid writes with edges as read), ${queued} queued, ${overwritten} overwritten units kept in history, ${((Date.now() - began) / 1000).toFixed(1)} s`);
   for (const { error } of failures) console.log(`\n${error.message}`);
   const { closeParser } = await import("../tools/mermaid-parse.mjs");
   await closeParser?.();

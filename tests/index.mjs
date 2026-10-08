@@ -9,6 +9,7 @@ import "./concurrency.test.mjs";
 import "./deleted-events.test.mjs";
 import "./diff.test.mjs";
 import "./diff-since.test.mjs";
+import "./edge-style.test.mjs";
 import "./export.test.mjs";
 import "./history.test.mjs";
 import "./history-repeat.test.mjs";

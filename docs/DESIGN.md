@@ -434,6 +434,7 @@ I/O, no clock, the same inputs give the same output, and it runs in Node and in 
 | Z-order | `index` is not content, so it merges per element on its own: a side that set a new index moved the element (one that omitted it didn't), a one-sided move applies, a unit both sides changed takes the winner's index, and an element both sides moved otherwise takes the higher index (deterministic in either merge order). A z-order move alone is not reported in `applied`. With a fractional `index` on every element, elements sort by it (ties by id). Otherwise master's order holds (the branch's on a fast-forward), and elements only the branch has follow their nearest preceding branch neighbor. |
 | Labels | `applied` and `overwritten` name a unit by its text (bound text, or the element's own). A unit without text gets a description from where it sits, with `unlabeled: true`: `unlabeled arrow from "Payments service" to "Fraud detection"`, `unlabeled rectangle near "Ledger v2"` (or `around`, when it encloses the shape), never a bare element id (`tools/unit-label.mjs`, shared with `diff`, `diff --since`, `xcld watch` and the banner). Text a writer typed is kept as written, even if it looks like an id. |
 | Tombstones | Not written to master; `meta` keeps the time and author of a deletion. |
+| Style words | An `applied` unit whose arrow or line changed style carries `styled`, the change in words ("made dashed", "made curved", "arrowhead to triangle"), for the banner, `xcld watch` and history ([line and arrow styles](#line-and-arrow-styles-in-the-mermaid-round-trip)). |
 | `files`, `appState` | Image files: the union of both sides by file id. `appState`: per key, a branch change since the base wins. |
 | Write times | `meta` maps every element id to `{ writtenAt, author }` of the write that last set it. The commit step stores it and passes it back as `masterMeta` on the next merge. |
 
@@ -479,7 +480,9 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
     text, which re-wraps; the shape grows taller only if the text no longer fits.
     `classDef`/`class`/`style` colors, shape type, edge style and subgraph membership
     follow the Mermaid. A style that the Mermaid doesn't mention is left alone, unless
-    `previous` (the Mermaid the board came from) shows that Mermaid had set it.
+    `previous` (the Mermaid the board came from) shows that Mermaid had set it. An edge's
+    style changes per dimension, only where the write changed it
+    ([line and arrow styles](#line-and-arrow-styles-in-the-mermaid-round-trip)).
   - **Only Mermaid-origin elements of the written source are ever deleted**: those whose
     origin (`customData.xcldOrigin`, or `xcldMermaidHash` for `main` on older boards) names the
     source. Human notes, human arrows, human shapes and other sources' shapes never are; an
@@ -487,7 +490,8 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
     Mermaid had can be deleted.
   - New shapes go next to a connected neighbour, in the flowchart's direction. They avoid
     every live element's bounding box, and the placement is deterministic. New edges are
-    straight bound arrows; a parallel edge bows around the first one. New subgraphs wrap
+    straight bound arrows, drawn curved, straight or elbow as the edge's curve says; a parallel
+    edge bows around the first one. New subgraphs wrap
     their members, and existing ones grow to hold new members.
   - Changed and new elements get the new Mermaid hash and a version bump; untouched ones
     keep theirs, so a merge sees only real changes.
@@ -950,7 +954,11 @@ The acceptance test of versions and merge (agreed 2026-10-03, revised 2026-10-06
   what it read with bookkeeping dropped, nulled or changed and the origin stamp redone (like
   the real check's agent); such a write applies and wins only the units it changed, and every
   live element in master keeps a numeric `seed`, `version` and `versionNonce` (setup elements:
-  the same seed). On the pre-fix merge, (f) fails 10/10 seeds. A failure prints the seed, the
+  the same seed). On the pre-fix merge, (f) fails 10/10 seeds; (g) arrow styles: the human
+  also restyles the setup arrows (stroke style, width, colour, straight/curved/elbow,
+  arrowheads), and half the Mermaid agent's writes give its edges the form and curve the
+  board showed it (as `read_board` does); every saved style is in master, kept in history as
+  overwritten, or replaced by a later write that saw it. A failure prints the seed, the
   rerun command and the step log.
 - **Default suite:** 50 seeds × 24 steps (about 15 writes each), each run twice, 4 seeds at a
   time, plus 5 seeds where every agent write answers `queued` (`writeWaitMs: 1`): about 40 s on
@@ -1314,20 +1322,51 @@ property lookup:
 
 ### Line and arrow styles in the Mermaid round trip
 
-Mermaid flowchart edges have equivalents for some styles:
+**Status (2026-10-08):** built (`tools/edge-style.mjs`, shared by `to-mermaid`, the Mermaid apply,
+the merge and `diff`). The lead's report: "I changed a line style and it reverted." Two causes,
+both reproduced in headless Chromium (`tests/browser/run-edge-styles.mjs`): before #41, a JSON
+agent re-sending the whole board without bookkeeping overwrote the human's restyles (fixed by #41);
+and an agent that read the board as Mermaid (`read_board`) and wrote it back reset two styles that
+`to-mermaid` exported in a form that meant something else (dashed with no head as `---`, thick and
+dashed as `==>`), because the apply then saw a changed edge and restyled it.
 
-| Excalidraw | Mermaid |
-|---|---|
-| Solid arrow | `-->` |
-| No arrowhead | `---` |
-| Dashed or dotted | `-.->` |
-| Extra-bold stroke | `==>` |
-| Arrowheads on both ends | `<-->` |
-| `circle` / `bar` head | `--o` / `--x` (nearest equivalent; flagged as approximate) |
+What Mermaid 11.17 carries per edge, and what stays on the canvas:
 
-Everything else (colors per edge, elbows, triangle/diamond heads) goes into `%% xcld:` comments
-so the merge on re-import (option B + C) can restore it.
+| Excalidraw | Mermaid | Round trip |
+|---|---|---|
+| End arrowhead, solid / dashed or dotted / extra bold (width 4) | `-->` / `-.->` / `==>` | carried |
+| No arrowheads | `---` / `-.-` / `===` | carried |
+| Arrowheads on both ends | `<-->` / `<-.->` / `<==>` | carried |
+| `circle` / `bar` heads (end, or both) | `--o` / `--x`, `o--o` / `x--x` (each stroke) | carried |
+| Straight (sharp), elbow | edge id plus curve: `a e1@--> b`, `e1@{ curve: linear }` / `e1@{ curve: step }` | carried; curved is the default and is not written |
+| A label | `-->\|"label"\|` for every form above | carried |
+| Dotted vs dashed | both `-.` | canvas only |
+| Thin (1) vs bold (2) | both normal | canvas only |
+| Thick and dashed at once | exported as `-.->` | canvas only (thick), noted in a `%%` comment |
+| Triangle, diamond, crow's foot and outline heads | shown as the nearest kind (`>`, `o`) | canvas only, noted |
+| A head on the start only; two kinds of head | Mermaid has no form (`<--`, `<--o` don't parse as such) | canvas only, noted |
+| Edge colour | `linkStyle` exists, but it addresses edges by position | canvas only |
 
+**Per-edge curve (verified 2026-10-08, Mermaid 11.17.2 with our parser):** `a e1@--> b` gives the
+edge the id `e1`, and `e1@{ curve: linear }` sets `edge.interpolate` (FlowDB `addVertex`: an id that
+names an edge takes `curve`, `animate`, `animation`). The parser reports it as the edge's `curve`.
+`linear` is straight, `step`, `stepBefore` and `stepAfter` are elbow, any other curve (`basis`,
+`monotoneX`, ...) is curved.
+
+**Apply rule (per style dimension):** thick, dotted, the start head, the end head and the curve are
+dimensions. A Mermaid write changes an arrow's dimension only when the new Mermaid differs both
+from what the arrow exports to now (to-mermaid of the board at the writer's base) and from the
+previous Mermaid of that edge. Writing back what `read_board` showed, or the agent's own unchanged
+text, therefore changes no style. When it does change a dimension, it sets only what that dimension
+needs: Mermaid's dotted keeps a canvas `dotted`, Mermaid's arrow keeps a canvas triangle, normal
+keeps a thin arrow, and an edge with no curve keeps its arrow type (no curve is no opinion; write
+`curve: basis` to make an arrow curved again). A real change wins and makes Mermaid the active
+origin, and the human's version goes to history, as for nodes. A tab conversion of a new board
+gets each edge's curve too (the converter draws every arrow curved).
+
+**Ledger:** `diff`, `diff --since`, the banner details, `xcld watch` and history entries word arrow
+and line style changes: "made dashed", "made straight", "made elbow", "made extra bold",
+"arrowhead to triangle", "colour to #e03131".
 ## Evidence so far
 
 - **verified:** in upstream `excalidraw-mcp@157aa23`, the edit summary sent back to the

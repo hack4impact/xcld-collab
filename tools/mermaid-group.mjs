@@ -3,7 +3,7 @@
 // group placed clear of the drawing (tools/mermaid-place.mjs), and the result is the whole board
 // for a merge. Pure and deterministic. The human's shapes are never touched.
 //
-//   adoptConverted({ master, converted, source, hash, now, position, direction })
+//   adoptConverted({ master, converted, source, hash, now, position, direction, parsed? })
 //     -> { elements, ops, placement }
 //
 // - Ids: shapes and arrows keep the converter's id (the Mermaid node id) in `main` and get
@@ -13,7 +13,10 @@
 //   like can't be applied node by node) replaces that source's elements, and only those: the new
 //   group goes where the old one was.
 // - An empty board keeps the converter's coordinates.
-import { boxOf, generateKeyBetween, isValidIndex, unionBox } from "./mermaid-apply.mjs";
+// - With `parsed` (the server's parse of the same Mermaid), an edge's own curve (`e1@{ curve: linear }`)
+//   makes its arrow straight or elbow: the converter draws every arrow curved.
+import { curveShape, styleFor } from "./edge-style.mjs";
+import { boxOf, converterElementIds, generateKeyBetween, isValidIndex, reshapePoints, unionBox } from "./mermaid-apply.mjs";
 import { mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
 import { placeGroup } from "./mermaid-place.mjs";
 
@@ -39,7 +42,7 @@ export const obstacleBoxes = (elements) => {
   return live.filter((element) => !(element.type === "text" && containers.has(element.containerId))).map(boxOf);
 };
 
-export const adoptConverted = ({ master = [], converted = [], source, hash, now, position = { kind: "auto" }, direction = "TD" }) => {
+export const adoptConverted = ({ master = [], converted = [], source, hash, now, position = { kind: "auto" }, direction = "TD", parsed = null }) => {
   const prefix = sourcePrefix(source);
   const ops = [];
   const board = clone(Array.isArray(master) ? master : []);
@@ -94,6 +97,18 @@ export const adoptConverted = ({ master = [], converted = [], source, hash, now,
     }
     return next;
   });
+
+  if (parsed?.ok) {
+    const edgeIds = converterElementIds(parsed).edges;
+    const byId = new Map(group.map((element) => [element.id, element]));
+    parsed.edges.forEach((edge, index) => {
+      const shape = curveShape(edge.curve);
+      const arrow = byId.get(rename.get(edgeIds[index]));
+      if (!shape || arrow?.type !== "arrow") return;
+      const props = styleFor(arrow, "shape", shape);
+      if (Object.keys(props).length) Object.assign(arrow, props, { points: reshapePoints(arrow.points, shape, Boolean(arrow.elbowed)) });
+    });
+  }
 
   // Placement: clear of the drawing (the replaced group's place for a rewrite).
   let placement = { dx: 0, dy: 0, placement: "keep" };

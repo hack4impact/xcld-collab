@@ -17,7 +17,7 @@
 //   { ok: false, error: { message, line, column, token, expected } }   Mermaid syntax error
 // and rejects only when the worker itself is unavailable (bundle missing, crash, timeout).
 //   nodes:     [{ id, label, shape, classes, styles, link, style: { container, label } }]
-//   edges:     [{ mermaidId, start, end, label, type, stroke, arrowheads }]
+//   edges:     [{ mermaidId, start, end, label, type, stroke, arrowheads, curve }]   curve: the edge's own (`e1@{ curve: linear }`) or null
 //   subgraphs: [{ id, title, nodes, classes, style: { container, label } }]
 // `label`/`title` are the text the converter would put on the board (real newlines,
 // entities decoded, Markdown stripped). `style` holds the Excalidraw properties the

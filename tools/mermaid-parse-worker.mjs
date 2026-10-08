@@ -121,6 +121,8 @@ const parseDefinition = async (text) => {
     type: edge.type ?? "arrow_point",
     stroke: edge.stroke ?? "normal",
     arrowheads: computeExcalidrawArrowType(edge.type || "arrow_point") ?? {},
+    // The edge's own curve (`e1@{ curve: linear }`, `linkStyle 0 interpolate step`), or null.
+    curve: typeof edge.interpolate === "string" && edge.interpolate ? edge.interpolate : null,
   }));
   const subgraphs = asArray(db.getSubGraphs()).map((subgraph) => {
     const classIds = asArray(subgraph.classes);

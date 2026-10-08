@@ -50,7 +50,10 @@ board the same way. Read [Getting started](../README.md#getting-started) first.
 > is. With no tab open, the server lays a flowchart out itself in a simple grid after about 2
 > minutes. If you change a Mermaid shape (its label, color or position), your version stays
 > until the agent's Mermaid changes that shape; then the agent's version wins and yours stays
-> in version history, reported as overwritten.
+> in version history, reported as overwritten. Arrow styles work the same way, per style: an
+> arrow you made dotted, straight, elbow, thin, coloured or gave a triangle head keeps that
+> style when an agent writes Mermaid that leaves the edge as it was, and changes only in what
+> the agent's Mermaid changes (for example `-->` to `==>`).
 
 ## The loop with MCP tools
 
@@ -191,7 +194,9 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 - **Mermaid is the export, the board is the truth.** This is exceptionally important, and diverging from this habit
   will sour your user experience. Mermaid can't hold notes, positions or
   freehand. `to-mermaid` keeps notes as `%%` comments and colors as `style` lines, but layout
-  is lost.
+  is lost. Edges keep their Mermaid form (`-.->`, `===`, `<==>`, `--o`, ...), and straight or
+  elbow arrows get a curve (`e1@{ curve: linear }`); dotted vs dashed, widths, edge colours and
+  triangle-style heads stay on the board only ([the table](DESIGN.md#line-and-arrow-styles-in-the-mermaid-round-trip)).
 - **One folder per project.** For example, write `boards/myproject/flow.mmd` and open
   `?board=myproject/flow`. Board path segments allow letters, digits, `.`, `_` and `-`
   (e.g. `auth-flow`, `v2.data-model`).

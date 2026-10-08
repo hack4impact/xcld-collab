@@ -1,12 +1,22 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LINE_STYLE_PROPS, canvasShape, describeLineProperty } from "./edge-style.mjs";
 import { describeOrigin } from "./mermaid-origin.mjs";
 import { collectRuleLegend, formatRuleWarnings, loadEffectiveRulesForBoard, ruleTagText, rulesForChange } from "./rules.mjs";
 import { describeUnlabeled, labelContext, typeWord } from "./unit-label.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
 const STYLE_PROPS = ["strokeColor", "backgroundColor", "fillStyle", "strokeStyle", "strokeWidth", "roughness", "opacity"];
+// Arrows and lines also have a curve (straight, curved, elbow) and arrowheads.
+const EDGE_STYLE_PROPS = [...STYLE_PROPS, ...LINE_STYLE_PROPS];
+const sameValue = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+// An arrow's missing end arrowhead is Excalidraw's default, an arrow.
+const edgeProperty = (element, property) => {
+  if (property === "elbowed") return Boolean(element.elbowed);
+  return property === "endArrowhead" && element.type === "arrow" && element.endArrowhead === undefined ? "arrow" : element[property];
+};
+const shownValue = (value) => (value === null || value === undefined ? "<unset>" : typeof value === "object" ? JSON.stringify(value) : value);
 
 const round = (value) => Math.round(Number(value ?? 0));
 const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
@@ -128,8 +138,14 @@ export const diffElements = (oldElements, newElements, files = {}, { authorName 
     } else {
       if (oldEdge.startId !== edge.startId || oldEdge.endId !== edge.endId) diff.edges.rewired.push({ id: edge.id, from: oldModel.edgePhrase(oldEdge), to: newModel.edgePhrase(edge), ...originFor(edge.id) });
       if (oldEdge.label !== edge.label) diff.edges.relabeled.push({ id: edge.id, edge: newModel.edgePhrase(edge), from: oldEdge.label, to: edge.label, ...originFor(edge.id) });
-      for (const property of STYLE_PROPS) {
-        if (oldEdge.element[property] !== edge.element[property]) diff.styles.push({ id: edge.id, subject: newModel.edgePhrase(edge), kind: "edge", property, from: oldEdge.element[property] ?? null, to: edge.element[property] ?? null });
+      for (const property of EDGE_STYLE_PROPS) {
+        const from = edgeProperty(oldEdge.element, property);
+        const to = edgeProperty(edge.element, property);
+        if (sameValue(from, to)) continue;
+        // To or from elbow is one change: the elbow line says which arrow type it became.
+        if (property === "roundness" && edgeProperty(oldEdge.element, "elbowed") !== edgeProperty(edge.element, "elbowed")) continue;
+        const words = property === "elbowed" ? `made ${canvasShape(edge.element)}` : describeLineProperty(property, from, to, edge.element.type);
+        diff.styles.push({ id: edge.id, subject: newModel.edgePhrase(edge), kind: edge.element.type === "arrow" ? "edge" : edge.element.type, property, from: from ?? null, to: to ?? null, ...(words ? { words } : {}), ...originFor(edge.id) });
       }
     }
   }
@@ -236,7 +252,7 @@ export const formatDiff = (diff) => {
     ...diff.notes.changed.map((item) => `~ changed "${item.from}" -> "${item.to}" (${item.id})${ruleTagText(item.rules)}`),
   ]);
   const subject = (item) => (item.unlabeled ? item.subject : `"${item.subject}"`);
-  section("Style", diff.styles.map((item) => `~ ${item.kind} ${subject(item)} ${item.property}: ${item.from ?? "<unset>"} -> ${item.to ?? "<unset>"} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
+  section("Style", diff.styles.map((item) => `~ ${item.kind} ${subject(item)}${item.words ? ` ${item.words} (${item.property}: ${shownValue(item.from)} -> ${shownValue(item.to)})` : ` ${item.property}: ${shownValue(item.from)} -> ${shownValue(item.to)}`} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
   section("Moves", diff.moves.map((item) => `~ ${item.kind} ${subject(item)}: ${item.from} -> ${item.to} (${item.id})${originTag(item)}${ruleTagText(item.rules)}`));
   if (lines.length === 1) lines.push("No semantic changes detected.");
   const legend = collectRuleLegend(diff);

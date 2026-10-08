@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { edgeForm, edgeOperator } from "./edge-style.mjs";
 import { describeOrigin } from "./mermaid-origin.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
@@ -41,32 +42,9 @@ const distance = (left, right) => {
   return Math.hypot(a.x - b.x, a.y - b.y);
 };
 
-const edgeOperator = (element, comments) => {
-  const start = element.startArrowhead;
-  const end = element.endArrowhead === undefined ? "arrow" : element.endArrowhead;
-  const startArrow = !noneHead(start);
-  const endArrow = !noneHead(end);
-  const unsupported = [start, end].filter((head) => !noneHead(head) && head !== "arrow").map(String);
-  if (unsupported.length) comments.push(`%% Unsupported arrowhead style on ${element.id}: start=${start ?? "none"} end=${end ?? "none"}`);
-  if (startArrow && endArrow) return "<-->";
-  if (!startArrow && !endArrow) return "---";
-  if (!startArrow && endArrow && Number(element.strokeWidth ?? 2) === 4) return "==>";
-  if (!startArrow && endArrow && (element.strokeStyle === "dashed" || element.strokeStyle === "dotted")) return "-.->";
-  if (!startArrow && endArrow) return "-->";
-  comments.push(`%% Unsupported arrow direction on ${element.id}: start=${start ?? "none"} end=${end ?? "none"}`);
-  return "---";
-};
-
-const linkWithLabel = (operator, label) => {
-  if (!label) return operator;
-  const escaped = escapeLabel(label);
-  if (operator === "-.->") return `-. "${escaped}" .->`;
-  if (operator === "---") return `---|"${escaped}"|`;
-  if (operator === "==>") return `==>|"${escaped}"|`;
-  if (operator === "<-->") return `<-->|"${escaped}"|`;
-  return `-->|"${escaped}"|`;
-};
-
+// Every edge form Mermaid 11.17 has (tools/edge-style.mjs): `-->`, `---`, `-.->`, `-.-`, `==>`,
+// `===`, `<-->`, `<-.->`, `<==>`, circle and cross heads; a label goes between pipes.
+const linkWithLabel = (operator, label) => (label ? `${operator}|"${escapeLabel(label)}"|` : operator);
 export const sceneToMermaid = (data) => {
   const elements = Array.isArray(data.elements) ? data.elements.filter((element) => !element.isDeleted) : [];
   const textByContainer = new Map();
@@ -108,10 +86,9 @@ export const sceneToMermaid = (data) => {
       const end = nodesById.get(endId);
       const label = labelForContainer(element.id, "");
       if (start && end) {
-        const localComments = [];
-        const operator = edgeOperator(element, localComments);
-        edges.push({ id: element.id, element, start, end, label, operator });
-        comments.push(...localComments);
+        const form = edgeForm(element);
+        edges.push({ id: element.id, element, start, end, label, operator: edgeOperator(form), curve: form.curve });
+        if (form.notes.length) comments.push(`%% Canvas-only style of ${element.id} (Mermaid keeps it): ${form.notes.join(", ")}`);
       } else {
         comments.push(`%% Unbound arrow ${element.id}: ${startId ?? "<none>"} -> ${endId ?? "<none>"}${label ? ` label="${label}"` : ""}`);
       }
@@ -162,6 +139,12 @@ export const sceneToMermaid = (data) => {
     return `${node.mermaidId}["${label}"]`;
   };
 
+  // A straight or elbow arrow gets an edge id and its curve (Mermaid 11.10+: `a e@--> b` and
+  // `e@{ curve: linear }`). Curved is the default and needs neither.
+  const curved = edges.filter((edge) => edge.curve);
+  for (const edge of curved) edge.mermaidId = toMermaidId(edge.id);
+  const edgeLine = (edge) => `${edge.start.mermaidId} ${edge.curve ? `${edge.mermaidId}@` : ""}${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`;
+
   const lines = ["flowchart TD"];
   const edgesBySubgraph = new Map();
   const topLevelEdges = [];
@@ -182,10 +165,11 @@ export const sceneToMermaid = (data) => {
     const members = nodes.filter((node) => !node.isSubgraph && subgraphForNode(node) === subgraph);
     lines.push(`  subgraph ${subgraph.mermaidId}["${escapeLabel(subgraph.label || subgraph.id)}"]`);
     for (const node of members) lines.push(`    ${shape(node)}`);
-    for (const edge of edgesBySubgraph.get(subgraph.id) ?? []) lines.push(`    ${edge.start.mermaidId} ${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`);
+    for (const edge of edgesBySubgraph.get(subgraph.id) ?? []) lines.push(`    ${edgeLine(edge)}`);
     lines.push("  end");
   }
-  for (const edge of topLevelEdges) lines.push(`  ${edge.start.mermaidId} ${linkWithLabel(edge.operator, edge.label)} ${edge.end.mermaidId}`);
+  for (const edge of topLevelEdges) lines.push(`  ${edgeLine(edge)}`);
+  for (const edge of curved) lines.push(`  ${edge.mermaidId}@{ curve: ${edge.curve} }`);
   // Colors carry meaning (e.g. light blue = proposed), so non-default ones are kept as Mermaid styles.
   const color = (value) => (typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value.toLowerCase() : null);
   for (const node of nodes) {

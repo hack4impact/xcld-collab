@@ -891,7 +891,7 @@ export function createBoardApi({
             lastCommitAt: meta.lastCommitAt ?? null,
             closedBy: open ? null : meta.closedBy ?? null,
             coalescedCount: meta.coalescedCount ?? 1,
-            applied: (meta.applied ?? []).map(({ unitId, label, kind }) => ({ unitId, label, kind })),
+            applied: (meta.applied ?? []).map(({ unitId, label, kind, styled }) => ({ unitId, label, kind, ...(styled?.length ? { styled } : {}) })),
             overwritten: overwrittenSummary(meta.overwritten ?? []),
             ...(open ? { open: true } : {}),
             ...(meta.pinned ? { pinned: meta.pinned, pins: (meta.pins ?? [{ label: meta.pinned }]).map((pin) => pin.label) } : {}),

@@ -4,6 +4,7 @@
 // are inputs. It has no Node-only imports, so the server and the browser bundle can both
 // import it.
 
+import { describeLineStyleChange } from "./edge-style.mjs";
 import { describeUnlabeled, labelContext } from "./unit-label.mjs";
 
 // Bookkeeping that Excalidraw (or a writer) maintains per element: never a change, and a writer
@@ -55,6 +56,7 @@ const compareStrings = (left, right) => (left < right ? -1 : left > right ? 1 : 
 
 const isLive = (element) => element !== undefined && element.isDeleted !== true;
 const isArrowEntry = (entry) => entry?.type === "arrow";
+const LINE_TYPES = new Set(["arrow", "line"]);
 
 const EMPTY = Object.freeze({});
 const STAMP_SKIP = new Set(STAMP_DATA_KEYS);
@@ -489,7 +491,7 @@ const mergeFiles = (masterFiles, branchFiles) => {
  *   appState: object | undefined,
  *   meta: Record<string, { writtenAt: number, author: string }>,
  *   fastForward: boolean,
- *   applied: { unitId: string, label: string, unlabeled?: true, kind: "added" | "changed" | "deleted", elementIds: string[] }[],
+ *   applied: { unitId: string, label: string, unlabeled?: true, kind: "added" | "changed" | "deleted", styled?: string[], elementIds: string[] }[],
  *   overwritten: {
  *     unitId: string, label: string, unlabeled?: true, elementIds: string[],
  *     winner: { side: "master" | "branch", author: string, writtenAt: number },
@@ -591,10 +593,18 @@ export function mergeBoard({ base = null, master = null, branch, branchWrittenAt
       }
       if (report) {
         const liveIn = (side) => members.some((id) => isLive(side.get(id)));
+        const kind = !liveIn(masterSide.map) ? "added" : !liveIn(branchSide.map) ? "deleted" : "changed";
+        // How an arrow's or line's style changed, in words ("made dashed", "made curved").
+        const styled = kind === "changed" ? [...new Set(members.flatMap((id) => {
+          const before = masterOriginal.get(id);
+          const after = branchSide.map.get(id);
+          return LINE_TYPES.has(after?.type) && isLive(before) && isLive(after) ? describeLineStyleChange(before, after) : [];
+        }))] : [];
         applied.push({
           unitId,
           ...unitLabel(unitId, members, [branchSide.map, masterSide.map, baseSide.map], contextOf),
-          kind: !liveIn(masterSide.map) ? "added" : !liveIn(branchSide.map) ? "deleted" : "changed",
+          kind,
+          ...(styled.length ? { styled } : {}),
           elementIds: members,
         });
       }

@@ -7,10 +7,10 @@ export const MAX_BANNER_ITEMS = 100;
 
 /**
  * @typedef {{ writtenAt?: number, author?: string | null }} Stamp
- * @typedef {{ unitId?: string, label: string, unlabeled?: boolean, kind?: string }} AppliedUnit
+ * @typedef {{ unitId?: string, label: string, unlabeled?: boolean, kind?: string, styled?: string[] }} AppliedUnit
  * @typedef {{ unitId?: string, label: string, unlabeled?: boolean, winner?: Stamp, loser?: Stamp }} OverwrittenUnit
  * @typedef {{ type: "applied" | "overwritten" | "dropped", label: string, unlabeled?: boolean, at: number, who?: string,
- *   kind?: string, winner?: string, loser?: string, whoKey?: string | null, winnerKey?: string | null,
+ *   kind?: string, styled?: string[], winner?: string, loser?: string, whoKey?: string | null, winnerKey?: string | null,
  *   loserKey?: string | null, self?: { name: string, tabId: string } | null, mine?: "lost" | "won" | null }} BannerItem
  */
 
@@ -35,7 +35,7 @@ export const mergeItems = ({ author = null, applied = [], overwritten = [], drop
   const items = [];
   if (author !== selfKey) {
     for (const unit of applied ?? []) {
-      items.push({ type: "applied", who: label(author), whoKey: author, self: me, kind: unit.kind, label: unit.label, ...unlabeled(unit), at });
+      items.push({ type: "applied", who: label(author), whoKey: author, self: me, kind: unit.kind, label: unit.label, ...unlabeled(unit), ...(unit.styled?.length ? { styled: unit.styled } : {}), at });
     }
   }
   for (const unit of overwritten ?? []) {
@@ -130,7 +130,7 @@ export const formatTime = (at) => new Date(at).toLocaleTimeString(undefined, { h
 export const bannerDetails = (items) => named(items).map((item) => {
   const when = formatTime(item.at);
   if (item.type === "applied") {
-    return `${when} ${item.who} ${item.kind} ${quote(item)}`;
+    return `${when} ${item.who} ${item.kind} ${quote(item)}${item.styled?.length ? `: ${item.styled.join(", ")}` : ""}`;
   }
   if (item.type === "overwritten") {
     if (item.mine === "lost") {

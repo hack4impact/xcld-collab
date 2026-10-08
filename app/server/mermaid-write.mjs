@@ -433,7 +433,8 @@ export function createMermaidWriter({
         result = applyMermaid({ master: master.scene, parsed, hashOfSource: record.hash, now: record.writtenAt, previous: previous.parsed, source: record.source });
         how = "server";
       } else if (converted) {
-        const adopted = adoptConverted({ master: elements, converted: converted.elements, source: record.source, hash: record.hash, now: record.writtenAt, position, direction: record.direction });
+        const parsed = record.flowchart ? await parseCached(record.mermaid).catch(() => null) : null;
+        const adopted = adoptConverted({ master: elements, converted: converted.elements, source: record.source, hash: record.hash, now: record.writtenAt, position, direction: record.direction, parsed });
         result = { elements: adopted.elements, ops: adopted.ops, canvasOverwritten: [] };
         placement = adopted.placement;
       } else {

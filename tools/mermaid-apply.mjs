@@ -11,6 +11,11 @@
 //   (`${start}_${end}`, `_2`, ... for parallel edges).
 // - Existing shapes keep their geometry. Labels, shape type, classDef/class/style colors,
 //   edge style and subgraph membership are updated. Bound text changes with its container.
+// - Edge style, per dimension (thick, dotted, each arrowhead, curve): an edge's dimension changes
+//   only when the new Mermaid differs both from what the arrow exports to now (to-mermaid) and
+//   from the previous Mermaid of that edge. Styles Mermaid can't say (dotted vs dashed, widths
+//   other than thick, colour, triangle and other heads, thick and dashed at once) are never reset
+//   by a dimension this write didn't change; a missing curve means "no opinion".
 // - Only Mermaid-origin elements (customData.xcldMermaidHash, stamped by the tab's converter
 //   and by this module) are ever deleted, and only when the new Mermaid no longer has them.
 //   With `previous` (the parse of the Mermaid the board was last built from), deletes are
@@ -24,6 +29,7 @@
 // the estimate only affects wrapping and the selection box.
 import { MERMAID_HASH_KEY } from "./mermaid-hash.mjs";
 import { DEFAULT_SOURCE, ORIGIN_KEY, mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
+import { canvasShape, edgeForm, formDimensions, styleFor } from "./edge-style.mjs";
 import { mermaidIdMapper } from "./to-mermaid.mjs";
 import { describeUnlabeled, labelContext } from "./unit-label.mjs";
 
@@ -281,20 +287,27 @@ export const nodeSize = (node) => {
   return { width: Math.max(80, Math.ceil(metrics.width + 60)), height: 30 + 30 * lines };
 };
 
-const edgeStyleFor = (edge) => ({
-  strokeWidth: edge.stroke === "thick" ? 4 : 2,
-  strokeStyle: edge.stroke === "dotted" ? "dashed" : "solid",
-  startArrowhead: edge.arrowheads && "startArrowhead" in edge.arrowheads ? edge.arrowheads.startArrowhead : null,
-  endArrowhead: edge.arrowheads && "endArrowhead" in edge.arrowheads ? edge.arrowheads.endArrowhead : "arrow",
-});
-// What Mermaid can say about an arrow: thick or not, dashed or not, and its arrowheads.
-const edgeSignature = (style) => JSON.stringify([
-  Number(style.strokeWidth ?? 2) >= 4,
-  style.strokeStyle === "dashed" || style.strokeStyle === "dotted",
-  style.startArrowhead ?? null,
-  style.endArrowhead ?? null,
-]);
-
+// The style of a new arrow for a parsed Mermaid edge (mermaid-to-excalidraw draws the same).
+const EDGE_DIMENSIONS = ["thick", "dotted", "start", "end", "shape"];
+export const edgeStyleFor = (edge) => {
+  const wanted = formDimensions(edge);
+  const style = { strokeWidth: 2, strokeStyle: "solid", startArrowhead: null, endArrowhead: null, roundness: { type: 2 }, elbowed: false };
+  for (const dimension of EDGE_DIMENSIONS) Object.assign(style, styleFor(style, dimension, dimension === "shape" ? wanted.shape ?? "curved" : wanted[dimension]));
+  return style;
+};
+// The dimensions an arrow shows in Mermaid now (what to-mermaid exports), its curve as drawn.
+const arrowDimensions = (arrow) => ({ ...formDimensions(edgeForm(arrow)), shape: canvasShape(arrow) });
+// Points for an arrow whose curve changed: an elbow arrow goes through right angles, an arrow
+// that was one becomes a single segment, any other keeps its points. The ends stay put.
+export const reshapePoints = (points, shape, wasElbow = false) => {
+  const list = Array.isArray(points) && points.length >= 2 ? points : [[0, 0], [0, 0]];
+  const [dx, dy] = list[list.length - 1];
+  if (shape !== "elbow") return wasElbow ? [[0, 0], [dx, dy]] : list;
+  if (dx === 0 || dy === 0) return [[0, 0], [dx, dy]];
+  return Math.abs(dy) >= Math.abs(dx)
+    ? [[0, 0], [0, round(dy / 2)], [dx, round(dy / 2)], [dx, dy]]
+    : [[0, 0], [round(dx / 2), 0], [round(dx / 2), dy], [dx, dy]];
+};
 /** Subgraph group ids, as the converter's computeGroupIds builds them (prefixed per source). */
 const groupResolver = (parsed, prefix = "") => {
   const tree = {};
@@ -700,7 +713,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const sameEdgeDef = (index) => {
     const before = previousEdgeByKey.get(parsedEdgeKeys[index]);
     const after = parsed.edges[index];
-    return Boolean(before) && (before.label ?? "") === (after.label ?? "") && before.type === after.type && before.stroke === after.stroke;
+    return Boolean(before) && (before.label ?? "") === (after.label ?? "") && before.type === after.type && before.stroke === after.stroke && (before.curve ?? null) === (after.curve ?? null);
   };
   for (const [mermaidId, elementId] of ids.subgraphs) nodeIdOf.set(elementId, mermaidId);
   for (const [mermaidId, elementId] of ids.nodes) nodeIdOf.set(elementId, mermaidId);
@@ -1178,6 +1191,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
         }
         claim(arrow);
         Object.assign(touch(arrow), geometry(startShape, endShape, parallelCount(startShape, endShape, arrow.id)));
+        if (arrow.elbowed) arrow.points = reshapePoints(arrow.points, "elbow");
         addBound(startShape, { id: arrow.id, type: "arrow" });
         addBound(endShape, { id: arrow.id, type: "arrow" });
         ops.push({ op: "reconnect", id: arrow.id, start: startShape.id, end: endShape.id });
@@ -1188,16 +1202,28 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       if (setLabel(arrow, edge.label, { groupIds: edgeGroupIds(edge) })) {
         ops.push({ op: "relabel", id: arrow.id, kind: "edge", from: before, to: edge.label });
       }
-      if (edgeSignature(arrow) !== edgeSignature(wantedStyle)) {
-        const changes = {};
-        for (const [key, value] of Object.entries(wantedStyle)) {
-          if ((arrow[key] ?? null) !== value) changes[key] = { from: arrow[key] ?? null, to: value };
+      // Per style dimension: changed by this write only if the new Mermaid differs both from what
+      // the arrow exports to now and from the previous Mermaid of this edge (when known).
+      const wanted = formDimensions(edge);
+      const shown = arrowDimensions(arrow);
+      const previousEdge = previousEdgeByKey.get(parsedEdgeKeys[index]);
+      const was = previousEdge ? formDimensions(previousEdge) : null;
+      const changes = {};
+      for (const dimension of EDGE_DIMENSIONS) {
+        const value = wanted[dimension];
+        if (dimension === "shape" && value === null) continue;
+        if (value === shown[dimension] || (was && value === was[dimension])) continue;
+        const props = styleFor(arrow, dimension, value);
+        if (dimension === "shape" && Object.keys(props).length) props.points = reshapePoints(arrow.points, value, Boolean(arrow.elbowed));
+        for (const [key, to] of Object.entries(props)) {
+          if (key !== "points") changes[key] = { from: arrow[key] ?? null, to };
         }
-        claim(arrow);
-        Object.assign(touch(arrow), wantedStyle);
-        ops.push({ op: "restyle", id: arrow.id, kind: "edge", changes });
+        if (Object.keys(props).length) {
+          claim(arrow);
+          Object.assign(touch(arrow), props);
+        }
       }
-      if (owned(arrow)) {
+      if (Object.keys(changes).length) ops.push({ op: "restyle", id: arrow.id, kind: "edge", changes });      if (owned(arrow)) {
         const wantedGroups = edgeGroupIds(edge);
         if (!sameList(subgraphGroupIds(arrow.groupIds), wantedGroups)) {
           ops.push({ op: "regroup", id: arrow.id, from: subgraphGroupIds(arrow.groupIds), to: wantedGroups });
@@ -1223,7 +1249,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       width: 0,
       height: 0,
       groupIds,
-      roundness: { type: 2 },
+      roundness: wantedStyle.roundness,
       now,
       hash,
       origin: { source, nodeId: edgeNodeId },
@@ -1234,10 +1260,11 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
         endBinding: null,
         startArrowhead: wantedStyle.startArrowhead,
         endArrowhead: wantedStyle.endArrowhead,
-        elbowed: false,
+        elbowed: wantedStyle.elbowed,
       },
     }));
     Object.assign(arrow, geometry(startShape, endShape, parallelCount(startShape, endShape, id)));
+    if (wantedStyle.elbowed) Object.assign(arrow, { points: reshapePoints(arrow.points, "elbow") });
     addBound(startShape, { id, type: "arrow" });
     addBound(endShape, { id, type: "arrow" });
     if (edge.label) setLabel(arrow, edge.label, { groupIds });

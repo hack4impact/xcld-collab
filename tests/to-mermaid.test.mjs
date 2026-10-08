@@ -46,9 +46,12 @@ test("to-mermaid emits real converted subgraph containers as subgraph blocks", a
 
 test("to-mermaid maps supported arrow styles", async () => {
   const output = await fileToMermaid(path.resolve("tests", "fixtures", "arrow-styles.excalidraw"));
-  assert.match(output, /A --> B/);
-  assert.match(output, /A --- B/);
-  assert.match(output, /A -\.-> B/);
-  assert.match(output, /A ==> B/);
-  assert.match(output, /A <--> B/);
+  // The fixture's arrows have no roundness (an agent's minimal JSON): the canvas draws them
+  // straight, so each gets an edge id and `curve: linear`.
+  assert.match(output, /^  A e_solid@--> B$/m);
+  assert.match(output, /^  A e_line@--- B$/m);
+  assert.match(output, /^  A e_dashed@-\.-> B$/m);
+  assert.match(output, /^  A e_bold@==> B$/m);
+  assert.match(output, /^  A e_both@<--> B$/m);
+  assert.match(output, /^  e_solid@\{ curve: linear \}$/m);
 });
