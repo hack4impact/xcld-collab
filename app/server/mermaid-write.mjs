@@ -558,7 +558,9 @@ export function createMermaidWriter({
     if (master && master.scene.elements.some(isLive) && recordedHashesOf(master.scene.elements, DEFAULT_SOURCE).has(hash)) {
       return { status: "applied", hash };
     }
-    const prepared = await prepare(name, { author: "external", base: master?.version ?? null, writtenAt: stat.mtimeMs, source });
+    // Whole milliseconds, like every other writtenAt: Linux mtimeMs can carry float noise
+    // (…122.999), which would break exact write-time comparisons and ties.
+    const prepared = await prepare(name, { author: "external", base: master?.version ?? null, writtenAt: Math.round(stat.mtimeMs), source });
     if (prepared.status !== "submit") {
       if (prepared.status === "syntax-error" || prepared.status === "parser-unavailable") {
         // An open tab tries the conversion and shows the error.

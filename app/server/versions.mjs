@@ -985,7 +985,8 @@ export function createVersionStore({
     }
     let writtenAt = now();
     try {
-      writtenAt = (await timeIo("master.stat", board.name, () => fs.stat(masterPath(board.name)))).mtimeMs;
+      // Whole milliseconds, like every other writtenAt (Linux mtimeMs can be …122.999).
+      writtenAt = Math.round((await timeIo("master.stat", board.name, () => fs.stat(masterPath(board.name)))).mtimeMs);
     } catch {}
     const ingested = await ingest(board.name, {
       author,
