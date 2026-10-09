@@ -15,7 +15,7 @@ edit the same diagram, and every change can be read back as a precise, semantic 
 - No runtime egress for the canvas and `xcld` tools. Nothing is uploaded to excalidraw.com.
   **Exception:** the optional, experimental `excalidraw-mcp` widget (off by default) still
   loads React/Excalidraw from `esm.sh` when enabled; resolving that is the part 3c network
-  spike (issue #9).
+  spike (issue #3).
 
 **Out of scope for v1:** sequence, class, ER and state diagrams (next), multi-user
 collaboration, and hosted deployment.
@@ -280,7 +280,7 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   service for MCP Apps hosts. It is profile-gated (`widget`) and off by default (lead,
   2026-10-06; opt-in on 2026-10-02, seeded on by the build 2026-10-03 to 2026-10-06). The
   shipped `.vscode/mcp.json` lists only `xcld`, because an `excalidraw` entry fails to connect
-  while the profile is off. Issues #9 (moving the widget's JS off esm.sh) and #7 (font CSP
+  while the profile is off. Issues #3 (moving the widget's JS off esm.sh) and #2 (font CSP
   errors) are still open. Its
   upload/export flow is patched out; checkpoints persist under the boards volume through
   `TMPDIR=/boards/.xcld/mcp-checkpoints`.
@@ -316,7 +316,7 @@ agent shell ── reads/writes files ─┐       (export-to-excalidraw.com pat
   Excalidraw 0.18.0 out of its bundle and loads them from `https://esm.sh` at runtime
   (`vite.config.ts` externals; CSP `resourceDomains` in `server.ts:650`).
   - **Decision (lead, 2026-10-02):** leave this as upstream for parts 3a/3b, with the
-    service behind the `widget` Compose profile (experimental and off by default since 2026-10-06). Part 3c / issue #9 will later
+    service behind the `widget` Compose profile (experimental and off by default since 2026-10-06). Part 3c / issue #3 will later
     decide between serving those dependencies from our container and inlining them into the
     widget. The exact switch points are a new patch under `patches/excalidraw-mcp/` that
     changes `vite.config.ts` (`rollupOptions.external` / `output.paths`) and `src/server.ts`
@@ -452,7 +452,7 @@ The test guard in `tests/merge.test.mjs` stays generous (2 s for one run).
 **Known limitation:** moving a shape in Excalidraw also rewrites its bound arrows' points,
 but an arrow is its own unit. When the shape's move wins and a newer edit of the arrow (say,
 its label) also wins, the arrow keeps its old points and can look detached until someone
-touches it. It is reported as overwritten. Tracked in issue #27.
+touches it. It is reported as overwritten. Tracked in issue #6.
 
 ### Server-side Mermaid apply
 
@@ -476,7 +476,7 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
   - Identity: a node id is the element id (the tab converts with `regenerateIds: false`);
     ids that `to-mermaid` rewrote map back to the original shape, first through the
     `%% xcld:id` comment the export writes for each of them, then by the same rewrite
-    ([ids through the round trip](#upgrading-from-a-build-before-versions-issue-42)). An edge
+    ([ids through the round trip](#upgrading-from-a-build-before-versions)). An edge
     matches an arrow already bound start → end, then the converter's id (`A_B`, `A_B_2`, ...).
   - Existing shapes keep their position and size. Labels change in the shape's own bound
     text, which re-wraps; the shape grows taller only if the text no longer fits.
@@ -550,7 +550,7 @@ the last applied source of `main` (and isn't what the board was converted from),
 same way as the `external` author, written at the file's mtime. Parse errors and an unavailable
 parser fall back to the `mermaid` event, so an open tab shows the error as before. An inbox left
 by a build before versions is adopted instead
-([upgrade migration](#upgrading-from-a-build-before-versions-issue-42)). A tab's
+([upgrade migration](#upgrading-from-a-build-before-versions)). A tab's
 `GET /api/mermaid/<path>?pending` runs the same check first.
 
 **Parser speed.** Mermaid's `FlowDB.addVertex` deep-copies the whole Mermaid config for every
@@ -646,7 +646,7 @@ Decided by the lead on 2026-10-07 (board `sandbox/mermaid-inbox-merge`); built i
   `to-mermaid` adds `%% Active origin of <id>: canvas edit by <name> (over Mermaid main:A)` and
   `%% Mermaid source <name>: ...` comments; `diff` tags changes with their active origin.
 
-### Upgrading from a build before versions (issue #42)
+### Upgrading from a build before versions
 
 **What happened (2026-10-08, the lead's board, replayed from its history).** A board made on
 `0d7330e` (before versions) through the `.mmd` inbox: that build's tab converted the inbox and
@@ -913,7 +913,7 @@ The pipeline, per write:
   path and short-lived, so no delta or gzip work is added there.
 - The last 8 versions per board are also kept in memory. That is a bonus, not a guarantee:
   after a restart only the disk counts.
-- This is not history pruning (#23).
+- This is not history pruning (#4).
 
 **Crash recovery (D2).** The branch files are the journal.
 - On start, every remaining branch is re-queued, oldest `writtenAt` first.
@@ -975,7 +975,7 @@ Slice 6b (lead, Wave 2 build decisions, 2026-10-06).
   version's entry as a full checkpoint labelled with the snapshot name (default: the copy's UTC
   stamp, e.g. `20261007T210000123Z`). They print or return the label and the version id.
   Without a reachable server only the copy is made, with a warning.
-- A pinned entry will be kept by 48 h pruning (#23, not built: today nothing is pruned).
+- A pinned entry will be kept by 48 h pruning (#4, not built: today nothing is pruned).
   The `.snapshots/` copies stay for compatibility; they are plain files, outside history.
 - **`xcld diff <board> --since <spec> [--json]`** and MCP `diff` with `since` call
   `GET /api/diff` (offline, the CLI reads the history folder and the board file itself). A spec
@@ -1010,7 +1010,7 @@ The acceptance test of versions and merge (agreed 2026-10-03, revised 2026-10-06
 - **Determinism.** A virtual clock (the store's `now`), all choices from the seed, and a fixed
   arrival order: each write is in the journal before the next step starts. Commits still run
   concurrently with later writes and queue up; a read waits until the writes before it have
-  landed, so it sees a defined master. A `queued` answer is correct (a slow disk, #36): the
+  landed, so it sees a defined master. A `queued` answer is correct (a slow disk, #9): the
   writer waits for the landing.
 - **Checks per seed:** (a) every change carries a unique label, and is in master, or kept in
   history as an overwritten loser, or replaced by a later write whose base already had it;
@@ -1050,15 +1050,15 @@ The acceptance test of versions and merge (agreed 2026-10-03, revised 2026-10-06
 | D1 stale save merges (409 only for an unknown base) | passes (`tests/stale-save.test.mjs`, `tests/tab-merge.test.mjs`) |
 | D2 killed mid-merge, nothing lost | passes (`tests/versions.test.mjs`, real `SIGKILL` per step) |
 | D3 same result on every run | passes (`tests/merge.test.mjs`, and (e) above) |
-| D4 48 h pruning | follow-up, #23 |
-| D5 merge p95 ≤ 250 ms at 1,500 elements; end-to-end p95 ≤ 450 ms | passes (`tests/merge-bench.mjs`; Linux CI gate of record, run 37730286968); Mermaid-only p95 waived (#34) |
+| D4 48 h pruning | follow-up, #4 |
+| D5 merge p95 ≤ 250 ms at 1,500 elements; end-to-end p95 ≤ 450 ms | passes (`tests/merge-bench.mjs`; Linux CI gate of record, run 37730286968); Mermaid-only p95 waived (#8) |
 | D6 two tabs with one name, two MCP sessions of one client | passes (`tests/tab-merge.test.mjs`, `tests/write-api.test.mjs`) |
 | D7 Mermaid with no tab open | passes (`tests/mermaid-write.test.mjs`, `tests/mermaid-ingest.test.mjs`, grid layout here in setup) |
 | D8 a stale queued write loses to a newer edit of the same unit | passes (`tests/merge.test.mjs`, `tests/mermaid-write.test.mjs`, and (d) above) |
 | D9 an MCP write waits 5 s, then `queued`, never dropped | passes (`tests/write-api.test.mjs`; the all-`queued` seeds above) |
 | `diff --since`, snapshots as pinned versions | built (`tests/diff-since.test.mjs`) |
 | The lead's real check (a tab, a file watcher, two live Sonnet agents) | **open**: `scripts/real-check/README.md` |
-| `protect` rule kind | follow-up, #24 |
+| `protect` rule kind | follow-up, #5 |
 
 ## Performance
 
@@ -1105,7 +1105,7 @@ The history stage at 1,500 elements is unchanged within noise (p50 / p95 ms): 3.
 same day. A delta replaces a 1.3 MB write with a few KB, but on the volume that write was cheap
 already; computing it costs about 0.3 ms when the merge kept master's element objects and 2.8 ms
 when every element is a freshly parsed object (a fast-forward), and gzipping a checkpoint (every
-20th entry) about 7 ms. The tails come from the journal and state fsyncs, which v2 keeps (#30).
+20th entry) about 7 ms. The tails come from the journal and state fsyncs, which v2 keeps (#7).
 History on a Docker Desktop **bind mount** fails the gate (measured: p95 6.5 s / 4.2 s, 71
 errors), hence the per-OS default.
 
@@ -1145,7 +1145,7 @@ including agents' GETs.
 |---|---|---|---|
 | 1 | Versions data on a named volume (`XCLD_HISTORY=volume`) | p95 648 → 108 (50), 773 → 326 (1,500) | `docker compose down -v` deletes it. Since history v2 the default is per OS: `<cache>/history/` on Linux, the volume on Docker Desktop |
 | 2 | Answer at the commit point; master, journal removal, SSE and export after | Takes the master write (p50 30–64, p95 106–181 ms) out of the answer | A file reader may see the previous master for tens of ms; GET serves the committed text. Durability unchanged (D2) |
-| 3 | Fewer file operations: mkdir cache, master signature instead of two reads, open entry meta at close, history files in parallel, stat from the write handle | p95 1270 → 933 → 648 on the bind mount (with #2) | Low |
+| 3 | Fewer file operations: mkdir cache, master signature instead of two reads, open entry meta at close, history files in parallel, stat from the write handle | p95 1270 → 933 → 648 on the bind mount (with row 2) | Low |
 | 4 | Recent versions and master in memory; GET from memory while master is unchanged | Stale-base reads 45 → 0 ms p50 at 1,500; no half-written reads | Low |
 
 Next steps toward 250 ms, then 100 ms (not done):
@@ -1244,7 +1244,7 @@ and the quiet machine recovered at once.
 
 **Measured with the diagnostics** (2026-10-08, the same Windows 11 host, volume storage, 2 min
 and at least 300 writes per size, p50 / p95 / p99 ms of all writes). Before is image `4d132ce`
-(#33), after is `b344e8f` (this change):
+(before slice 6a), after is `b344e8f` (this change):
 
 | Run | 50 elements | 1,500 elements | Gate |
 |---|---|---|---|
@@ -1306,7 +1306,7 @@ gh run watch "$(gh run list --workflow ci.yml --limit 1 --json databaseId --jq '
 
 **Implemented in the design-rules v1 spike (2026-10-03).** Deferred: `protect`
 enforcement waits for versions/merge, v2 relational/fuzzy predicates remain out of scope
-except `crosses=`, and deterministic linter vocabulary generation is tracked as issue #6.
+except `crosses=`. The linter vocabulary is generated from the pinned Excalidraw build.
 
 - **Default: free-form.** Every change is relayed in the semantic diff, and the model
   interprets it.
@@ -1358,7 +1358,7 @@ Rule legend:
 
 The property names and values are Excalidraw's own (`packages/element/src/types.ts`), so
 a rule always means exactly what the user sees in the style panel. They are generated from
-the pinned commit into `tools/rules-vocab.generated.mjs` (issue #6; see the reference's
+the pinned commit into `tools/rules-vocab.generated.mjs` (see the reference's
 design-rules section), not maintained by hand.
 
 **v1: property predicates.** Operators are `=`, `!=`, `|` (any of) and `*` (any value).
@@ -1395,8 +1395,9 @@ property lookup:
 
 **Status (2026-10-08):** built (`tools/edge-style.mjs`, shared by `to-mermaid`, the Mermaid apply,
 the merge and `diff`). The lead's report: "I changed a line style and it reverted." Two causes,
-both reproduced in headless Chromium (`tests/browser/run-edge-styles.mjs`): before #41, a JSON
-agent re-sending the whole board without bookkeeping overwrote the human's restyles (fixed by #41);
+both reproduced in headless Chromium (`tests/browser/run-edge-styles.mjs`): before bookkeeping
+fields stopped counting as edits, a JSON agent re-sending the whole board without bookkeeping
+overwrote the human's restyles (now fixed);
 and an agent that read the board as Mermaid (`read_board`) and wrote it back reset two styles that
 `to-mermaid` exported in a form that meant something else (dashed with no head as `---`, thick and
 dashed as `==>`), because the apply then saw a changed edge and restyled it.
@@ -1411,12 +1412,12 @@ What Mermaid 11.17 carries per edge, and what stays on the canvas:
 | `circle` / `bar` heads (end, or both) | `--o` / `--x`, `o--o` / `x--x` (each stroke) | carried |
 | Straight (sharp), elbow | edge id plus curve: `a e1@--> b`, `e1@{ curve: linear }` / `e1@{ curve: step }` | carried; curved is the default and is not written |
 | A label | `-->\|"label"\|` for every form above | carried |
-| Dotted vs dashed | both `-.`; dotted adds `linkStyle <n> stroke-dasharray:2 4` | carried (issue #42) |
-| Thin (1) vs bold (2), other widths | `linkStyle <n> stroke-width:1px` | carried (issue #42) |
-| Thick and dashed at once | `-.->` plus `linkStyle <n> stroke-width:4px` | carried (issue #42) |
+| Dotted vs dashed | both `-.`; dotted adds `linkStyle <n> stroke-dasharray:2 4` | carried (`linkStyle`) |
+| Thin (1) vs bold (2), other widths | `linkStyle <n> stroke-width:1px` | carried (`linkStyle`) |
+| Thick and dashed at once | `-.->` plus `linkStyle <n> stroke-width:4px` | carried (`linkStyle`) |
 | Triangle, diamond, crow's foot and outline heads | shown as the nearest kind (`>`, `o`) | canvas only, noted |
 | A head on the start only; two kinds of head | Mermaid has no form (`<--`, `<--o` don't parse as such) | canvas only, noted |
-| Edge colour | `linkStyle <n> stroke:#1c7ed6` (edges with the same style share a line) | carried (issue #42) |
+| Edge colour | `linkStyle <n> stroke:#1c7ed6` (edges with the same style share a line) | carried (`linkStyle`) |
 
 **Per-edge curve (verified 2026-10-08, Mermaid 11.17.2 with our parser):** `a e1@--> b` gives the
 edge the id `e1`, and `e1@{ curve: linear }` sets `edge.interpolate` (FlowDB `addVertex`: an id that
@@ -1435,7 +1436,7 @@ keeps a thin arrow, and an edge with no curve keeps its arrow type (no curve is 
 origin, and the human's version goes to history, as for nodes. A tab conversion of a new board
 gets each edge's curve too (the converter draws every arrow curved).
 
-**`linkStyle` (issue #42, 2026-10-08).** An agent's `linkStyle 1,2,3 stroke:#1c7ed6,stroke-width:3px`
+**`linkStyle` (2026-10-08).** An agent's `linkStyle 1,2,3 stroke:#1c7ed6,stroke-width:3px`
 was dropped: the parser didn't read it and the tab's converter doesn't draw it, so every arrow came
 out default while `classDef` node fills applied. Now:
 - **Parse.** Mermaid's FlowDB keeps `linkStyle <n>` on the edge (`edge.style`, a list of CSS
@@ -1451,7 +1452,7 @@ out default while `classDef` node fills applied. Now:
   when the new Mermaid differs from the arrow and from the previous Mermaid of the edge; a property
   the previous Mermaid set and the new one doesn't goes back to the operator's default (black,
   width from `==`, dash from `-.`) only if the canvas didn't change it since. A width or dash from
-  linkStyle replaces the operator's thick or dotted dimension for that edge. **#43's rule holds:**
+  linkStyle replaces the operator's thick or dotted dimension for that edge. **The edge-style rule holds:**
   a colour no Mermaid ever set is never reset. New arrows (server apply, grid layout) and a tab's
   conversion (the server styles the converted arrows by edge index) get it too.
 - **Export.** `to-mermaid` numbers edges in the order it writes them and adds `linkStyle` lines for

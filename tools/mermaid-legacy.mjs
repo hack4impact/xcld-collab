@@ -1,4 +1,4 @@
-// Upgrade migration (issue #42): Mermaid shapes from a build before versions.
+// Upgrade migration: Mermaid shapes from a build before versions.
 //
 // Before versions (up to 0d7330e), a tab converted the board's `.mmd` inbox and REPLACED the
 // board with the result, unstamped: no xcldMermaidHash, no xcldOrigin. The ids follow the

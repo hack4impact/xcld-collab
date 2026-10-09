@@ -1,4 +1,4 @@
-// Element ids through a Mermaid round trip (issue #42): to-mermaid rewrites ids Mermaid can't
+// Element ids through a Mermaid round trip (the upgrade path): to-mermaid rewrites ids Mermaid can't
 // spell and records the original in a `%% xcld:id` comment; a write of that text maps every node
 // back to its element, so a shape read from the board and written back is never deleted and
 // re-created, or duplicated (tools/mermaid-ids.mjs).

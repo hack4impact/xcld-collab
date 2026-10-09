@@ -144,7 +144,7 @@ test("PUT without If-Match is unguarded (last write wins)", async () => {
   });
 });
 
-// Issue #42: a tab that loaded an earlier build's page saves without identity headers (with or
+// The upgrade path: a tab that loaded an earlier build's page saves without identity headers (with or
 // without an old If-Match) and would replace the board with its stale scene.
 test("a save from a tab of an earlier build is refused: 409 reload-required, nothing written", async () => {
   await withServer(async ({ url, file, put }) => {

@@ -9,9 +9,9 @@ security fixes. If you run an older build, rebuild from the latest `main` before
 
 Please **don't open a public issue** for a security problem.
 
-Report it privately through GitHub private vulnerability reporting (to be enabled at public
-release): the repository's **Security** tab → **Report a vulnerability**. Until then, ask a
-maintainer through an issue for a private channel without including any details.
+Report it privately through GitHub private vulnerability reporting: the repository's
+**Security** tab → **Report a vulnerability**, or
+https://github.com/hack4impact/xcld-collab/security/advisories/new.
 
 Include what you can:
 

@@ -224,7 +224,7 @@ test("to-mermaid notes styles Mermaid can't carry, and exports curves per edge",
   assert.doesNotMatch(sceneToMermaid({ elements: base.elements }), /@|Canvas-only|linkStyle/, "converted curved arrows need no edge ids");
 });
 
-test("linkStyle: Mermaid edge colour, width and dash apply by edge index (issue #42); classDef fills still apply", async () => {
+test("linkStyle: Mermaid edge colour, width and dash apply by edge index; classDef fills still apply", async () => {
   const base = await fixture();
   const styled = `${base.mermaid}\n  linkStyle 1,2,3 stroke:#1c7ed6,stroke-width:3px`;
   const parsed = await parseFlowchart(styled);
@@ -263,7 +263,7 @@ test("linkStyle default, edge classes and new edges; a tab conversion and the gr
   assert.equal(adopted.get("B_C").strokeColor, "#1e1e1e");
 });
 
-test("linkStyle keeps #43's rule: a canvas recolour stays until Mermaid changes that edge's colour", async () => {
+test("linkStyle keeps the edge-style rule: a canvas recolour stays until Mermaid changes that edge's colour", async () => {
   const base = await fixture();
   const blue = `${base.mermaid}\n  linkStyle 0 stroke:#1c7ed6`;
   const applied = await apply(base.elements, blue, base.mermaid);

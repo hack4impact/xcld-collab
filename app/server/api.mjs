@@ -31,7 +31,7 @@ const headerValue = (value) => (Array.isArray(value) ? value[0] : value);
 // or POST, Origin. Scripts (curl, Node's fetch, PowerShell) send neither.
 export const fromBrowserPage = (headers) => headerValue(headers["sec-fetch-site"]) !== undefined || headerValue(headers["sec-fetch-dest"]) !== undefined || headerValue(headers.origin) !== undefined;
 
-// Upgrade guard (issue #42): a tab that loaded an earlier build's page keeps running its old code.
+// Upgrade guard: a tab that loaded an earlier build's page keeps running its old code.
 // It saves without identity headers and replaces the board with its in-memory scene (it also
 // re-converted the leftover `.mmd` inbox on every Mermaid event). Such a save is refused with 409
 // `reload-required`; the old page shows "Save failed: HTTP 409", and a reload gets the current

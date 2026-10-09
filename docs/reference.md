@@ -244,7 +244,7 @@ compares against the latest one.
 **It also pins the version** in the board's history under `--name` (default: the copy's
 timestamp, e.g. `20261008T063936443Z`) and prints the version id: the history entry becomes a
 full checkpoint, found again by [`xcld diff <board> --since <label>`](#xcld-diff-board---since-since---json)
-(it will be kept by history pruning, #23, once that is built). A version can be pinned under
+(it will be kept by history pruning, #4, once that is built). A version can be pinned under
 several names. If the server isn't reachable, only the copy is made and the last line says
 "Not pinned in version history: …".
 
@@ -934,9 +934,9 @@ from the same image, under the `widget` Compose profile. Known issues:
 
 - When it renders, the widget loads React, React DOM, Excalidraw 0.18.0 and morphdom from
   `https://esm.sh`, so enabling it adds runtime egress
-  ([#9](../../../issues/9)).
+  ([#3](../../../issues/3)).
 - The VS Code webview console can show font Content-Security-Policy errors; affected UI text
-  falls back to a system font ([#7](../../../issues/7)).
+  falls back to a system font ([#2](../../../issues/2)).
 
 To opt in, add `COMPOSE_PROFILES=widget` to `.env`, run `docker compose up -d --wait`, and add
 the `excalidraw` server to your `mcp.json` (above). The build never writes or changes
@@ -959,7 +959,7 @@ restarts and the dot-folder stays hidden from the board browser and `xcld list`.
 
 **Network status:** when enabled, the widget currently loads React, React DOM, Excalidraw and
 morphdom from `https://esm.sh` through upstream Vite externals and the MCP Apps CSP; this is
-issue #9 / the widget network spike. Fonts come from the canvas container's
+issue #3 / the widget network spike. Fonts come from the canvas container's
 `/excalidraw-assets/` endpoint. Do **not** claim the widget is zero-egress yet. The switch
 points are the excalidraw-mcp build patch for `vite.config.ts` (`rollupOptions.external` /
 `output.paths`) and `src/server.ts` (`resourceDomains` / `connectDomains`).

@@ -119,10 +119,10 @@ default**:
 - **It sends requests outside your machine.** When it renders, the widget loads React,
   React DOM, Excalidraw 0.18.0 and morphdom, plus Excalidraw's CSS and some fonts, from
   `https://esm.sh`. Attempts to serve that JavaScript locally rendered a blank diagram in VS
-  Code ([#9](../../issues/9)).
+  Code ([#3](../../issues/3)).
 - **Known font errors.** The VS Code webview console can show font Content-Security-Policy
   errors; affected UI text falls back to a system font
-  ([#7](../../issues/7)).
+  ([#2](../../issues/2)).
 
 To opt in:
 
@@ -256,7 +256,7 @@ Caveats:
 - An edit you make in the fraction of a second while a save is on its way, to a shape that the
   merge changed, is replaced by the merged shape. The banner says so; that edit is not in
   history.
-- Arrow points can go stale when the bound shape moves on the other side (issue #27).
+- Arrow points can go stale when the bound shape moves on the other side (issue #6).
 - Names are not checked for uniqueness. A shared server with several people (random names, a
   server-checked unique name) is future work.
 
@@ -309,7 +309,7 @@ they are.
   (`write_mermaid`, or save the file) to apply it.
 - Scripts that `PUT` a board without the tab's headers keep working as before.
 
-The details are in [DESIGN](docs/DESIGN.md#upgrading-from-a-build-before-versions-issue-42).
+The details are in [DESIGN](docs/DESIGN.md#upgrading-from-a-build-before-versions).
 
 ## Coming soon
 
@@ -318,7 +318,7 @@ These are designed but **not built yet**. Don't rely on them.
 - **Version browsing in the canvas.** History is recorded; `xcld diff --since`, pinned snapshots
   and `xcld history export` read it (see above), but the canvas can't open an old version yet.
   Ctrl+S closes a restore point; Excalidraw's menu "Save to…" still downloads a separate copy.
-- **History pruning** (keep every version 48 hours, then pinned snapshots only; #23). Today
+- **History pruning** (keep every version 48 hours, then pinned snapshots only; #4). Today
   nothing is pruned.
 - **More diagram types:** sequence, class, ER, state.
 
