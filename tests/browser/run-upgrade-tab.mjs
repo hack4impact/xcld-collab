@@ -1,4 +1,4 @@
-// Headless Chromium check of the upgrade path (issue #42): a tab that loaded a build from before
+// Headless Chromium check of the upgrade path: a tab that loaded a build from before
 // versions stays open while the server is upgraded. A developer check, not part of
 // `node --test tests`; it starts and stops its own Compose project. See README.md in this folder.
 //

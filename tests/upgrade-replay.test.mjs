@@ -1,4 +1,4 @@
-// Issue #42, replayed: a board from a build before versions (an older tab's unstamped Mermaid
+// The upgrade path, replayed: a board from a build before versions (an older tab's unstamped Mermaid
 // conversion, hand-drawn shapes with "-" in their ids, recoloured arrows, and the `.mmd` inbox
 // left on disk), then the upgrade, a save from a tab still running the old page, a named-source
 // `write_mermaid` placed near a hand-drawn shape, and a new tab. Built synthetically: the shapes
@@ -118,7 +118,7 @@ const withUpgradedServer = async (fn) => {
   }
 };
 
-test("issue #42 replay: upgrade, an old tab's save, a named-source write near a hand-drawn shape, a new tab", needsParser, async () => {
+test("upgrade path replay: upgrade, an old tab's save, a named-source write near a hand-drawn shape, a new tab", needsParser, async () => {
   await withUpgradedServer(async ({ api, base, read, master, authors, board, inbox, inboxFile }) => {
     const before = board.filter((element) => !element.isDeleted);
     // The upgrade's first touch: the `init` snapshot.

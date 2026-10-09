@@ -27,10 +27,10 @@
 //       arrowheads, width, colour), and the Mermaid agent sometimes writes its edges as it read them
 //       on the board (to-mermaid's forms and curves, as read_board shows them). A style is in
 //       master, or kept in history as overwritten, or replaced by a later write that saw it: (a).
-//   (h) issue #42: the setup board has hand-drawn shapes with "-" in their ids and unstamped shapes
+//   (h) the upgrade path: the setup board has hand-drawn shapes with "-" in their ids and unstamped shapes
 //       an earlier build converted from Mermaid (converter ids); no Mermaid write deletes, copies
 //       (`_2`) or takes them.
-// A `queued` answer (a slow disk: issue #36) is correct behaviour; the writer waits for the landing.
+// A `queued` answer (a slow disk: issue #9) is correct behaviour; the writer waits for the landing.
 //
 // Determinism: a virtual clock (the version store's `now`), every random choice from the seed, and
 // a fixed arrival order: the scheduler waits until each write is in the journal before the next
@@ -482,7 +482,7 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
   let overwrittenCount = 0;
   try {
     // ---- setup: the human's drawing, then two Mermaid sources laid out by the server's grid ----
-    // Two hand-drawn units have nanoid-style ids with "-" (issue #42), and two units plus an arrow
+    // Two hand-drawn units have nanoid-style ids with "-" (the upgrade path), and two units plus an arrow
     // are what a build before versions converted from Mermaid: converter ids, no stamps.
     const initial = [];
     const UNIT_IDS = ["_u0R-0JGWz1SmR9y9Ka", "u1", "u2-Hd-x", "u3"];

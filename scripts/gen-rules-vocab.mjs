@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Generate tools/rules-vocab.generated.mjs, the design-rules linter vocabulary, from the
-// pinned Excalidraw build instead of hand-maintained lists (issue #6).
+// pinned Excalidraw build instead of hand-maintained lists.
 //
 //   node scripts/gen-rules-vocab.mjs            # from app/node_modules (build.ps1 -Target vendor; cd app; npm install)
 //   node scripts/gen-rules-vocab.mjs --check    # exit 1 if the checked-in file is stale

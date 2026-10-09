@@ -28,7 +28,7 @@
 #   XCLD_UID / XCLD_GID             # Linux only; build.sh sets them to your user
 #   COMPOSE_PROFILES=widget         # opt in to the EXPERIMENTAL chat widget (service "mcp", below).
 #                                   # Off by default: it loads JS from esm.sh and has known font
-#                                   # CSP errors (issues #9, #7). Unset = canvas only, zero egress.
+#                                   # CSP errors (issues #3, #2). Unset = canvas only, zero egress.
 name: xcld-collab
 
 services:
@@ -70,7 +70,7 @@ services:
     restart: unless-stopped
 
   # EXPERIMENTAL, opt-in: the upstream Excalidraw MCP Apps chat widget. Only starts with
-  # COMPOSE_PROFILES=widget; the widget loads React/Excalidraw from https://esm.sh (#9).
+  # COMPOSE_PROFILES=widget; the widget loads React/Excalidraw from https://esm.sh (#3).
   mcp:
     profiles: ["widget"]
     image: ${XCLD_IMAGE:-xcld-collab}:${XCLD_TAG:?XCLD_TAG is not set - run build.ps1 or build.sh first, or see README for the prebuilt image}

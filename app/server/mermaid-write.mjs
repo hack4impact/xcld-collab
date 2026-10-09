@@ -541,7 +541,7 @@ export function createMermaidWriter({
     return appliedMain?.source ? writeInbox(name, appliedMain.source) : false;
   });
 
-  // Upgrade migration (issue #42; tools/mermaid-legacy.mjs). A `main` inbox left by a build before
+  // Upgrade migration (tools/mermaid-legacy.mjs). A `main` inbox left by a build before
   // versions, whose tab converted it and replaced the board with unstamped shapes, is not a new
   // diagram: written before versions first recorded the board, on a board with a drawing but no
   // record of `main` (no applied source, no main shapes). It is adopted, never applied: the
