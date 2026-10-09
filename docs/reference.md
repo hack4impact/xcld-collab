@@ -662,7 +662,11 @@ levels.
 
   `hash` and the `ETag` are the new version. The canvas identifies itself with
   `X-Xcld-Author-Name` (percent-encoded UTF-8) and `X-Xcld-Tab` (`[A-Za-z0-9_-]`); without
-  them a save is authored `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`. It also sends
+  them a save is authored `human:<XCLD_AUTHOR_NAME or anonymous>#legacy`. **A save from a web
+  page without them** (the request has `Sec-Fetch-Site`, `Sec-Fetch-Dest` or `Origin`: a tab that
+  loaded an earlier build's page) is refused with 409
+  `{"error":"reload-required","message":"…Reload the page…"}` and writes nothing; reload the tab.
+  Scripts don't send those headers and are not affected. It also sends
   `X-Xcld-Edit-Age` (ms since its last edit, capped at 10 min): the save's write time, which
   decides who wins an [overwritten](DESIGN.md#merge-rules) unit, is then the time of that
   edit rather than the time the debounced save arrived.

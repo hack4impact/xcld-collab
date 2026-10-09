@@ -69,6 +69,26 @@ const excalidrawStyle = (classIds, styles, classes) => {
   return { container: computeExcalidrawVertexStyle(containerStyle), label: computeExcalidrawVertexLabelStyle(labelStyle) };
 };
 
+// An edge's own style: `linkStyle <n>` (or `linkStyle default` for edges without one) over the
+// styles of its classes (`class e1 name` with an edge id), as Mermaid's renderer takes them.
+// Only what an Excalidraw arrow can show: stroke colour, width (px) and dash pattern.
+const edgeStyle = (edge, defaultStyle, classes) => {
+  const style = {};
+  const read = (styleText) => {
+    for (const { property, value } of parseCSSDeclarations(styleText ?? "")) {
+      if (property === "stroke" && isValidCSSColor(value)) style.stroke = value;
+      else if (property === "stroke-width" && /^\d+(\.\d+)?(px)?$/.test(String(value).trim())) style.width = Number.parseFloat(value);
+      else if (property === "stroke-dasharray") style.dash = String(value).trim();
+    }
+  };
+  for (const classId of asArray(edge.classes)) {
+    for (const styleText of classes.get(classId)?.styles ?? []) read(styleText);
+  }
+  const own = asArray(edge.style);
+  for (const styleText of own.length ? own : asArray(defaultStyle)) read(styleText);
+  return Object.keys(style).length ? style : null;
+};
+
 const asArray = (value) => (Array.isArray(value) ? value : value ? [value] : []);
 const textOf = (item) => getText({ text: entityCodesToText(item.text ?? ""), labelType: item.labelType });
 
@@ -84,13 +104,36 @@ const errorDetails = (error) => {
   };
 };
 
+const LINK_STYLE_LINE = /^\s*linkStyle\s+(\S+)/;
+// Mermaid's own error for `linkStyle <n>` past the last edge is "Cannot set properties of
+// undefined (setting 'style')", with no line. Name the line and the edge count instead (an agent
+// that removes an edge from an export must renumber its linkStyle lines).
+const linkStyleError = async (text, details) => {
+  if (!/setting '(style|interpolate)'/.test(details.message)) return details;
+  const lines = String(text ?? "").split("\n");
+  if (!lines.some((line) => LINK_STYLE_LINE.test(line))) return details;
+  try {
+    const stripped = lines.map((line) => (LINK_STYLE_LINE.test(line) ? "" : line)).join("\n");
+    const count = asArray((await mermaid.mermaidAPI.getDiagramFromText(encodeEntities(stripped))).db.getEdges()).length;
+    const index = lines.findIndex((line) => {
+      const match = LINK_STYLE_LINE.exec(line);
+      return match && match[1].split(",").some((item) => item !== "default" && Number(item) >= count);
+    });
+    if (index < 0) return details;
+    const range = count ? `numbered 0 to ${count - 1}` : "none";
+    return { ...details, message: `${lines[index].trim()}: no such edge. This diagram has ${count} edge${count === 1 ? "" : "s"} (${range}, in the order they are written); renumber linkStyle after adding or removing edges.`, line: index + 1 };
+  } catch {
+    return details;
+  }
+};
+
 const parseDefinition = async (text) => {
   let diagram;
   try {
     // mermaid-to-excalidraw parses encodeEntities(definition) and decodes labels afterwards.
     diagram = await mermaid.mermaidAPI.getDiagramFromText(encodeEntities(String(text ?? "")));
   } catch (error) {
-    return { ok: false, error: errorDetails(error) };
+    return { ok: false, error: await linkStyleError(text, errorDetails(error)) };
   }
   if (!FLOWCHART_TYPES.has(diagram.type)) {
     return { ok: false, unsupported: true, diagramType: diagram.type };
@@ -113,7 +156,8 @@ const parseDefinition = async (text) => {
       style: excalidrawStyle(classIds, styles, classes),
     };
   });
-  const edges = asArray(db.getEdges()).map((edge) => ({
+  const edgeList = db.getEdges();
+  const edges = asArray(edgeList).map((edge) => ({
     mermaidId: edge.id,
     start: edge.start,
     end: edge.end,
@@ -123,6 +167,8 @@ const parseDefinition = async (text) => {
     arrowheads: computeExcalidrawArrowType(edge.type || "arrow_point") ?? {},
     // The edge's own curve (`e1@{ curve: linear }`, `linkStyle 0 interpolate step`), or null.
     curve: typeof edge.interpolate === "string" && edge.interpolate ? edge.interpolate : null,
+    // `linkStyle` and edge classes: { stroke?, width?, dash? }, or null when the edge has none.
+    style: edgeStyle(edge, edgeList?.defaultStyle, classes),
   }));
   const subgraphs = asArray(db.getSubGraphs()).map((subgraph) => {
     const classIds = asArray(subgraph.classes);

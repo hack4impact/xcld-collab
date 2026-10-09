@@ -10,6 +10,7 @@ import { splitBoardPath } from "../../tools/board-path.mjs";
 import { applyDelta, CHECKPOINT_EVERY, encodeDelta, gzipText, HISTORY_SCHEMA, historyEntryFiles, readRecordFile } from "../../tools/history.mjs";
 import { fastForwardElements, mergeBoard } from "../../tools/merge.mjs";
 import { stampCanvasEdits } from "../../tools/mermaid-origin.mjs";
+import { applyAdoption } from "../../tools/mermaid-legacy.mjs";
 import { createSlowIoRecorder } from "./slow-io.mjs";
 
 export const IDLE_CLOSE_MS = 3 * 60 * 1000;
@@ -945,6 +946,7 @@ export function createVersionStore({
       ...(input.mermaid !== undefined ? { mermaid: input.mermaid } : {}),
       ...(Array.isArray(input.overwritten) && input.overwritten.length ? { overwritten: input.overwritten } : {}),
       ...(input.legacy !== undefined ? { legacy: input.legacy } : {}),
+      ...(kind === "mermaid" && input.adopt && typeof input.adopt === "object" ? { adopt: input.adopt } : {}),
     };
     addRef(name, base);
     countPending(name, 1);
@@ -1172,6 +1174,16 @@ export function createVersionStore({
           })
         : sceneObject(masterScene ?? baseScene, result);
       version = null;
+    }
+    // Upgrade migration (tools/mermaid-legacy.mjs): a leftover inbox from before versions adopts
+    // the unstamped shapes its conversion made as source `main`. Only stamps change.
+    if (branch.adopt && sceneOut) {
+      const stamped = applyAdoption(sceneOut.elements, branch.adopt, branch.mermaid?.hash ?? null);
+      if (stamped !== sceneOut.elements) {
+        sceneOut = sceneObject(sceneOut, { elements: stamped, appState: sceneOut.appState, files: sceneOut.files });
+        version = null;
+        keptRaw = false;
+      }
     }
     let text = null;
     if (version === null) {
@@ -1771,6 +1783,21 @@ export function createVersionStore({
     };
   });
 
+  // When versions first recorded this board (its oldest history entry, e.g. the `init` snapshot
+  // of a board from before versions), or null before the first entry. Upgrade migration uses it
+  // to tell a Mermaid inbox written before the upgrade from a new one.
+  const historyStartedAt = async (name) => {
+    let names = [];
+    try {
+      names = await fs.readdir(historyDir(name));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const stamps = names.map((entry) => /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.(\d{3})Z-/.exec(entry)).filter(Boolean)
+      .map((match) => Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]), Number(match[7])));
+    return stamps.length ? Math.min(...stamps) : null;
+  };
+
   // The last applied Mermaid. A loaded board answers from memory, without waiting for its queue.
   const readMermaid = async (name) => (boards.has(name) ? boards.get(name).mermaid ?? null : (await readState(name)).mermaid);
   // Every named source's last applied Mermaid (`main` included), the same way.
@@ -1818,5 +1845,5 @@ export function createVersionStore({
     }
   };
 
-  return { start, submitBranch, readVersion, baseKeptAt, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, slowIo, whenIdle, close, parseAuthorKey, stateDir: xcld };
+  return { start, submitBranch, readVersion, baseKeptAt, readMaster, cachedMaster, readState, readMermaid, readMermaidSources, historyStartedAt, noteServed, checkpoint, adoptExternal, status, timings, timingEnabled: timing, slowIo, whenIdle, close, parseAuthorKey, stateDir: xcld };
 }

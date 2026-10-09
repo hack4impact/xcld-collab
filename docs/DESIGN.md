@@ -474,8 +474,10 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
 - **Apply.** `tools/mermaid-apply.mjs` `applyMermaid({ master, parsed, hashOfSource, now,
   previous })` is pure: it returns the new elements, a list of ops, and `needsTabLayout`.
   - Identity: a node id is the element id (the tab converts with `regenerateIds: false`);
-    ids that `to-mermaid` rewrote map back to the original shape. An edge matches an arrow
-    already bound start → end, then the converter's id (`A_B`, `A_B_2`, ...).
+    ids that `to-mermaid` rewrote map back to the original shape, first through the
+    `%% xcld:id` comment the export writes for each of them, then by the same rewrite
+    ([ids through the round trip](#upgrading-from-a-build-before-versions-issue-42)). An edge
+    matches an arrow already bound start → end, then the converter's id (`A_B`, `A_B_2`, ...).
   - Existing shapes keep their position and size. Labels change in the shape's own bound
     text, which re-wraps; the shape grows taller only if the text no longer fits.
     `classDef`/`class`/`style` colors, shape type, edge style and subgraph membership
@@ -497,7 +499,10 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
     keep theirs, so a merge sees only real changes.
 - **Still needs a layout:** a board with no shapes of the written source (new, or an image
   fallback) and non-flowchart diagrams return `needsTabLayout: true`; the write becomes a
-  pending write ([Mermaid ingestion](#mermaid-ingestion-slice-6a)). Placement is local, not a full
+  pending write ([Mermaid ingestion](#mermaid-ingestion-slice-6a)). For `main`, a board whose
+  shapes already include some of the diagram's nodes (a drawing read with `to-mermaid` and written
+  back, or shapes an earlier build converted) applies on the server instead (`appliesOnBoard`),
+  so those shapes are updated in place, never added again as a group. Placement is local, not a full
   re-layout, so straight arrows can cross shapes. Text widths are estimated (Node has no
   font metrics); Excalidraw centers bound text, so that only affects wrapping.
 - **Conventions are tested against the real converter.** `tests/fixtures/mermaid-apply-*.excalidraw`
@@ -543,7 +548,10 @@ apply; slice 4b: the write path below). `xcld mermaid-apply --dry-run` previews 
 **Direct writes to the inbox.** When the watcher sees a settled `boards/<path>.mmd` that isn't
 the last applied source of `main` (and isn't what the board was converted from), it applies it the
 same way as the `external` author, written at the file's mtime. Parse errors and an unavailable
-parser fall back to the `mermaid` event, so an open tab shows the error as before.
+parser fall back to the `mermaid` event, so an open tab shows the error as before. An inbox left
+by a build before versions is adopted instead
+([upgrade migration](#upgrading-from-a-build-before-versions-issue-42)). A tab's
+`GET /api/mermaid/<path>?pending` runs the same check first.
 
 **Parser speed.** Mermaid's `FlowDB.addVertex` deep-copies the whole Mermaid config for every
 labeled node (about 0.4 ms each, 85% of a 500-node parse). The parser bundle fetches it once
@@ -637,6 +645,69 @@ Decided by the lead on 2026-10-07 (board `sandbox/mermaid-inbox-merge`); built i
   (loser = the canvas author and time), reported in the answer, the banner and the entry's meta.
   `to-mermaid` adds `%% Active origin of <id>: canvas edit by <name> (over Mermaid main:A)` and
   `%% Mermaid source <name>: ...` comments; `diff` tags changes with their active origin.
+
+### Upgrading from a build before versions (issue #42)
+
+**What happened (2026-10-08, the lead's board, replayed from its history).** A board made on
+`0d7330e` (before versions) through the `.mmd` inbox: that build's tab converted the inbox and
+**replaced** the board with unstamped shapes (no `xcldMermaidHash`, no `xcldOrigin`; ids are the
+converter's: node and subgraph ids, edges `<start>_<end>`). The inbox stayed on disk; it was an
+agent's write-back of a `read_board` export, so a hand-drawn node appeared in it under the export's
+rewritten id (`-` → `_`). After that the human drew more and recoloured ten arrows. Then the
+canvas was upgraded to a versions build while a tab loaded under the old build stayed open, and an
+agent wrote a named source (`foundry`, with `position: near:<hand-drawn id>`). History entries:
+
+| Entry | What it did | Why |
+|---|---|---|
+| `init` 18:30:35.891 | first-touch snapshot, 79 live elements | upgrade |
+| `human:<name>#legacy` 18:31:04.638 (3 commits: 04.638, 09.505, 19.527) | removed both hand-drawn nodes, re-added one under the export's id, gave every label a new id, reset all arrows to black and re-laid them out | The agent's write (18:31:04.337) became a pending write; the server sends the SSE `board` event with `kind: "mermaid"` at the write and at the 5 s and 15 s checks. The old page's handler for that event converts **the `main` inbox** (`GET /api/mermaid/<path>`, the leftover) and saves the result over the board: a PUT with no identity headers and no `If-Match`, which the versions server took as an unguarded script write by `human:<name>#legacy`. |
+| `agent:copilot-cli#a1b2c3` 18:31:27.348 | the 5 foundry nodes and 4 edges | a new tab opened and laid out the pending write (correct) |
+| `external` 18:31:27.563 | every node and edge of the leftover inbox again, as `<id>_2` | The new tab's `GET ...?pending` first checks the inbox on disk (`fromFile`): not `main`'s applied source, no `main`-origin shape on the board (the old build never stamped), so it became a new pending write by `external`, and the same tab laid it out as a group next to the drawing; every id clashed. Not the watcher (the file hadn't changed since 17:52:40), and not the agent's write. |
+
+The `foundry` write itself only touched its own shapes; its `near:` anchor was already gone.
+Replayed with a synthetic board against `52f7e31` (the same four entries, `_2` copies, the hand-drawn
+shapes and arrow colours lost) and fixed in `tests/upgrade-replay.test.mjs`.
+
+**Upgrade migration: the leftover inbox is adopted as source `main`.** Decided over "left alone"
+because the board was built as `main` and its owner expects later `main` writes to edit and
+delete those nodes, as the old replace did. The evidence that a shape came from that inbox is
+exact: its id is the converter's id for a node, subgraph or edge of it, and it carries no stamp.
+`fromFile` (watcher and `?pending`) treats an inbox as a leftover when **all** hold: the board has a
+drawing; nothing records `main` (no applied source, no `main`-origin shape); and the file was
+written **before versions first recorded the board** (its oldest history entry, normally `init`).
+A leftover is never applied. It is adopted in one commit by `init`: the unstamped shapes with the
+converter's ids (and their bound text, and arrows whose ends bind those shapes) get a `main`
+origin with the inbox's hash, stamped in the commit step from the branch's `adopt` list
+(`tools/mermaid-legacy.mjs`), and the inbox becomes `main`'s last applied Mermaid. Nothing visible
+changes. A shape that no longer matches the inbox (another label, style or arrow form, a colour)
+was edited on the canvas since, so its canvas origin is active (author `init`, at the element's
+`updated`): a later `main` write keeps that edit unless it changes the node. Hand-drawn shapes,
+other sources' shapes and anything already stamped are left as they are. A pre-upgrade inbox that
+no tab ever converted is adopted too (so nothing is drawn from it); write it again to apply it.
+
+**Tabs of the old build are refused.** A PUT from a web page (it has `Sec-Fetch-Site`,
+`Sec-Fetch-Dest` or `Origin`) without the identity headers is a tab of a build before identities:
+`409 {"error":"reload-required"}`, nothing is written. The old page shows "Save failed: HTTP 409"
+(its only error path: `saveText` throws on any non-2xx) and keeps its scene on screen without
+saving; it also stops replacing the board after a Mermaid event (the conversion saves first and is
+refused). A reload loads the current build. Scripts (curl, Node's `fetch`, PowerShell) send no
+such headers and keep the documented unguarded or `If-Match` PUT. **Trade-off:** a hand-written
+`fetch` from a browser console without identity headers is refused too; send
+`X-Xcld-Author-Name`/`X-Xcld-Tab` or use `POST /api/branch`. The current tab shows the server's
+message for `reload-required` instead of retrying.
+
+**Ids through the round trip.** `to-mermaid` keeps every element id Mermaid can spell
+(`[A-Za-z_][A-Za-z0-9_]*`) and rewrites the others (`-`, `:` and the like to `_`, `n_` in front of a
+digit, `_2` on a clash). Each rewrite is recorded next to the diagram:
+`%% xcld:id _x7Q_2bLmN9pRt4VwKc8Ya "_x7Q-2bLmN9pRt4VwKc8Ya"` (`tools/mermaid-ids.mjs`; Mermaid
+ignores `%%` lines). A write maps a node back through the comment first, then by the rewrite
+itself (valid ids never give their name to a rewritten one, so that works without the comment
+for any unambiguous id). Chosen over a server-side map because the text carries it: any agent or
+file write that keeps the comment round-trips, and nothing goes stale. A comment that names a
+shape the source may not change (another source's, or for a named source any shape outside it)
+leaves that shape alone (op `skip`): no copy is drawn and no arrow to it. So a hand-drawn shape
+read with `read_board` and written back as `main` is updated in place, never deleted, re-created
+or duplicated.
 
 ## Versions storage and commit pipeline
 
@@ -1340,12 +1411,12 @@ What Mermaid 11.17 carries per edge, and what stays on the canvas:
 | `circle` / `bar` heads (end, or both) | `--o` / `--x`, `o--o` / `x--x` (each stroke) | carried |
 | Straight (sharp), elbow | edge id plus curve: `a e1@--> b`, `e1@{ curve: linear }` / `e1@{ curve: step }` | carried; curved is the default and is not written |
 | A label | `-->\|"label"\|` for every form above | carried |
-| Dotted vs dashed | both `-.` | canvas only |
-| Thin (1) vs bold (2) | both normal | canvas only |
-| Thick and dashed at once | exported as `-.->` | canvas only (thick), noted in a `%%` comment |
+| Dotted vs dashed | both `-.`; dotted adds `linkStyle <n> stroke-dasharray:2 4` | carried (issue #42) |
+| Thin (1) vs bold (2), other widths | `linkStyle <n> stroke-width:1px` | carried (issue #42) |
+| Thick and dashed at once | `-.->` plus `linkStyle <n> stroke-width:4px` | carried (issue #42) |
 | Triangle, diamond, crow's foot and outline heads | shown as the nearest kind (`>`, `o`) | canvas only, noted |
 | A head on the start only; two kinds of head | Mermaid has no form (`<--`, `<--o` don't parse as such) | canvas only, noted |
-| Edge colour | `linkStyle` exists, but it addresses edges by position | canvas only |
+| Edge colour | `linkStyle <n> stroke:#1c7ed6` (edges with the same style share a line) | carried (issue #42) |
 
 **Per-edge curve (verified 2026-10-08, Mermaid 11.17.2 with our parser):** `a e1@--> b` gives the
 edge the id `e1`, and `e1@{ curve: linear }` sets `edge.interpolate` (FlowDB `addVertex`: an id that
@@ -1363,6 +1434,30 @@ keeps a thin arrow, and an edge with no curve keeps its arrow type (no curve is 
 `curve: basis` to make an arrow curved again). A real change wins and makes Mermaid the active
 origin, and the human's version goes to history, as for nodes. A tab conversion of a new board
 gets each edge's curve too (the converter draws every arrow curved).
+
+**`linkStyle` (issue #42, 2026-10-08).** An agent's `linkStyle 1,2,3 stroke:#1c7ed6,stroke-width:3px`
+was dropped: the parser didn't read it and the tab's converter doesn't draw it, so every arrow came
+out default while `classDef` node fills applied. Now:
+- **Parse.** Mermaid's FlowDB keeps `linkStyle <n>` on the edge (`edge.style`, a list of CSS
+  declarations; `linkStyle default` on the edge list's `defaultStyle`) and edge classes
+  (`class e1 name` for an edge with an id) in `edge.classes`. The parser reports
+  `edge.style = { stroke?, width?, dash? }`: the classes' styles, then the edge's own linkStyle (or
+  the default one). `fill` and label `color` are ignored. A `linkStyle` past the last edge fails as
+  Mermaid fails, but the error names the line and the edge count instead of "Cannot set properties
+  of undefined".
+- **Apply.** `stroke` is the arrow's `strokeColor`, `stroke-width` its `strokeWidth` (in px, so
+  `3px` is 3), and `stroke-dasharray` its `strokeStyle` (first dash 2 or less: dotted; longer:
+  dashed; `0` or `none`: solid). Each is one more style dimension under the rule above: set only
+  when the new Mermaid differs from the arrow and from the previous Mermaid of the edge; a property
+  the previous Mermaid set and the new one doesn't goes back to the operator's default (black,
+  width from `==`, dash from `-.`) only if the canvas didn't change it since. A width or dash from
+  linkStyle replaces the operator's thick or dotted dimension for that edge. **#43's rule holds:**
+  a colour no Mermaid ever set is never reset. New arrows (server apply, grid layout) and a tab's
+  conversion (the server styles the converted arrows by edge index) get it too.
+- **Export.** `to-mermaid` numbers edges in the order it writes them and adds `linkStyle` lines for
+  an arrow's colour, a width the operator can't say, and dotted. Edges are numbered by position, so
+  an agent that adds or removes an edge must renumber the linkStyle lines (or write from a fresh
+  export).
 
 **Ledger:** `diff`, `diff --since`, the banner details, `xcld watch` and history entries word arrow
 and line style changes: "made dashed", "made straight", "made elbow", "made extra bold",

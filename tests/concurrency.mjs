@@ -27,6 +27,9 @@
 //       arrowheads, width, colour), and the Mermaid agent sometimes writes its edges as it read them
 //       on the board (to-mermaid's forms and curves, as read_board shows them). A style is in
 //       master, or kept in history as overwritten, or replaced by a later write that saw it: (a).
+//   (h) issue #42: the setup board has hand-drawn shapes with "-" in their ids and unstamped shapes
+//       an earlier build converted from Mermaid (converter ids); no Mermaid write deletes, copies
+//       (`_2`) or takes them.
 // A `queued` answer (a slow disk: issue #36) is correct behaviour; the writer waits for the landing.
 //
 // Determinism: a virtual clock (the version store's `now`), every random choice from the seed, and
@@ -479,8 +482,17 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
   let overwrittenCount = 0;
   try {
     // ---- setup: the human's drawing, then two Mermaid sources laid out by the server's grid ----
+    // Two hand-drawn units have nanoid-style ids with "-" (issue #42), and two units plus an arrow
+    // are what a build before versions converted from Mermaid: converter ids, no stamps.
     const initial = [];
-    for (let index = 0; index < 4; index++) initial.push(...unitElements(`u${index}`, index * 220, 0, token("U"), nonce()));
+    const UNIT_IDS = ["_u0R-0JGWz1SmR9y9Ka", "u1", "u2-Hd-x", "u3"];
+    for (let index = 0; index < 4; index++) initial.push(...unitElements(UNIT_IDS[index], index * 220, 0, token("U"), nonce()));
+    const LEGACY_IDS = ["LEGACY_A", "LEGACY_B", "LEGACY_A_LEGACY_B"];
+    initial.push(...unitElements("LEGACY_A", 0, 1300, token("U"), nonce()), ...unitElements("LEGACY_B", 300, 1300, token("U"), nonce()));
+    for (const element of initial) {
+      if (element.id === "LEGACY_A" || element.id === "LEGACY_B") element.boundElements = [...element.boundElements, { type: "arrow", id: "LEGACY_A_LEGACY_B" }];
+    }
+    initial.push({ id: "LEGACY_A_LEGACY_B", type: "arrow", x: 180, y: 1340, width: 120, height: 0, angle: 0, strokeColor: "#1971c2", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 2, strokeStyle: "solid", roughness: 1, opacity: 100, groupIds: [], frameId: null, roundness: { type: 2 }, seed: nonce(), version: 1, versionNonce: nonce(), isDeleted: false, boundElements: null, updated: START, link: null, locked: false, points: [[0, 0], [120, 0]], startBinding: { elementId: "LEGACY_A", focus: 0, gap: 1 }, endBinding: { elementId: "LEGACY_B", focus: 0, gap: 1 }, startArrowhead: null, endArrowhead: "arrow", elbowed: false });
     const created = await fetch(`${base}/api/board/${BOARD}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...HUMAN_HEADERS, "If-None-Match": "*" },
@@ -583,6 +595,15 @@ export const runSeed = async (seed, { steps = DEFAULT_STEPS, dir = path.resolve(
     }
 
     // (a) no silent loss.
+    // Hand-drawn and legacy-converted shapes (setup) are never deleted, re-created or copied by a
+    // Mermaid write: they are on master under their own ids (the human never deletes them), with
+    // no `_2` copies, and no Mermaid source owns them.
+    const finalIds = new Set(live(final.scene.elements).map((element) => element.id));
+    for (const id of [...UNIT_IDS, ...LEGACY_IDS]) {
+      assert.ok(finalIds.has(id), `seed ${seed}: setup shape ${id} is gone`);
+      assert.equal(finalIds.has(`${id}_2`), false, `seed ${seed}: setup shape ${id} was copied`);
+      assert.equal(live(final.scene.elements).find((element) => element.id === id).customData?.xcldOrigin?.mermaid ?? null, null, `seed ${seed}: ${id} was taken by a Mermaid source`);
+    }
     const loserHas = (change, write) => losers.some((lost) => lost.unitId === change.unitId && (change.kind === "delete"
       ? lost.loser.author === write.author && lost.loser.writtenAt === write.writtenAt && (lost.loser.elements ?? []).length === 0
       : (lost.loser.elements ?? []).some((element) => element.type === "text" && textOf(element) === change.token)));

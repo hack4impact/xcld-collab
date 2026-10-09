@@ -107,12 +107,17 @@ version history only and nothing puts it back by itself.
 
 1. Call `read_board` (Mermaid is the default format) and keep its `version`.
 2. Edit that Mermaid: keep the node ids (a node id is the shape's id on the board), relabel,
-   restyle, add or remove nodes and edges. **Leave edge forms you didn't mean to change exactly
+   restyle, add or remove nodes and edges. **Keep the `%% xcld:id <id> "<element id>"` lines:**
+   they map ids Mermaid can't spell (a hand-drawn shape's `-`, a named source's `:`) back to the
+   shape, so it is updated, not copied. **Leave edge forms you didn't mean to change exactly
    as `read_board` gave them:** don't normalise `-.-`, `===`, `<==>`, `--o` and the like to `-->`,
    and keep edge ids and their `e1@{ curve: linear }` / `curve: step` lines (straight and elbow
-   arrows). Each of those is the human's style; rewriting it changes the arrow. A `%% Canvas-only
-   style` comment lists what Mermaid can't show (dotted vs dashed, widths, triangle heads); the
-   board keeps it whatever you write.
+   arrows), and the `linkStyle` lines (arrow colour, width, dotted). Each of those is the human's
+   style; rewriting it changes the arrow. `linkStyle <n>` numbers edges in the order they are
+   written, from 0: **after you add or remove an edge, renumber the linkStyle lines** (a number
+   past the last edge is refused with its line). To colour edges yourself, use
+   `linkStyle 1,2 stroke:#1c7ed6,stroke-width:3px`. A `%% Canvas-only style` comment lists what
+   Mermaid can't show (triangle and other heads); the board keeps it whatever you write.
 3. Call `write_mermaid` with the whole Mermaid and `base` = that `version`. Without `base` it
    applies to the board as it is now.
 4. The server applies it on the board: existing shapes keep their position and the human's
@@ -125,7 +130,9 @@ version history only and nothing puts it back by itself.
    now (journal fsync 4.2 s)" means a busy disk on the user's machine; tell the user, don't retry.
 5. A syntax error is refused with its line; nothing is written. Non-flowchart diagrams, and
    boards with no shapes of your source yet, answer `needs-tab`: open `board_url`, or for a
-   flowchart wait for the server's layout (`mermaid_status` with the `pendingId`).
+   flowchart wait for the server's layout (`mermaid_status` with the `pendingId`). A `main`
+   write whose nodes are already on the board (shapes you read with `read_board`) applies
+   right away instead.
 
 **With Excalidraw JSON** (`write_board`):
 

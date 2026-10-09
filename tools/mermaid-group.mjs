@@ -14,8 +14,9 @@
 //   group goes where the old one was.
 // - An empty board keeps the converter's coordinates.
 // - With `parsed` (the server's parse of the same Mermaid), an edge's own curve (`e1@{ curve: linear }`)
-//   makes its arrow straight or elbow: the converter draws every arrow curved.
-import { curveShape, styleFor } from "./edge-style.mjs";
+//   makes its arrow straight or elbow (the converter draws every arrow curved), and its linkStyle
+//   (colour, width, dash) styles the arrow (the converter ignores it).
+import { curveShape, linkStyleProps, styleFor } from "./edge-style.mjs";
 import { boxOf, converterElementIds, generateKeyBetween, isValidIndex, reshapePoints, unionBox } from "./mermaid-apply.mjs";
 import { mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
 import { placeGroup } from "./mermaid-place.mjs";
@@ -102,9 +103,12 @@ export const adoptConverted = ({ master = [], converted = [], source, hash, now,
     const edgeIds = converterElementIds(parsed).edges;
     const byId = new Map(group.map((element) => [element.id, element]));
     parsed.edges.forEach((edge, index) => {
-      const shape = curveShape(edge.curve);
       const arrow = byId.get(rename.get(edgeIds[index]));
-      if (!shape || arrow?.type !== "arrow") return;
+      if (arrow?.type !== "arrow") return;
+      // linkStyle (colour, width, dash): the converter doesn't draw it.
+      Object.assign(arrow, linkStyleProps(edge.style));
+      const shape = curveShape(edge.curve);
+      if (!shape) return;
       const props = styleFor(arrow, "shape", shape);
       if (Object.keys(props).length) Object.assign(arrow, props, { points: reshapePoints(arrow.points, shape, Boolean(arrow.elbowed)) });
     });

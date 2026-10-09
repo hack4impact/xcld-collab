@@ -144,6 +144,32 @@ test("PUT without If-Match is unguarded (last write wins)", async () => {
   });
 });
 
+// Issue #42: a tab that loaded an earlier build's page saves without identity headers (with or
+// without an old If-Match) and would replace the board with its stale scene.
+test("a save from a tab of an earlier build is refused: 409 reload-required, nothing written", async () => {
+  await withServer(async ({ url, file, put }) => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, board("a"), "utf8");
+    const etag = (await fetch(url)).headers.get("etag");
+    const browser = { Origin: new URL(url).origin, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty" };
+    for (const headers of [browser, { ...browser, "If-Match": etag }, { Origin: new URL(url).origin }, { "Sec-Fetch-Site": "same-origin" }]) {
+      const refused = await put(board("stale-tab"), headers);
+      assert.equal(refused.status, 409, JSON.stringify(headers));
+      const body = await refused.json();
+      assert.equal(body.error, "reload-required");
+      assert.match(body.message, /older xcld-collab build\. Reload the page/);
+      assert.equal(await readFile(file, "utf8"), board("a"), "nothing from the old tab is written");
+    }
+    // The same page with identity headers (the current tab) saves; so do scripts (Node's fetch
+    // sends Sec-Fetch-Mode only), unguarded or with If-Match.
+    const current = await put(board("a", "tab"), { ...browser, "If-Match": etag, "X-Xcld-Author-Name": "Ada", "X-Xcld-Tab": "t1" });
+    assert.equal(current.status, 200);
+    const script = await put(board("script"), { "Sec-Fetch-Mode": "cors" });
+    assert.equal(script.status, 200);
+    assert.equal(await readFile(file, "utf8"), board("script"));
+  });
+});
+
 test("If-None-Match: * creates a board, or merges into one another tab created meanwhile", async () => {
   await withServer(async ({ file, put }) => {
     const created = await put(board("new"), { "If-None-Match": "*" });

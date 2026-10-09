@@ -7,9 +7,10 @@
 //   heads    none `---`, end `-->` / `--o` / `--x`, both `<-->` / `o--o` / `x--x` (one kind on both
 //            ends; a head on the start only, or two different kinds, has no Mermaid form)
 //   curve    per edge with an edge id: `a e1@--> b` plus `e1@{ curve: linear }` (Mermaid 11.10+)
-// Excalidraw has more: dashed vs dotted, thick and dashed at once, widths 1/2/4, colours, and
-// heads such as triangle, diamond or crow's foot. Those stay canvas-only: a Mermaid write never
-// resets them unless it changes that edge's Mermaid form in the same dimension.
+//   style    `linkStyle <n> stroke:…,stroke-width:…,stroke-dasharray:…` by edge position (below):
+//            colour, any width, dotted vs dashed, thick and dashed at once
+// Excalidraw has more: heads such as triangle, diamond or crow's foot. Those stay canvas-only: a
+// Mermaid write never resets them unless it changes that edge's Mermaid form in the same dimension.
 
 // Head kinds Mermaid knows. Excalidraw's other heads show as the nearest kind.
 const HEAD_KINDS = new Map([
@@ -132,6 +133,50 @@ export const styleFor = (element, dimension, value) => {
     default:
       return {};
   }
+};
+
+// --- linkStyle: colour, width and dash per edge ---------------------------------------------
+// Mermaid's `linkStyle <n> stroke:#1c7ed6,stroke-width:3px,stroke-dasharray:2 4` (and edge
+// classes) style an edge beyond its operator. The parser (tools/mermaid-parse-worker.mjs) reads
+// them into `edge.style = { stroke?, width?, dash? }`; an arrow shows them as its strokeColor,
+// strokeWidth and strokeStyle. The export writes them back for what the operator can't say.
+export const DEFAULT_EDGE_STROKE = "#1e1e1e";
+// Mermaid's dotted operator (`-.->`) is Excalidraw's dashed; a short first dash means dotted.
+const DOTTED_DASH = "2 4";
+const normalColor = (value) => (typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value.trim()) ? value.trim().toLowerCase() : value);
+const dashStyle = (dash) => {
+  const first = Number.parseFloat(String(dash).split(/[\s,]+/)[0]);
+  if (!Number.isFinite(first) || first <= 0 || /^none$/i.test(String(dash).trim())) return "solid";
+  return first <= 2 ? "dotted" : "dashed";
+};
+
+/** The arrow properties a parsed edge's `style` sets: { strokeColor?, strokeWidth?, strokeStyle? }. */
+export const linkStyleProps = (style) => {
+  const props = {};
+  if (!style || typeof style !== "object") return props;
+  if (typeof style.stroke === "string" && style.stroke) props.strokeColor = normalColor(style.stroke);
+  if (Number.isFinite(style.width) && style.width > 0) props.strokeWidth = Math.min(20, Math.round(style.width * 2) / 2);
+  if (typeof style.dash === "string") props.strokeStyle = dashStyle(style.dash);
+  return props;
+};
+
+/** Two values of one of those properties are the same (colours ignore case). */
+export const sameLinkValue = (left, right) => normalColor(left ?? null) === normalColor(right ?? null);
+
+/**
+ * The `linkStyle` declarations an arrow needs on top of its operator (edgeForm): a colour other
+ * than the default, a width other than normal (or thick, which `==` says unless dashed), and
+ * dotted (Excalidraw's dotted vs dashed). Empty when the operator says it all.
+ */
+export const linkStyleOf = (element) => {
+  const parts = [];
+  const color = normalColor(element?.strokeColor);
+  if (typeof color === "string" && color && color !== DEFAULT_EDGE_STROKE && color !== "transparent") parts.push(`stroke:${color}`);
+  const width = Number(element?.strokeWidth ?? 2);
+  const dashed = element?.strokeStyle === "dashed" || element?.strokeStyle === "dotted";
+  if (Number.isFinite(width) && width > 0 && width !== 2 && !(width === 4 && !dashed)) parts.push(`stroke-width:${width}px`);
+  if (element?.strokeStyle === "dotted") parts.push(`stroke-dasharray:${DOTTED_DASH}`);
+  return parts;
 };
 
 // --- the ledger -----------------------------------------------------------------------------

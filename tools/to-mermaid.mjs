@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { edgeForm, edgeOperator } from "./edge-style.mjs";
+import { edgeForm, edgeOperator, linkStyleOf } from "./edge-style.mjs";
+import { idComment } from "./mermaid-ids.mjs";
 import { describeOrigin } from "./mermaid-origin.mjs";
 
 const NODE_TYPES = new Set(["rectangle", "diamond", "ellipse"]);
@@ -15,9 +16,18 @@ const noneHead = (value) => value === undefined || value === null || value === "
 const subgraphGroupId = (id) => `subgraph_group_${id}`;
 const isSubgraphContainer = (element) => Array.isArray(element?.groupIds) && element.groupIds.includes(subgraphGroupId(element.id));
 
-export const mermaidIdMapper = () => {
+export const mermaidIdMapper = (reserved = []) => {
   const used = new Set();
   const map = new Map();
+  // Ids Mermaid can spell keep themselves: a rewritten id ("a-b" -> "a_b") never takes the name of
+  // a valid one ("a_b"), whatever the order, so a rewrite maps back without its comment too.
+  for (const id of reserved) {
+    const raw = String(id ?? "");
+    if (VALID_MERMAID_ID.test(raw) && !used.has(raw)) {
+      used.add(raw);
+      map.set(id, raw);
+    }
+  }
   const sanitize = (id) => {
     const raw = String(id ?? "element");
     let candidate = VALID_MERMAID_ID.test(raw) ? raw : raw.replace(/[^A-Za-z0-9_]/g, "_");
@@ -51,7 +61,7 @@ export const sceneToMermaid = (data) => {
   const nodes = [];
   const edges = [];
   const comments = [];
-  const toMermaidId = mermaidIdMapper();
+  const toMermaidId = mermaidIdMapper(elements.filter((element) => NODE_TYPES.has(element.type)).map((element) => element.id));
 
   for (const element of elements) {
     if (element.type === "text" && element.containerId) {
@@ -88,7 +98,9 @@ export const sceneToMermaid = (data) => {
       if (start && end) {
         const form = edgeForm(element);
         edges.push({ id: element.id, element, start, end, label, operator: edgeOperator(form), curve: form.curve });
-        if (form.notes.length) comments.push(`%% Canvas-only style of ${element.id} (Mermaid keeps it): ${form.notes.join(", ")}`);
+        // linkStyle carries a thick dashed arrow's width.
+        const notes = linkStyleOf(element).some((part) => part.startsWith("stroke-width:")) ? form.notes.filter((note) => note !== "thick") : form.notes;
+        if (notes.length) comments.push(`%% Canvas-only style of ${element.id} (Mermaid keeps it): ${notes.join(", ")}`);
       } else {
         comments.push(`%% Unbound arrow ${element.id}: ${startId ?? "<none>"} -> ${endId ?? "<none>"}${label ? ` label="${label}"` : ""}`);
       }
@@ -130,6 +142,11 @@ export const sceneToMermaid = (data) => {
     }
   }
   for (const [source, names] of bySource) comments.push(`%% Mermaid source ${source}: ${names.join(", ")}`);
+  // Ids Mermaid can't spell (a hand-drawn shape's "-", a named source's ":"): the original, so a
+  // write of this text maps the node back to its element (tools/mermaid-ids.mjs).
+  for (const node of nodes) {
+    if (node.mermaidId !== node.id) comments.push(idComment(node.mermaidId, node.id));
+  }
   comments.sort();
 
   const shape = (node) => {
@@ -160,16 +177,34 @@ export const sceneToMermaid = (data) => {
     }
   }
 
+  // Mermaid numbers edges in the order they are written; `linkStyle <n>` refers to that number.
+  const written = [];
   for (const node of nodes.filter((node) => !node.isSubgraph && !subgraphForNode(node))) lines.push(`  ${shape(node)}`);
   for (const subgraph of subgraphs) {
     const members = nodes.filter((node) => !node.isSubgraph && subgraphForNode(node) === subgraph);
     lines.push(`  subgraph ${subgraph.mermaidId}["${escapeLabel(subgraph.label || subgraph.id)}"]`);
     for (const node of members) lines.push(`    ${shape(node)}`);
-    for (const edge of edgesBySubgraph.get(subgraph.id) ?? []) lines.push(`    ${edgeLine(edge)}`);
+    for (const edge of edgesBySubgraph.get(subgraph.id) ?? []) {
+      lines.push(`    ${edgeLine(edge)}`);
+      written.push(edge);
+    }
     lines.push("  end");
   }
-  for (const edge of topLevelEdges) lines.push(`  ${edgeLine(edge)}`);
+  for (const edge of topLevelEdges) {
+    lines.push(`  ${edgeLine(edge)}`);
+    written.push(edge);
+  }
   for (const edge of curved) lines.push(`  ${edge.mermaidId}@{ curve: ${edge.curve} }`);
+  // An arrow's colour, a width the operator can't say and dotted (vs dashed), as linkStyle:
+  // edges with the same style share one line.
+  const linkStyles = new Map();
+  written.forEach((edge, index) => {
+    const parts = linkStyleOf(edge.element);
+    if (!parts.length) return;
+    const key = parts.join(",");
+    linkStyles.set(key, [...(linkStyles.get(key) ?? []), index]);
+  });
+  for (const [style, indexes] of linkStyles) lines.push(`  linkStyle ${indexes.join(",")} ${style}`);
   // Colors carry meaning (e.g. light blue = proposed), so non-default ones are kept as Mermaid styles.
   const color = (value) => (typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value.toLowerCase() : null);
   for (const node of nodes) {

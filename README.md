@@ -290,6 +290,27 @@ open: exports, and on Linux the history itself.
   still works: the build prints a notice and adds the matching `XCLD_HISTORY` /
   `XCLD_CACHE_DIR`. It doesn't delete your lines.
 
+## Upgrading from an earlier build
+
+Rebuild (or pull) the image and start it as usual; your boards and their `.mmd` files stay where
+they are.
+
+- **Reload every open canvas tab** after the upgrade. A tab keeps running the page it loaded,
+  and the server refuses saves from a page of an earlier build: such a tab shows
+  **"Save failed: HTTP 409"** and saves nothing until you reload it (your board is unchanged).
+  Before this guard, an old tab could replace the board with a stale copy.
+- **Boards made from Mermaid before versions** (when a tab converted `boards/<path>.mmd` and
+  replaced the board) are taken over as they are. The first time the new build looks at the
+  `.mmd` (a tab opens the board, or the file watcher), it treats that file as already converted:
+  the shapes it made become the board's `main` Mermaid source, so a later `write_mermaid`
+  updates them in place instead of adding the diagram a second time. Nothing on the board moves
+  or changes; shapes you edited since keep your edits, and shapes you drew yourself are never
+  part of it. A `.mmd` that no tab ever converted is not applied either: write it again
+  (`write_mermaid`, or save the file) to apply it.
+- Scripts that `PUT` a board without the tab's headers keep working as before.
+
+The details are in [DESIGN](docs/DESIGN.md#upgrading-from-a-build-before-versions-issue-42).
+
 ## Coming soon
 
 These are designed but **not built yet**. Don't rely on them.

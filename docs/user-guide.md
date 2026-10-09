@@ -194,9 +194,11 @@ covered by the [decision tree](reference.md#saving-and-exporting).
 - **Mermaid is the export, the board is the truth.** This is exceptionally important, and diverging from this habit
   will sour your user experience. Mermaid can't hold notes, positions or
   freehand. `to-mermaid` keeps notes as `%%` comments and colors as `style` lines, but layout
-  is lost. Edges keep their Mermaid form (`-.->`, `===`, `<==>`, `--o`, ...), and straight or
-  elbow arrows get a curve (`e1@{ curve: linear }`); dotted vs dashed, widths, edge colours and
-  triangle-style heads stay on the board only ([the table](DESIGN.md#line-and-arrow-styles-in-the-mermaid-round-trip)).
+  is lost. Edges keep their Mermaid form (`-.->`, `===`, `<==>`, `--o`, ...), straight or
+  elbow arrows get a curve (`e1@{ curve: linear }`), and colours, widths and dotted vs dashed go
+  in `linkStyle` lines; triangle-style heads stay on the board only
+  ([the table](DESIGN.md#line-and-arrow-styles-in-the-mermaid-round-trip)). Ids Mermaid can't
+  spell come with a `%% xcld:id` line that maps them back to the shape.
 - **One folder per project.** For example, write `boards/myproject/flow.mmd` and open
   `?board=myproject/flow`. Board path segments allow letters, digits, `.`, `_` and `-`
   (e.g. `auth-flow`, `v2.data-model`).

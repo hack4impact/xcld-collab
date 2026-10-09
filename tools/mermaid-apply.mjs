@@ -5,9 +5,12 @@
 //     -> { elements, ops, needsTabLayout, reason?, error? }
 //
 // - Identity: a Mermaid node id is the element id (the tab converts with regenerateIds:
-//   false). Ids that to-mermaid had to rewrite (e.g. "-" -> "_") are mapped back the same
-//   way, so a human-drawn shape exported by to-mermaid is updated, not duplicated. Edges
-//   match an existing arrow bound start -> end first, then the converter's edge id
+//   false). A `%% xcld:id <mermaidId> "<element id>"` comment (written by to-mermaid for ids
+//   Mermaid can't spell; tools/mermaid-ids.mjs) maps a node back to its element first. Without
+//   one, ids that to-mermaid had to rewrite (e.g. "-" -> "_") are mapped back the same way, so a
+//   human-drawn shape exported by to-mermaid is updated, not duplicated. A comment that names a
+//   shape this source may not change (another source's) leaves it alone: no copy is drawn.
+//   Edges match an existing arrow bound start -> end first, then the converter's edge id
 //   (`${start}_${end}`, `_2`, ... for parallel edges).
 // - Existing shapes keep their geometry. Labels, shape type, classDef/class/style colors,
 //   edge style and subgraph membership are updated. Bound text changes with its container.
@@ -22,14 +25,17 @@
 //   limited to ids that Mermaid had. Arrows left pointing at a deleted shape are kept, unbound.
 // - New shapes go next to a connected neighbour, in free space (no overlap with any live
 //   element's bounding box), in the flowchart's direction; new edges are straight bound arrows.
-// - A board with no Mermaid-origin shapes (new board, or an image fallback) returns
-//   needsTabLayout: true and the elements unchanged: a tab lays out the whole diagram.
+// - A board with no shapes of this source, where (for `main`) no node of the diagram is on the
+//   board either (new board, a hand drawing, an image fallback), returns needsTabLayout: true and
+//   the elements unchanged: a tab lays out the whole diagram (appliesOnBoard).
+// - Edge `linkStyle` (colour, width, dash; tools/edge-style.mjs) follows the same per-dimension
+//   rule as the operator's style.
 // Element JSON follows what mermaid-to-excalidraw + convertToExcalidrawElements produce in the
 // tab. Text widths are estimated (no font metrics in Node); Excalidraw centers bound text, so
 // the estimate only affects wrapping and the selection box.
 import { MERMAID_HASH_KEY } from "./mermaid-hash.mjs";
 import { DEFAULT_SOURCE, ORIGIN_KEY, mermaidCustomData, originOf, sourcePrefix } from "./mermaid-origin.mjs";
-import { canvasShape, edgeForm, formDimensions, styleFor } from "./edge-style.mjs";
+import { canvasShape, DEFAULT_EDGE_STROKE, edgeForm, formDimensions, linkStyleProps, sameLinkValue, styleFor } from "./edge-style.mjs";
 import { mermaidIdMapper } from "./to-mermaid.mjs";
 import { describeUnlabeled, labelContext } from "./unit-label.mjs";
 
@@ -287,14 +293,17 @@ export const nodeSize = (node) => {
   return { width: Math.max(80, Math.ceil(metrics.width + 60)), height: 30 + 30 * lines };
 };
 
-// The style of a new arrow for a parsed Mermaid edge (mermaid-to-excalidraw draws the same).
+// The style of a new arrow for a parsed Mermaid edge (mermaid-to-excalidraw draws the same),
+// plus its `linkStyle` (colour, width, dash), which the converter doesn't draw.
 const EDGE_DIMENSIONS = ["thick", "dotted", "start", "end", "shape"];
 export const edgeStyleFor = (edge) => {
   const wanted = formDimensions(edge);
   const style = { strokeWidth: 2, strokeStyle: "solid", startArrowhead: null, endArrowhead: null, roundness: { type: 2 }, elbowed: false };
   for (const dimension of EDGE_DIMENSIONS) Object.assign(style, styleFor(style, dimension, dimension === "shape" ? wanted.shape ?? "curved" : wanted[dimension]));
-  return style;
+  return Object.assign(style, linkStyleProps(edge?.style));
 };
+// linkStyle properties, and the operator dimension each one overrides when Mermaid sets it.
+const LINK_PROPS = [["strokeColor", null], ["strokeWidth", "thick"], ["strokeStyle", "dotted"]];
 // The dimensions an arrow shows in Mermaid now (what to-mermaid exports), its curve as drawn.
 const arrowDimensions = (arrow) => ({ ...formDimensions(edgeForm(arrow)), shape: canvasShape(arrow) });
 // Points for an arrow whose curve changed: an elbow arrow goes through right angles, an arrow
@@ -429,6 +438,73 @@ const stableJson = (value) => {
 };
 
 /**
+ * How a Mermaid node or subgraph id finds its shape on the board, for one source.
+ * - `resolve(mermaidId, converterId)`: the live shape this write updates, or null. In order: the
+ *   element a `%% xcld:id` comment names (tools/mermaid-ids.mjs), the converter's id, and for
+ *   `main` also the bare Mermaid id and to-mermaid's rewrite of an element id ("-" -> "_"). Never
+ *   a shape of another source; for a named source, only its own shapes.
+ * - `reference(mermaidId)`: a shape a `%% xcld:id` comment names that this source may not change
+ *   (another source's, or for a named source any shape outside it). The write leaves it alone.
+ */
+export const shapeResolver = ({ elements, source = DEFAULT_SOURCE, idMap = null }) => {
+  const prefix = sourcePrefix(source);
+  const live = (Array.isArray(elements) ? elements : []).filter(isLive);
+  const byId = new Map(live.map((element) => [element.id, element]));
+  const ownerOf = (element) => originOf(element)?.mermaid?.source ?? null;
+  const usable = (element, { mapped = false } = {}) => {
+    const owner = ownerOf(element);
+    if (owner !== null && owner !== source) return false;
+    return !(prefix && mapped && owner !== source);
+  };
+  const map = idMap && typeof idMap === "object" ? idMap : {};
+  // to-mermaid's id mapping over the current board, so exported ids map back to elements (main).
+  let exported = null;
+  const exportedId = (mermaidId) => {
+    if (!exported) {
+      const shapes = live.filter((element) => SHAPE_TYPES.has(element.type));
+      const toMermaidId = mermaidIdMapper(shapes.map((element) => element.id));
+      exported = new Map();
+      for (const element of shapes) exported.set(toMermaidId(element.id), element.id);
+    }
+    return exported.get(mermaidId);
+  };
+  const shapeAt = (id) => {
+    const element = id ? byId.get(id) : null;
+    return element && SHAPE_TYPES.has(element.type) ? element : null;
+  };
+  const resolve = (mermaidId, converterId = `${prefix}${mermaidId}`) => {
+    const mapped = shapeAt(Object.hasOwn(map, mermaidId) ? map[mermaidId] : null);
+    if (mapped && usable(mapped, { mapped: true })) return mapped;
+    const candidates = prefix ? [converterId] : [converterId, mermaidId, exportedId(mermaidId)];
+    for (const candidate of candidates) {
+      const element = shapeAt(candidate);
+      if (element && usable(element)) return element;
+    }
+    return null;
+  };
+  const reference = (mermaidId) => {
+    const mapped = shapeAt(Object.hasOwn(map, mermaidId) ? map[mermaidId] : null);
+    return mapped && !usable(mapped, { mapped: true }) ? mapped : null;
+  };
+  return { resolve, reference };
+};
+
+/**
+ * True when a write of `parsed` to `source` can be applied node by node on the server: the board
+ * has shapes of that source, or (source `main`) some node or subgraph of the diagram is already
+ * on the board (a shape read with to-mermaid and written back, or one an earlier build's tab
+ * converted without stamping it). Otherwise a tab lays the diagram out as a new group.
+ */
+export const appliesOnBoard = ({ elements, parsed, source = DEFAULT_SOURCE }) => {
+  const live = (Array.isArray(elements) ? elements : []).filter(isLive);
+  if (live.some((element) => SHAPE_TYPES.has(element.type) && originOf(element)?.mermaid?.source === source)) return true;
+  if (!parsed?.ok || sourcePrefix(source)) return false;
+  const { resolve } = shapeResolver({ elements: live, source, idMap: parsed.idMap });
+  const ids = converterElementIds(parsed);
+  return parsed.subgraphs.some((subgraph) => resolve(subgraph.id, ids.subgraphs.get(subgraph.id))) || parsed.nodes.some((node) => resolve(node.id, ids.nodes.get(node.id)));
+};
+
+/**
  * @param {object} input
  * @param {string} [input.source] The named Mermaid source (default `main`): only its shapes are
  *   matched, updated and deleted; new ids get its prefix (tools/mermaid-origin.mjs).
@@ -462,7 +538,8 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const byId = new Map(elements.map((element) => [element.id, element]));
   const originalById = new Map(sourceElements.map((element) => [element.id, element]));
   const live = elements.filter(isLive);
-  if (!layout && !live.some((element) => SHAPE_TYPES.has(element.type) && owned(element))) {
+  const resolver = shapeResolver({ elements, source, idMap: parsed.idMap });
+  if (!layout && !appliesOnBoard({ elements, parsed, source })) {
     const anyMermaid = live.some((element) => SHAPE_TYPES.has(element.type) && hasMermaidOrigin(element));
     const reason = !live.length ? "new board" : anyMermaid ? `board has no shapes from Mermaid source ${source}` : "board has no Mermaid-origin shapes";
     return unchanged({ needsTabLayout: true, reason });
@@ -713,26 +790,21 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   const sameEdgeDef = (index) => {
     const before = previousEdgeByKey.get(parsedEdgeKeys[index]);
     const after = parsed.edges[index];
-    return Boolean(before) && (before.label ?? "") === (after.label ?? "") && before.type === after.type && before.stroke === after.stroke && (before.curve ?? null) === (after.curve ?? null);
+    return Boolean(before) && (before.label ?? "") === (after.label ?? "") && before.type === after.type && before.stroke === after.stroke && (before.curve ?? null) === (after.curve ?? null) && stableJson(before.style ?? null) === stableJson(after.style ?? null);
   };
   for (const [mermaidId, elementId] of ids.subgraphs) nodeIdOf.set(elementId, mermaidId);
   for (const [mermaidId, elementId] of ids.nodes) nodeIdOf.set(elementId, mermaidId);
   parsed.edges.forEach((edge, index) => nodeIdOf.set(ids.edges[index], `${edge.start}_${edge.end}`));
 
-  // to-mermaid's id mapping over the current board, so exported ids map back to elements. Only
-  // for `main` (other sources' ids carry their prefix), and never to another source's shape.
-  const toMermaidId = mermaidIdMapper();
-  const elementIdByMermaidId = new Map();
-  for (const element of live) {
-    if (SHAPE_TYPES.has(element.type)) elementIdByMermaidId.set(toMermaidId(element.id), element.id);
-  }
-  const resolveShape = (mermaidId, converterId) => {
-    const candidates = prefix ? [converterId] : [converterId, mermaidId, elementIdByMermaidId.get(mermaidId)];
-    for (const candidate of candidates) {
-      const element = candidate ? byId.get(candidate) : null;
-      if (isLive(element) && SHAPE_TYPES.has(element.type) && !foreign(element)) return element;
-    }
-    return null;
+  const resolveShape = resolver.resolve;
+  // Shapes a `%% xcld:id` comment names that this source may not change: left alone.
+  const references = new Map();
+  const referTo = (mermaidId, kind) => {
+    const element = resolver.reference(mermaidId);
+    if (!element) return false;
+    references.set(mermaidId, element);
+    ops.push({ op: "skip", kind, id: element.id, reason: `outside source ${source}` });
+    return true;
   };
 
   // --- match subgraphs and nodes to existing shapes -------------------------
@@ -755,18 +827,18 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       shapeByMermaidId.set(subgraph.id, element);
       matchedIds.add(element.id);
       nodeIdOf.set(element.id, subgraph.id);
-    } else if (!deletedOnCanvas(subgraph.id, previousSubgraphs.get(subgraph.id), subgraph)) {
+    } else if (!referTo(subgraph.id, "subgraph") && !deletedOnCanvas(subgraph.id, previousSubgraphs.get(subgraph.id), subgraph)) {
       newSubgraphs.push(subgraph);
     }
   }
   for (const node of parsed.nodes) {
-    if (shapeByMermaidId.has(node.id) || canvasDeleted.has(node.id)) continue;
+    if (shapeByMermaidId.has(node.id) || canvasDeleted.has(node.id) || references.has(node.id)) continue;
     const element = resolveShape(node.id, ids.nodes.get(node.id));
     if (element && !matchedIds.has(element.id)) {
       shapeByMermaidId.set(node.id, element);
       matchedIds.add(element.id);
       nodeIdOf.set(element.id, node.id);
-    } else if (!deletedOnCanvas(node.id, previousNodes.get(node.id), node)) {
+    } else if (!referTo(node.id, "node") && !deletedOnCanvas(node.id, previousNodes.get(node.id), node)) {
       newNodes.push(node);
     }
   }
@@ -801,6 +873,17 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       edgeMatches[index] = { arrow, reconnect: true };
       claimed.add(arrow.id);
     }
+  });
+  // An edge to a shape this source leaves alone (a reference): an arrow already joining the two
+  // stays as it is; none is drawn.
+  const referenceEdges = new Set();
+  parsed.edges.forEach((edge, index) => {
+    if (edgeMatches[index] || !(references.has(edge.start) || references.has(edge.end))) return;
+    referenceEdges.add(index);
+    const start = (references.get(edge.start) ?? shapeByMermaidId.get(edge.start))?.id;
+    const end = (references.get(edge.end) ?? shapeByMermaidId.get(edge.end))?.id;
+    const arrow = arrows.find((candidate) => !claimed.has(candidate.id) && arrowEnds(candidate).start === start && arrowEnds(candidate).end === end);
+    if (arrow) claimed.add(arrow.id);
   });
 
   // --- delete Mermaid-origin shapes and arrows that Mermaid no longer has ---
@@ -882,7 +965,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
     updateShape(subgraph.id, subgraph.title, subgraph.style, previousSubgraphs.get(subgraph.id)?.style, "subgraph", "top");
   }
   for (const node of parsed.nodes) {
-    if (newNodes.includes(node) || canvasDeleted.has(node.id)) continue;
+    if (newNodes.includes(node) || canvasDeleted.has(node.id) || references.has(node.id)) continue;
     const element = shapeByMermaidId.get(node.id);
     if (keepsCanvas(element, previousNodes.get(node.id), node, "node")) continue;
     const wanted = shapeFor(node.shape);
@@ -1035,7 +1118,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   };
   const subgraphsDeepestFirst = [...parsed.subgraphs].sort((left, right) => depth(right.id) - depth(left.id));
   for (const subgraph of subgraphsDeepestFirst) {
-    if (canvasDeleted.has(subgraph.id)) continue;
+    if (canvasDeleted.has(subgraph.id) || references.has(subgraph.id)) continue;
     const memberBoxes = subgraph.nodes
       .map((id) => shapeByMermaidId.get(id))
       .filter(Boolean)
@@ -1170,6 +1253,10 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
   parsed.edges.forEach((edge, index) => {
     const startShape = shapeByMermaidId.get(edge.start);
     const endShape = shapeByMermaidId.get(edge.end);
+    if (referenceEdges.has(index)) {
+      ops.push({ op: "skip", kind: "edge", start: edge.start, end: edge.end, reason: `endpoint outside source ${source}` });
+      return;
+    }
     if (!startShape || !endShape) {
       ops.push({ op: "skip", kind: "edge", start: edge.start, end: edge.end, reason: "endpoint not on the board" });
       return;
@@ -1209,12 +1296,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       const previousEdge = previousEdgeByKey.get(parsedEdgeKeys[index]);
       const was = previousEdge ? formDimensions(previousEdge) : null;
       const changes = {};
-      for (const dimension of EDGE_DIMENSIONS) {
-        const value = wanted[dimension];
-        if (dimension === "shape" && value === null) continue;
-        if (value === shown[dimension] || (was && value === was[dimension])) continue;
-        const props = styleFor(arrow, dimension, value);
-        if (dimension === "shape" && Object.keys(props).length) props.points = reshapePoints(arrow.points, value, Boolean(arrow.elbowed));
+      const set = (props) => {
         for (const [key, to] of Object.entries(props)) {
           if (key !== "points") changes[key] = { from: arrow[key] ?? null, to };
         }
@@ -1222,8 +1304,37 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
           claim(arrow);
           Object.assign(touch(arrow), props);
         }
+      };
+      // linkStyle (colour, width, dash), per property, by the same rule: set only when the new
+      // Mermaid differs from what the arrow shows and from the previous Mermaid of this edge. A
+      // property Mermaid set before and no longer does goes back to the operator's default, unless
+      // the canvas changed it since. Width and dash set this way replace the operator's thick and
+      // dotted dimensions for this edge.
+      const linkNow = linkStyleProps(edge.style);
+      const linkWas = previousEdge ? linkStyleProps(previousEdge.style) : {};
+      const replaced = new Set();
+      for (const [key, dimension] of LINK_PROPS) {
+        if (key in linkNow) {
+          if (dimension) replaced.add(dimension);
+          if (sameLinkValue(arrow[key], linkNow[key]) || (key in linkWas && sameLinkValue(linkNow[key], linkWas[key]))) continue;
+          set({ [key]: linkNow[key] });
+        } else if (key in linkWas && sameLinkValue(arrow[key], linkWas[key])) {
+          if (dimension) replaced.add(dimension);
+          const fallback = key === "strokeColor" ? DEFAULT_EDGE_STROKE : key === "strokeWidth" ? (wanted.thick ? 4 : 2) : wanted.dotted ? "dashed" : "solid";
+          if (!sameLinkValue(arrow[key], fallback)) set({ [key]: fallback });
+        }
       }
-      if (Object.keys(changes).length) ops.push({ op: "restyle", id: arrow.id, kind: "edge", changes });      if (owned(arrow)) {
+      for (const dimension of EDGE_DIMENSIONS) {
+        if (replaced.has(dimension)) continue;
+        const value = wanted[dimension];
+        if (dimension === "shape" && value === null) continue;
+        if (value === shown[dimension] || (was && value === was[dimension])) continue;
+        const props = styleFor(arrow, dimension, value);
+        if (dimension === "shape" && Object.keys(props).length) props.points = reshapePoints(arrow.points, value, Boolean(arrow.elbowed));
+        set(props);
+      }
+      if (Object.keys(changes).length) ops.push({ op: "restyle", id: arrow.id, kind: "edge", changes });
+      if (owned(arrow)) {
         const wantedGroups = edgeGroupIds(edge);
         if (!sameList(subgraphGroupIds(arrow.groupIds), wantedGroups)) {
           ops.push({ op: "regroup", id: arrow.id, from: subgraphGroupIds(arrow.groupIds), to: wantedGroups });
@@ -1253,7 +1364,7 @@ export function applyMermaid({ master, parsed, hashOfSource, now = Date.now(), p
       now,
       hash,
       origin: { source, nodeId: edgeNodeId },
-      style: { strokeWidth: wantedStyle.strokeWidth, strokeStyle: wantedStyle.strokeStyle },
+      style: { strokeWidth: wantedStyle.strokeWidth, strokeStyle: wantedStyle.strokeStyle, ...(wantedStyle.strokeColor ? { strokeColor: wantedStyle.strokeColor } : {}) },
       extra: {
         points: [],
         startBinding: null,

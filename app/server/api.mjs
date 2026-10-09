@@ -27,6 +27,18 @@ const legacyAuthor = () => {
 
 const headerValue = (value) => (Array.isArray(value) ? value[0] : value);
 
+// A request a web page made (fetch from a tab): browsers send Sec-Fetch-Site/-Dest and, for a PUT
+// or POST, Origin. Scripts (curl, Node's fetch, PowerShell) send neither.
+export const fromBrowserPage = (headers) => headerValue(headers["sec-fetch-site"]) !== undefined || headerValue(headers["sec-fetch-dest"]) !== undefined || headerValue(headers.origin) !== undefined;
+
+// Upgrade guard (issue #42): a tab that loaded an earlier build's page keeps running its old code.
+// It saves without identity headers and replaces the board with its in-memory scene (it also
+// re-converted the leftover `.mmd` inbox on every Mermaid event). Such a save is refused with 409
+// `reload-required`; the old page shows "Save failed: HTTP 409", and a reload gets the current
+// build. Scripts that PUT without headers are not browsers and keep working.
+export const legacyTabSave = (headers) => headers["x-xcld-author-name"] === undefined && headers["x-xcld-tab"] === undefined && fromBrowserPage(headers);
+export const RELOAD_REQUIRED_MESSAGE = "This tab runs an older xcld-collab build. Reload the page to keep editing; nothing from this tab was saved.";
+
 // A tab identifies itself with X-Xcld-Author-Name (percent-encoded UTF-8) and X-Xcld-Tab.
 // Returns null when the request is malformed.
 export const tabAuthor = (headers) => {
@@ -716,7 +728,12 @@ export function createBoardApi({
           // the tab started from: current means a fast-forward, an older known version merges
           // (200, merged master in the body), an unknown one is 409. `If-None-Match: *` starts
           // from an empty board and merges into one that appeared meanwhile. No header is an
-          // unguarded write over whatever master is (kept for scripts).
+          // unguarded write over whatever master is (kept for scripts). A tab of an earlier build
+          // (a browser page saving without identity headers) gets 409 reload-required.
+          if (legacyTabSave(req.headers)) {
+            sendJson(res, 409, { error: "reload-required", message: RELOAD_REQUIRED_MESSAGE });
+            return true;
+          }
           const author = tabAuthor(req.headers);
           if (!author) {
             sendError(res, 400, "invalid-author", { hint: "X-Xcld-Author-Name (percent-encoded) and X-Xcld-Tab ([A-Za-z0-9_-]) go together" });

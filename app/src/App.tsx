@@ -660,6 +660,11 @@ const BoardView = ({ boardName }: { boardName: string }) => {
         if (response.status !== 409) {
           throw new Error(`Save failed: HTTP ${response.status}`);
         }
+        // The server needs a newer page (a build upgrade): retrying can't help.
+        const conflict = await response.clone().json().catch(() => null) as { error?: string; message?: string } | null;
+        if (conflict?.error === "reload-required") {
+          throw new Error(conflict.message ?? "Reload the page to keep editing.");
+        }
         if (attempt >= MAX_STALE_RETRIES) {
           throw new Error(`Save failed: the board kept changing elsewhere (${MAX_STALE_RETRIES} retries). Your edits are still in this tab; edit again to retry.`);
         }

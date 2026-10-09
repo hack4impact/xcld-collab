@@ -17,8 +17,10 @@
 //   { ok: false, error: { message, line, column, token, expected } }   Mermaid syntax error
 // and rejects only when the worker itself is unavailable (bundle missing, crash, timeout).
 //   nodes:     [{ id, label, shape, classes, styles, link, style: { container, label } }]
-//   edges:     [{ mermaidId, start, end, label, type, stroke, arrowheads, curve }]   curve: the edge's own (`e1@{ curve: linear }`) or null
+//   edges:     [{ mermaidId, start, end, label, type, stroke, arrowheads, curve, style }]   curve: the edge's own (`e1@{ curve: linear }`) or null
+//              style: { stroke?, width?, dash? } from `linkStyle` (or `linkStyle default`) over the edge's classes, or null
 //   subgraphs: [{ id, title, nodes, classes, style: { container, label } }]
+//   idMap:     { mermaidId: elementId } from `%% xcld:id` comments (tools/mermaid-ids.mjs; parseFlowchart only)
 // `label`/`title` are the text the converter would put on the board (real newlines,
 // entities decoded, Markdown stripped). `style` holds the Excalidraw properties the
 // browser converter derives from classDef/class/style (mermaid-to-excalidraw's helpers).
@@ -26,6 +28,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
+import { withIdMap } from "./mermaid-ids.mjs";
 
 export const DEFAULT_WORKER_URL = new URL("./mermaid-parse.bundle.mjs", import.meta.url);
 export const DEFAULT_PARSE_TIMEOUT_MS = 30_000;
@@ -147,6 +150,7 @@ export const createMermaidParser = ({ workerUrl = DEFAULT_WORKER_URL, timeoutMs 
 
 const defaultParser = createMermaidParser();
 export const warmUp = () => defaultParser.warmUp();
-export const parseFlowchart = (text) => defaultParser.parseFlowchart(text);
+// With the text's `%% xcld:id` comments as `idMap` (tools/mermaid-ids.mjs).
+export const parseFlowchart = async (text) => withIdMap(await defaultParser.parseFlowchart(text), text);
 export const parserStatus = () => defaultParser.status();
 export const closeParser = () => defaultParser.close();

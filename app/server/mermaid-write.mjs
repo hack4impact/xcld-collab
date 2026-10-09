@@ -37,10 +37,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { splitBoardPath } from "../../tools/board-path.mjs";
-import { applyMermaid, boxOf } from "../../tools/mermaid-apply.mjs";
+import { applyMermaid, appliesOnBoard, boxOf } from "../../tools/mermaid-apply.mjs";
 import { gridLayout, shiftBoxes } from "../../tools/mermaid-grid.mjs";
 import { adoptConverted, obstacleBoxes, resolveNear } from "../../tools/mermaid-group.mjs";
 import { mermaidSourceHash } from "../../tools/mermaid-hash.mjs";
+import { withIdMap } from "../../tools/mermaid-ids.mjs";
+import { ADOPTION_AUTHOR, legacyAdoption } from "../../tools/mermaid-legacy.mjs";
 import { DEFAULT_SOURCE, isValidSourceName, originOf } from "../../tools/mermaid-origin.mjs";
 import { parseFlowchart as defaultParseFlowchart } from "../../tools/mermaid-parse.mjs";
 import { parsePosition, placeGroup } from "../../tools/mermaid-place.mjs";
@@ -119,11 +121,13 @@ export function createMermaidWriter({
       return parsed;
     }
     const parsed = await parseFlowchart(source);
-    parseCache.set(hash, parsed);
+    // `%% xcld:id` comments, whichever parser is in use (tools/mermaid-ids.mjs).
+    const withIds = withIdMap(parsed, source);
+    parseCache.set(hash, withIds);
     if (parseCache.size > PARSE_CACHE_LIMIT) {
       parseCache.delete(parseCache.keys().next().value);
     }
-    return parsed;
+    return withIds;
   };
 
   const readInbox = async (name) => {
@@ -361,7 +365,7 @@ export function createMermaidWriter({
     if (parsed.unsupported) {
       return toPending(`unsupported diagram type: ${parsed.diagramType}`);
     }
-    if (!ownsShapes(at.scene.elements, sourceName)) {
+    if (!appliesOnBoard({ elements: at.scene.elements, parsed, source: sourceName })) {
       const anyMermaid = live.some((element) => SHAPE_TYPES.has(element.type) && originOf(element)?.mermaid);
       return toPending(anyMermaid || sourceName !== DEFAULT_SOURCE ? `board has no shapes from Mermaid source ${sourceName}` : "board has no Mermaid-origin shapes");
     }
@@ -427,13 +431,13 @@ export function createMermaidWriter({
       let result;
       let placement = null;
       let how = via;
-      if (record.flowchart && ownsShapes(elements, record.source)) {
-        const parsed = await parseCached(record.mermaid);
+      const parsedRecord = record.flowchart ? await parseCached(record.mermaid).catch(() => null) : null;
+      if (parsedRecord?.ok && appliesOnBoard({ elements, parsed: parsedRecord, source: record.source })) {
         const previous = await previousFor(record.board, record.source, elements);
-        result = applyMermaid({ master: master.scene, parsed, hashOfSource: record.hash, now: record.writtenAt, previous: previous.parsed, source: record.source });
+        result = applyMermaid({ master: master.scene, parsed: parsedRecord, hashOfSource: record.hash, now: record.writtenAt, previous: previous.parsed, source: record.source });
         how = "server";
       } else if (converted) {
-        const parsed = record.flowchart ? await parseCached(record.mermaid).catch(() => null) : null;
+        const parsed = parsedRecord?.ok ? parsedRecord : null;
         const adopted = adoptConverted({ master: elements, converted: converted.elements, source: record.source, hash: record.hash, now: record.writtenAt, position, direction: record.direction, parsed });
         result = { elements: adopted.elements, ops: adopted.ops, canvasOverwritten: [] };
         placement = adopted.placement;
@@ -537,8 +541,46 @@ export function createMermaidWriter({
     return appliedMain?.source ? writeInbox(name, appliedMain.source) : false;
   });
 
+  // Upgrade migration (issue #42; tools/mermaid-legacy.mjs). A `main` inbox left by a build before
+  // versions, whose tab converted it and replaced the board with unstamped shapes, is not a new
+  // diagram: written before versions first recorded the board, on a board with a drawing but no
+  // record of `main` (no applied source, no main shapes). It is adopted, never applied: the
+  // shapes its conversion made become source `main`, and it becomes main's last applied Mermaid.
+  // Returns null when the inbox isn't such a leftover.
+  const adopting = new Map();
+  const adoptLegacyInbox = async (name, { state, master, writtenAt, source, hash }) => {
+    if (state.mermaidSources?.[DEFAULT_SOURCE] || state.mermaid) return null;
+    const current = master ?? await versions.readMaster(name);
+    if (!current || !current.scene.elements.some(isLive) || ownsShapes(current.scene.elements, DEFAULT_SOURCE)) return null;
+    const startedAt = await versions.historyStartedAt(name);
+    if (startedAt !== null && writtenAt > startedAt) return null;
+    if (adopting.has(name)) return adopting.get(name);
+    const job = (async () => {
+      const parsed = await parseCached(source).catch(() => null);
+      const { adopt, count } = parsed?.ok ? legacyAdoption({ elements: current.scene.elements, parsed, writtenAt }) : { adopt: {}, count: 0 };
+      const result = await versions.submitBranch(name, {
+        author: ADOPTION_AUTHOR,
+        base: current.version,
+        writtenAt,
+        kind: "mermaid",
+        elements: null,
+        ops: [{ op: "adopt", count }],
+        mermaid: { source, hash, name: DEFAULT_SOURCE },
+        ...(count ? { adopt } : {}),
+      }, { source: "mermaid-adopt" });
+      return { status: "adopted", hash, adopted: count, version: result.version ?? null, commit: result.status };
+    })();
+    adopting.set(name, job);
+    try {
+      return await job;
+    } finally {
+      adopting.delete(name);
+    }
+  };
+
   // A settled direct write to the inbox (an agent or editor writing files), as source `main`.
   // Already applied, the source the board was converted from, or already pending: nothing to do.
+  // A leftover from before versions is adopted instead (adoptLegacyInbox).
   const fromFile = async (name) => {
     let stat;
     let source;
@@ -560,9 +602,14 @@ export function createMermaidWriter({
     if (master && master.scene.elements.some(isLive) && recordedHashesOf(master.scene.elements, DEFAULT_SOURCE).has(hash)) {
       return { status: "applied", hash };
     }
+    const writtenAt = Math.round(stat.mtimeMs);
+    const legacy = await adoptLegacyInbox(name, { state, master, writtenAt, source, hash });
+    if (legacy) {
+      return legacy;
+    }
     // Whole milliseconds, like every other writtenAt: Linux mtimeMs can carry float noise
     // (…122.999), which would break exact write-time comparisons and ties.
-    const prepared = await prepare(name, { author: "external", base: master?.version ?? null, writtenAt: Math.round(stat.mtimeMs), source });
+    const prepared = await prepare(name, { author: "external", base: master?.version ?? null, writtenAt, source });
     if (prepared.status !== "submit") {
       if (prepared.status === "syntax-error" || prepared.status === "parser-unavailable") {
         // An open tab tries the conversion and shows the error.
