@@ -37,9 +37,6 @@ build fails there, `.\build.ps1 -NoLockfile` (`./build.sh --no-lockfile`, or
 
 #### Or: use the prebuilt image
 
-> Available after the public release. Until then the image is private and
-> `docker compose pull` fails with `denied`; build from source as above.
-
 Every push to `main` that changes the image publishes a multi-arch image (linux/amd64 and
 linux/arm64) to `ghcr.io/hack4impact/xcld-collab`, so you can skip the build. You still need
 the clone (for `compose.yaml` and `boards/`). Create `.env` next to `compose.yaml`:
@@ -47,7 +44,8 @@ the clone (for `compose.yaml` and `boards/`). Create `.env` next to `compose.yam
 ```dotenv
 XCLD_IMAGE=ghcr.io/hack4impact/xcld-collab
 XCLD_TAG=latest
-COMPOSE_PROFILES=widget
+# Experimental chat widget (off by default; loads JS from esm.sh):
+# COMPOSE_PROFILES=widget
 # Linux only, so boards stay writable: your `id -u` / `id -g`
 # XCLD_UID=1000
 # XCLD_GID=1000
