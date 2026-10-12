@@ -1,15 +1,15 @@
 {
   "type": "excalidraw",
   "version": 2,
-  "source": "http://127.0.0.1:3100",
+  "source": "http://127.0.0.1:3295",
   "elements": [
     {
       "id": "Agent",
       "type": "rectangle",
-      "x": 946.046875,
+      "x": 67.80078125,
       "y": 8,
       "width": 260,
-      "height": 90,
+      "height": 120,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -22,43 +22,48 @@
       "frameId": null,
       "index": "a0",
       "roundness": null,
-      "seed": 1863677513,
-      "version": 5,
-      "versionNonce": 1475115527,
+      "seed": 630627083,
+      "version": 4,
+      "versionNonce": 361769957,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "olOKRoSgfcvA6MrV8K3Ht"
+          "id": "Agent_label"
         },
         {
-          "id": "Agent_Convert",
+          "id": "Agent_Merge",
           "type": "arrow"
         },
         {
           "id": "Diff_Agent",
           "type": "arrow"
-        },
-        {
-          "id": "Agent_Merge",
-          "type": "arrow"
         }
       ],
-      "updated": 1790986257595,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
       "customData": {
-        "xcldMermaidHash": "m1-e95428a2697f4453"
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Agent",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
       }
     },
     {
-      "id": "olOKRoSgfcvA6MrV8K3Ht",
+      "id": "Agent_label",
       "type": "text",
-      "x": 992.4569396972656,
-      "y": 28,
-      "width": 167.17987060546875,
-      "height": 50,
+      "x": 89.431640625,
+      "y": 30.5,
+      "width": 216.73828125,
+      "height": 75,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -71,33 +76,45 @@
       "frameId": null,
       "index": "a0V",
       "roundness": null,
-      "seed": 1333962055,
+      "seed": 811204581,
       "version": 4,
-      "versionNonce": 1622758374,
+      "versionNonce": 178872619,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257582,
+      "updated": 1791827964548,
+      "created": 1791827964370,
       "link": null,
       "locked": false,
-      "text": "Agent writes\nboards/name.mmd",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Agent",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Agent writes Mermaid or\nJSON\n(MCP or CLI)",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "Agent",
-      "originalText": "Agent writes boards/name.mmd",
+      "originalText": "Agent writes Mermaid or JSON\n(MCP or CLI)",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Convert",
+      "id": "Merge",
       "type": "rectangle",
-      "x": 326.046875,
-      "y": 193,
-      "width": 260,
+      "x": 381.53515625,
+      "y": 208,
+      "width": 187.140625,
       "height": 90,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -111,35 +128,51 @@
       "frameId": null,
       "index": "a1",
       "roundness": null,
-      "seed": 1339731655,
-      "version": 4,
-      "versionNonce": 980137799,
+      "seed": 419213093,
+      "version": 5,
+      "versionNonce": 1302494053,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "1LWHWgV9sf7pKz5s1Xlu9"
+          "id": "Merge_label"
         },
         {
-          "id": "Agent_Convert",
+          "id": "Agent_Merge",
           "type": "arrow"
         },
         {
-          "id": "Convert_Board",
+          "id": "You_Merge",
+          "type": "arrow"
+        },
+        {
+          "id": "Merge_Board",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257589,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "1LWHWgV9sf7pKz5s1Xlu9",
+      "id": "Merge_label",
       "type": "text",
-      "x": 370.21693420410156,
-      "y": 213,
-      "width": 171.65988159179688,
+      "x": 409.529296875,
+      "y": 228,
+      "width": 131.15234375,
       "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -153,34 +186,46 @@
       "frameId": null,
       "index": "a1V",
       "roundness": null,
-      "seed": 1991009383,
+      "seed": 1866120005,
       "version": 4,
-      "versionNonce": 555926906,
+      "versionNonce": 1475926789,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257584,
+      "updated": 1791827964548,
+      "created": 1791827964372,
       "link": null,
       "locked": false,
-      "text": "Open browser tab\nconverts it",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Server merges\nper shape",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Convert",
-      "originalText": "Open browser tab converts it",
+      "containerId": "Merge",
+      "originalText": "Server merges\nper shape",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Board",
+      "id": "You",
       "type": "rectangle",
-      "x": 469.3359375,
-      "y": 378,
-      "width": 283.421875,
-      "height": 60,
+      "x": 411.75,
+      "y": 8,
+      "width": 260,
+      "height": 120,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -193,52 +238,44 @@
       "frameId": null,
       "index": "a2",
       "roundness": null,
-      "seed": 864142633,
-      "version": 8,
-      "versionNonce": 1598748039,
+      "seed": 96797099,
+      "version": 3,
+      "versionNonce": 1256920549,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "hvubplvh7twWpy3EdiiMf"
+          "id": "You_label"
         },
         {
-          "id": "Convert_Board",
-          "type": "arrow"
-        },
-        {
-          "id": "You_Board",
-          "type": "arrow"
-        },
-        {
-          "id": "Board_Snapshot",
-          "type": "arrow"
-        },
-        {
-          "id": "Board_Docs",
-          "type": "arrow"
-        },
-        {
-          "id": "Board_Export",
-          "type": "arrow"
-        },
-        {
-          "id": "Board_Versions",
+          "id": "You_Merge",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257595,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "You",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "hvubplvh7twWpy3EdiiMf",
+      "id": "You_label",
       "type": "text",
-      "x": 497.53697967529297,
-      "y": 395.5,
-      "width": 227.01979064941406,
-      "height": 25,
+      "x": 439.2548828125,
+      "y": 43,
+      "width": 204.990234375,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -251,33 +288,45 @@
       "frameId": null,
       "index": "a2V",
       "roundness": null,
-      "seed": 210845575,
+      "seed": 1026362021,
       "version": 4,
-      "versionNonce": 192014118,
+      "versionNonce": 1692009419,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257584,
+      "updated": 1791827964548,
+      "created": 1791827964373,
       "link": null,
       "locked": false,
-      "text": "boards/name.excalidraw",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "You",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "You draw and annotate\nin the browser",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Board",
-      "originalText": "boards/name.excalidraw",
+      "containerId": "You",
+      "originalText": "You draw and annotate\nin the browser",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "You",
+      "id": "Board",
       "type": "rectangle",
-      "x": 636.046875,
-      "y": 193,
-      "width": 260,
+      "x": 333.39453125,
+      "y": 378,
+      "width": 283.421875,
       "height": 90,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -291,32 +340,60 @@
       "frameId": null,
       "index": "a3",
       "roundness": null,
-      "seed": 306658791,
-      "version": 3,
-      "versionNonce": 1110264551,
+      "seed": 1715831429,
+      "version": 7,
+      "versionNonce": 1749631461,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "NKRg5RdTuqZxl38SZIhX7"
+          "id": "Board_label"
         },
         {
-          "id": "You_Board",
+          "id": "Merge_Board",
+          "type": "arrow"
+        },
+        {
+          "id": "Board_Diff",
+          "type": "arrow"
+        },
+        {
+          "id": "Board_Rules",
+          "type": "arrow"
+        },
+        {
+          "id": "Board_Docs",
+          "type": "arrow"
+        },
+        {
+          "id": "Board_Prune",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257590,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "NKRg5RdTuqZxl38SZIhX7",
+      "id": "Board_label",
       "type": "text",
-      "x": 653.5269470214844,
-      "y": 225.5,
-      "width": 225.03985595703125,
-      "height": 25,
+      "x": 366.716796875,
+      "y": 398,
+      "width": 216.77734375,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -329,34 +406,46 @@
       "frameId": null,
       "index": "a3V",
       "roundness": null,
-      "seed": 1131263655,
+      "seed": 1792962053,
       "version": 4,
-      "versionNonce": 174065210,
+      "versionNonce": 1888563813,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257584,
+      "updated": 1791827964548,
+      "created": 1791827964374,
       "link": null,
       "locked": false,
-      "text": "You draw and annotate",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "boards/name.excalidraw\nevery write is a version",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "You",
-      "originalText": "You draw and annotate",
+      "containerId": "Board",
+      "originalText": "boards/name.excalidraw\nevery write is a version",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Snapshot",
+      "id": "Diff",
       "type": "rectangle",
       "x": 8,
-      "y": 518,
-      "width": 268.046875,
-      "height": 120,
+      "y": 548,
+      "width": 222.1875,
+      "height": 90,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -369,36 +458,52 @@
       "frameId": null,
       "index": "a4",
       "roundness": null,
-      "seed": 121714697,
-      "version": 4,
-      "versionNonce": 1806312999,
+      "seed": 749573195,
+      "version": 5,
+      "versionNonce": 1711873125,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "xkv-aewF1jD59gIj6YC_V"
+          "id": "Diff_label"
         },
         {
-          "id": "Board_Snapshot",
+          "id": "Board_Diff",
           "type": "arrow"
         },
         {
-          "id": "Snapshot_Diff",
+          "id": "Diff_Agent",
+          "type": "arrow"
+        },
+        {
+          "id": "Diff_Wait",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257592,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Diff",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "xkv-aewF1jD59gIj6YC_V",
+      "id": "Diff_label",
       "type": "text",
-      "x": 34.823524475097656,
-      "y": 540.5,
-      "width": 214.3998260498047,
-      "height": 75,
+      "x": 37.921875,
+      "y": 568,
+      "width": 162.34375,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -411,33 +516,45 @@
       "frameId": null,
       "index": "a4V",
       "roundness": null,
-      "seed": 1374570951,
+      "seed": 1464624485,
       "version": 4,
-      "versionNonce": 1345720934,
+      "versionNonce": 35476075,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257584,
+      "updated": 1791827964548,
+      "created": 1791827964374,
       "link": null,
       "locked": false,
-      "text": ".snapshots:\nname.time.excalidraw +\n.mmd",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Diff",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Agent reads\nwhat you changed",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Snapshot",
-      "originalText": ".snapshots: name.time.excalidraw + .mmd",
+      "containerId": "Diff",
+      "originalText": "Agent reads\nwhat you changed",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Diff",
+      "id": "Rules",
       "type": "rectangle",
-      "x": 561.53515625,
-      "y": 718,
-      "width": 260,
+      "x": 280.57421875,
+      "y": 548,
+      "width": 167.578125,
       "height": 90,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -451,35 +568,43 @@
       "frameId": null,
       "index": "a5",
       "roundness": null,
-      "seed": 1922361607,
-      "version": 4,
-      "versionNonce": 1076522439,
+      "seed": 1843194341,
+      "version": 3,
+      "versionNonce": 664739013,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "9bBAUuX1KPN82U6hUhD_E"
+          "id": "Rules_label"
         },
         {
-          "id": "Snapshot_Diff",
-          "type": "arrow"
-        },
-        {
-          "id": "Diff_Agent",
+          "id": "Board_Rules",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257592,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Rules",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "9bBAUuX1KPN82U6hUhD_E",
+      "id": "Rules_label",
       "type": "text",
-      "x": 583.8652267456055,
-      "y": 738,
-      "width": 215.33985900878906,
+      "x": 308.7822265625,
+      "y": 568,
+      "width": 111.162109375,
       "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -493,23 +618,35 @@
       "frameId": null,
       "index": "a5V",
       "roundness": null,
-      "seed": 1697609959,
+      "seed": 633630917,
       "version": 4,
-      "versionNonce": 62336762,
+      "versionNonce": 921148869,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257585,
+      "updated": 1791827964548,
+      "created": 1791827964375,
       "link": null,
       "locked": false,
-      "text": "Agent reads what you\nchanged",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Rules",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Design rules\ncheck",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Diff",
-      "originalText": "Agent reads what you changed",
+      "containerId": "Rules",
+      "originalText": "Design rules\ncheck",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
@@ -517,9 +654,9 @@
     {
       "id": "Docs",
       "type": "rectangle",
-      "x": 326.046875,
-      "y": 533,
-      "width": 260,
+      "x": 498.15234375,
+      "y": 548,
+      "width": 175.390625,
       "height": 90,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -533,31 +670,43 @@
       "frameId": null,
       "index": "a6",
       "roundness": null,
-      "seed": 1548701417,
+      "seed": 439014123,
       "version": 3,
-      "versionNonce": 1407976359,
+      "versionNonce": 702251429,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "9C8SH6msvEPiU1r0pAzgi"
+          "id": "Docs_label"
         },
         {
           "id": "Board_Docs",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257593,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Docs",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "9C8SH6msvEPiU1r0pAzgi",
+      "id": "Docs_label",
       "type": "text",
-      "x": 351.33695220947266,
-      "y": 553,
-      "width": 209.4198455810547,
+      "x": 523.591796875,
+      "y": 568,
+      "width": 124.51171875,
       "height": 50,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -571,37 +720,49 @@
       "frameId": null,
       "index": "a6V",
       "roundness": null,
-      "seed": 1388168199,
+      "seed": 870584357,
       "version": 4,
-      "versionNonce": 433247654,
+      "versionNonce": 1128123659,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257585,
+      "updated": 1791827964548,
+      "created": 1791827964375,
       "link": null,
       "locked": false,
-      "text": "Mermaid for docs and\nPRs",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Docs",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Mermaid for\ndocs and PRs",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "Docs",
-      "originalText": "Mermaid for docs and PRs",
+      "originalText": "Mermaid for\ndocs and PRs",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Export",
+      "id": "Wait",
       "type": "rectangle",
-      "x": 636.046875,
-      "y": 574.2267996185147,
-      "width": 260,
+      "x": 8.8125,
+      "y": 688,
+      "width": 220.5625,
       "height": 90,
       "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
+      "strokeColor": "#1971c2",
+      "backgroundColor": "#a5d8ff",
       "fillStyle": "solid",
       "strokeWidth": 2,
       "strokeStyle": "solid",
@@ -611,34 +772,46 @@
       "frameId": null,
       "index": "a7",
       "roundness": null,
-      "seed": 1312829479,
-      "version": 11,
-      "versionNonce": 573395331,
+      "seed": 282092869,
+      "version": 3,
+      "versionNonce": 1713309477,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "VoPFjxD6xFZ4qtsbvo6cj"
+          "id": "Wait_label"
         },
         {
-          "id": "Board_Export",
+          "id": "Diff_Wait",
           "type": "arrow"
         }
       ],
-      "updated": 1790986281805,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Wait",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "VoPFjxD6xFZ4qtsbvo6cj",
+      "id": "Wait_label",
       "type": "text",
-      "x": 672.0269393920898,
-      "y": 594.2267996185147,
-      "width": 188.0398712158203,
+      "x": 38.4833984375,
+      "y": 708,
+      "width": 161.220703125,
       "height": 50,
       "angle": 0,
-      "strokeColor": "#1e1e1e",
+      "strokeColor": "#1971c2",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
       "strokeWidth": 2,
@@ -649,33 +822,45 @@
       "frameId": null,
       "index": "a7V",
       "roundness": null,
-      "seed": 177580839,
-      "version": 12,
-      "versionNonce": 1101742010,
+      "seed": 1335411589,
+      "version": 4,
+      "versionNonce": 1914281253,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257586,
+      "updated": 1791827964548,
+      "created": 1791827964375,
       "link": null,
       "locked": false,
-      "text": ".exports/name.mmd,\nalways current",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Wait",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Next: agents wait\nfor board changes",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Export",
-      "originalText": ".exports/name.mmd, always current",
+      "containerId": "Wait",
+      "originalText": "Next: agents wait\nfor board changes",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Versions",
+      "id": "Prune",
       "type": "rectangle",
-      "x": 946.046875,
-      "y": 533,
-      "width": 260,
+      "x": 723.54296875,
+      "y": 548,
+      "width": 194.5,
       "height": 90,
       "angle": 0,
       "strokeColor": "#1971c2",
@@ -689,31 +874,43 @@
       "frameId": null,
       "index": "a8",
       "roundness": null,
-      "seed": 1496811977,
+      "seed": 1858551179,
       "version": 3,
-      "versionNonce": 1043496903,
+      "versionNonce": 263441573,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "UTqLTZTzb61aTsVZStX6c"
+          "id": "Prune_label"
         },
         {
-          "id": "Board_Versions",
+          "id": "Board_Prune",
           "type": "arrow"
         }
       ],
-      "updated": 1790986257595,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Prune",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      }
     },
     {
-      "id": "UTqLTZTzb61aTsVZStX6c",
+      "id": "Prune_label",
       "type": "text",
-      "x": 958.0769424438477,
-      "y": 553,
-      "width": 235.9398651123047,
+      "x": 755.2021484375,
+      "y": 568,
+      "width": 131.181640625,
       "height": 50,
       "angle": 0,
       "strokeColor": "#1971c2",
@@ -727,37 +924,49 @@
       "frameId": null,
       "index": "a8V",
       "roundness": null,
-      "seed": 1227075143,
+      "seed": 757074661,
       "version": 4,
-      "versionNonce": 1903505638,
+      "versionNonce": 196473771,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257587,
+      "updated": 1791827964548,
+      "created": 1791827964375,
       "link": null,
       "locked": false,
-      "text": "Next: a version on every\nsave",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Prune",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "Next: 48 h\nhistory pruning",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Versions",
-      "originalText": "Next: a version on every save",
+      "containerId": "Prune",
+      "originalText": "Next: 48 h\nhistory pruning",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
     },
     {
-      "id": "Merge",
-      "type": "rectangle",
-      "x": 946.046875,
-      "y": 178,
-      "width": 260,
-      "height": 120,
+      "id": "Agent_Merge",
+      "type": "arrow",
+      "x": 251.314,
+      "y": 128.5,
+      "width": 127.07300000000001,
+      "height": 81.26599999999999,
       "angle": 0,
-      "strokeColor": "#1971c2",
-      "backgroundColor": "#a5d8ff",
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
       "fillStyle": "solid",
       "strokeWidth": 2,
       "strokeStyle": "solid",
@@ -766,35 +975,78 @@
       "groupIds": [],
       "frameId": null,
       "index": "a9",
-      "roundness": null,
-      "seed": 523604807,
-      "version": 3,
-      "versionNonce": 245163079,
+      "roundness": {
+        "type": 2
+      },
+      "seed": 847082661,
+      "version": 4,
+      "versionNonce": 389345381,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "gbyLybSxZW1tta5I-Q4kw"
-        },
-        {
-          "id": "Agent_Merge",
-          "type": "arrow"
+          "id": "Agent_Merge_label"
         }
       ],
-      "updated": 1790986257595,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
-      "locked": false
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Agent_Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          34.84200000000001,
+          39.5
+        ],
+        [
+          126.07300000000001,
+          80.26599999999999
+        ]
+      ],
+      "startBinding": {
+        "elementId": "Agent",
+        "mode": "orbit",
+        "fixedPoint": [
+          0.7038969951923076,
+          1
+        ]
+      },
+      "endBinding": {
+        "elementId": "Merge",
+        "mode": "orbit",
+        "fixedPoint": [
+          -0.019494197211321698,
+          0.014066666666666568
+        ]
+      },
+      "startArrowhead": null,
+      "endArrowhead": "arrow",
+      "elbowed": false
     },
     {
-      "id": "gbyLybSxZW1tta5I-Q4kw",
+      "id": "Agent_Merge_label",
       "type": "text",
-      "x": 956.6869430541992,
-      "y": 213,
-      "width": 238.71986389160156,
-      "height": 50,
+      "x": 241.2512138286251,
+      "y": 166.4811715782398,
+      "width": 131.142578125,
+      "height": 25,
       "angle": 0,
-      "strokeColor": "#1971c2",
+      "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
       "strokeWidth": 2,
@@ -805,34 +1057,46 @@
       "frameId": null,
       "index": "a9V",
       "roundness": null,
-      "seed": 155471207,
+      "seed": 487024197,
       "version": 4,
-      "versionNonce": 1885288570,
+      "versionNonce": 697610373,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257588,
+      "updated": 1791827964548,
+      "created": 1791827964376,
       "link": null,
       "locked": false,
-      "text": "Next: merge on re-import\nkeeps your notes",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Agent_Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "write_mermaid",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Merge",
-      "originalText": "Next: merge on re-import keeps your notes",
+      "containerId": "Agent_Merge",
+      "originalText": "write_mermaid",
       "autoResize": true,
       "lineHeight": 1.25,
-      "labelPosition": null
+      "labelPosition": 0.5
     },
     {
-      "id": "Agent_Convert",
+      "id": "You_Merge",
       "type": "arrow",
-      "x": 946.047,
-      "y": 71.323,
-      "width": 490,
-      "height": 117.177,
+      "x": 541.25,
+      "y": 128.5,
+      "width": 28.894000000000005,
+      "height": 76.852,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -847,48 +1111,60 @@
       "roundness": {
         "type": 2
       },
-      "seed": 1192585385,
+      "seed": 1438471211,
       "version": 4,
-      "versionNonce": 738910695,
+      "versionNonce": 54071621,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "ebMk7NrkaS51xwjvdRXRI"
+          "id": "You_Merge_label"
         }
       ],
-      "updated": 1790986257589,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "You_Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          -490,
-          66.677
+          0.5,
+          39.5
         ],
         [
-          -490,
-          117.177
+          -27.894000000000005,
+          75.852
         ]
       ],
       "startBinding": {
-        "elementId": "Agent",
-        "mode": "orbit",
-        "fixedPoint": [
-          4.807692308671763e-7,
-          0.6980333333333333
-        ]
-      },
-      "endBinding": {
-        "elementId": "Convert",
+        "elementId": "You",
         "mode": "orbit",
         "fixedPoint": [
           0.5001,
-          -0.044444444444444446
+          1
+        ]
+      },
+      "endBinding": {
+        "elementId": "Merge",
+        "mode": "orbit",
+        "fixedPoint": [
+          0.701722802037238,
+          -0.03497777777777773
         ]
       },
       "startArrowhead": null,
@@ -896,11 +1172,11 @@
       "elbowed": false
     },
     {
-      "id": "ebMk7NrkaS51xwjvdRXRI",
+      "id": "You_Merge_label",
       "type": "text",
-      "x": 629.6407824386876,
-      "y": 94.69119117248391,
-      "width": 49.91996765136719,
+      "x": 494.79823276408354,
+      "y": 158.56060048274247,
+      "width": 91.171875,
       "height": 25,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -914,34 +1190,46 @@
       "frameId": null,
       "index": "aAV",
       "roundness": null,
-      "seed": 910428295,
+      "seed": 895867685,
       "version": 4,
-      "versionNonce": 850011174,
+      "versionNonce": 1806714443,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257588,
+      "updated": 1791827964548,
+      "created": 1791827964380,
       "link": null,
       "locked": false,
-      "text": "inbox",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "You_Merge",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "autosaves",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Agent_Convert",
-      "originalText": "inbox",
+      "containerId": "You_Merge",
+      "originalText": "autosaves",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": 0.5
     },
     {
-      "id": "Convert_Board",
+      "id": "Merge_Board",
       "type": "arrow",
-      "x": 456.547,
-      "y": 283.5,
-      "width": 84.42599999999993,
-      "height": 92.35399999999998,
+      "x": 475.105,
+      "y": 298.5,
+      "width": 0,
+      "height": 76,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -956,31 +1244,43 @@
       "roundness": {
         "type": 2
       },
-      "seed": 1842451047,
+      "seed": 1855035397,
       "version": 4,
-      "versionNonce": 111359591,
+      "versionNonce": 1424475845,
       "isDeleted": false,
-      "boundElements": [],
-      "updated": 1790986257590,
-      "created": 1790986257580,
+      "boundElements": null,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Merge_Board",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          -0.5,
-          54.5
+          0,
+          39.5
         ],
         [
-          83.92599999999993,
-          92.35399999999998
+          0,
+          75
         ]
       ],
       "startBinding": {
-        "elementId": "Convert",
+        "elementId": "Merge",
         "mode": "orbit",
         "fixedPoint": [
           0.5001,
@@ -991,8 +1291,8 @@
         "elementId": "Board",
         "mode": "orbit",
         "fixedPoint": [
-          0.25275770439384737,
-          -0.027433333333333584
+          0.5001,
+          -0.044444444444444446
         ]
       },
       "startArrowhead": null,
@@ -1000,12 +1300,12 @@
       "elbowed": false
     },
     {
-      "id": "You_Board",
+      "id": "Board_Diff",
       "type": "arrow",
-      "x": 765.547,
-      "y": 283.5,
-      "width": 84.42600000000004,
-      "height": 92.35399999999998,
+      "x": 333.895,
+      "y": 454.347,
+      "width": 248.774,
+      "height": 90.44600000000003,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -1020,48 +1320,60 @@
       "roundness": {
         "type": 2
       },
-      "seed": 1066691465,
+      "seed": 787977931,
       "version": 4,
-      "versionNonce": 875648519,
+      "versionNonce": 1652157349,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "ixK95wnQAEbj5C85fd2sw"
+          "id": "Board_Diff_label"
         }
       ],
-      "updated": 1790986257590,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Diff",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          0.5,
-          54.5
+          -249.274,
+          53.65300000000002
         ],
         [
-          -83.92600000000004,
-          92.35399999999998
+          -235.05499999999998,
+          89.44600000000003
         ]
       ],
       "startBinding": {
-        "elementId": "You",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.5001,
-          1
-        ]
-      },
-      "endBinding": {
         "elementId": "Board",
         "mode": "orbit",
         "fixedPoint": [
-          0.7472431776834444,
-          -0.027433333333333584
+          0.0000016538949224784082,
+          0.8427444444444442
+        ]
+      },
+      "endBinding": {
+        "elementId": "Diff",
+        "mode": "orbit",
+        "fixedPoint": [
+          0.41109423347398033,
+          -0.04118888888888882
         ]
       },
       "startArrowhead": null,
@@ -1069,11 +1381,11 @@
       "elbowed": false
     },
     {
-      "id": "ixK95wnQAEbj5C85fd2sw",
+      "id": "Board_Diff_label",
       "type": "text",
-      "x": 643.3952539060092,
-      "y": 335.9461444547068,
-      "width": 215.45985412597656,
+      "x": 133.57032144838615,
+      "y": 472.01995805043873,
+      "width": 91.884765625,
       "height": 25,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -1087,34 +1399,46 @@
       "frameId": null,
       "index": "aCV",
       "roundness": null,
-      "seed": 492308647,
+      "seed": 39754117,
       "version": 4,
-      "versionNonce": 1066801466,
+      "versionNonce": 454449125,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257590,
+      "updated": 1791827964548,
+      "created": 1791827964381,
       "link": null,
       "locked": false,
-      "text": "autosaves in about 1s",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Diff",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "diff --since",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "You_Board",
-      "originalText": "autosaves in about 1s",
+      "containerId": "Board_Diff",
+      "originalText": "diff --since",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": 0.5
     },
     {
-      "id": "Board_Snapshot",
+      "id": "Diff_Agent",
       "type": "arrow",
-      "x": 469.336,
-      "y": 429.65,
-      "width": 327.313,
-      "height": 83.85000000000002,
+      "x": 137.844,
+      "y": 547.5,
+      "width": 32.298,
+      "height": 416.342,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -1129,48 +1453,76 @@
       "roundness": {
         "type": 2
       },
-      "seed": 48278919,
+      "seed": 252333925,
       "version": 4,
-      "versionNonce": 181907879,
+      "versionNonce": 1136198789,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "WhD5Hk_KPhxolT6o1EZYO"
+          "id": "Diff_Agent_label"
         }
       ],
-      "updated": 1790986257591,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Diff_Agent",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          -327.313,
-          48.35000000000002
+          15.722000000000008,
+          -39.5
         ],
         [
-          -327.313,
-          83.85000000000002
+          15.722000000000008,
+          -124.5
+        ],
+        [
+          15.722000000000008,
+          -209.5
+        ],
+        [
+          15.722000000000008,
+          -294.5
+        ],
+        [
+          15.722000000000008,
+          -379.5
+        ],
+        [
+          31.298000000000002,
+          -415.342
         ]
       ],
       "startBinding": {
-        "elementId": "Board",
+        "elementId": "Diff",
         "mode": "orbit",
         "fixedPoint": [
-          2.2051932305060408e-7,
-          0.8524999999999996
+          0.5821389592123769,
+          0
         ]
       },
       "endBinding": {
-        "elementId": "Snapshot",
+        "elementId": "Agent",
         "mode": "orbit",
         "fixedPoint": [
-          0.5001,
-          -0.03333333333333333
+          0.39169699519230766,
+          1.0304833333333334
         ]
       },
       "startArrowhead": null,
@@ -1178,11 +1530,11 @@
       "elbowed": false
     },
     {
-      "id": "WhD5Hk_KPhxolT6o1EZYO",
+      "id": "Diff_Agent_label",
       "type": "text",
-      "x": 206.36260959051606,
-      "y": 443.25695228606196,
-      "width": 135.39990234375,
+      "x": 77.96053125,
+      "y": 327.17149420594257,
+      "width": 151.2109375,
       "height": 25,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -1196,34 +1548,46 @@
       "frameId": null,
       "index": "aDV",
       "roundness": null,
-      "seed": 1281015879,
+      "seed": 1704265317,
       "version": 4,
-      "versionNonce": 1063169894,
+      "versionNonce": 168248555,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257590,
+      "updated": 1791827964548,
+      "created": 1791827964382,
       "link": null,
       "locked": false,
-      "text": "xcld snapshot",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Diff_Agent",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "acts on feedback",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Board_Snapshot",
-      "originalText": "xcld snapshot",
+      "containerId": "Diff_Agent",
+      "originalText": "acts on feedback",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": 0.5
     },
     {
-      "id": "Snapshot_Diff",
+      "id": "Board_Rules",
       "type": "arrow",
-      "x": 142.523,
-      "y": 638.5,
-      "width": 415.05899999999997,
-      "height": 103.27999999999997,
+      "x": 416.477,
+      "y": 468.5,
+      "width": 52.113999999999976,
+      "height": 76,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -1238,48 +1602,60 @@
       "roundness": {
         "type": 2
       },
-      "seed": 451940969,
+      "seed": 2031125867,
       "version": 4,
-      "versionNonce": 670091591,
+      "versionNonce": 1242337637,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "Hc1URr5Fsc8qEiDnthg2m"
+          "id": "Board_Rules_label"
         }
       ],
-      "updated": 1790986257592,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Rules",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          -0.5,
+          -52.113999999999976,
           39.5
         ],
         [
-          414.55899999999997,
-          103.27999999999997
+          -52.113999999999976,
+          75
         ]
       ],
       "startBinding": {
-        "elementId": "Snapshot",
+        "elementId": "Board",
         "mode": "orbit",
         "fixedPoint": [
-          0.5001,
+          0.29314063619824676,
           1
         ]
       },
       "endBinding": {
-        "elementId": "Diff",
+        "elementId": "Rules",
         "mode": "orbit",
         "fixedPoint": [
-          -0.01520444711538464,
-          0.26977777777777745
+          0.5001,
+          -0.044444444444444446
         ]
       },
       "startArrowhead": null,
@@ -1287,11 +1663,11 @@
       "elbowed": false
     },
     {
-      "id": "Hc1URr5Fsc8qEiDnthg2m",
+      "id": "Board_Rules_label",
       "type": "text",
-      "x": 270.79897585924067,
-      "y": 694.5328140299996,
-      "width": 81.53993225097656,
+      "x": 317.17095004476954,
+      "y": 485.2742708565179,
+      "width": 114.521484375,
       "height": 25,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -1305,34 +1681,46 @@
       "frameId": null,
       "index": "aEV",
       "roundness": null,
-      "seed": 815182823,
+      "seed": 617310021,
       "version": 4,
-      "versionNonce": 1857217018,
+      "versionNonce": 1890325317,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257591,
+      "updated": 1791827964549,
+      "created": 1791827964383,
       "link": null,
       "locked": false,
-      "text": "xcld diff",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Rules",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "check_board",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": "Snapshot_Diff",
-      "originalText": "xcld diff",
+      "containerId": "Board_Rules",
+      "originalText": "check_board",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": 0.5
     },
     {
-      "id": "Diff_Agent",
+      "id": "Board_Docs",
       "type": "arrow",
-      "x": 821.035,
-      "y": 742.391,
-      "width": 420.01200000000006,
-      "height": 642.059,
+      "x": 533.734,
+      "y": 468.5,
+      "width": 52.11399999999992,
+      "height": 76,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -1347,172 +1735,51 @@
       "roundness": {
         "type": 2
       },
-      "seed": 1503618215,
+      "seed": 1110776517,
       "version": 4,
-      "versionNonce": 4660455,
+      "versionNonce": 1982599749,
       "isDeleted": false,
       "boundElements": [
         {
           "type": "text",
-          "id": "VwAV5I_nmIMIGapmc-W5S"
+          "id": "Board_Docs_label"
         }
       ],
-      "updated": 1790986257592,
-      "created": 1790986257580,
+      "updated": 1791827953186,
+      "created": 1791827964363,
       "link": null,
       "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Docs",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          420.01200000000006,
-          -64.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -164.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -264.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -334.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -404.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -504.39099999999996
-        ],
-        [
-          420.01200000000006,
-          -604.391
-        ],
-        [
-          346.42099999999994,
-          -642.059
-        ]
-      ],
-      "startBinding": {
-        "elementId": "Diff",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.9999993990384615,
-          0.27656666666666624
-        ]
-      },
-      "endBinding": {
-        "elementId": "Agent",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.8496504807692304,
-          1.0203555555555555
-        ]
-      },
-      "startArrowhead": null,
-      "endArrowhead": "arrow",
-      "elbowed": false
-    },
-    {
-      "id": "VwAV5I_nmIMIGapmc-W5S",
-      "type": "text",
-      "x": 1158.7539105152352,
-      "y": 576.4404010707963,
-      "width": 168.91986083984375,
-      "height": 25,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "aFV",
-      "roundness": null,
-      "seed": 851862407,
-      "version": 4,
-      "versionNonce": 870306470,
-      "isDeleted": false,
-      "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257592,
-      "link": null,
-      "locked": false,
-      "text": "acts on feedback",
-      "fontSize": 20,
-      "baseFontSize": null,
-      "fontFamily": 5,
-      "textAlign": "center",
-      "verticalAlign": "middle",
-      "containerId": "Diff_Agent",
-      "originalText": "acts on feedback",
-      "autoResize": true,
-      "lineHeight": 1.25,
-      "labelPosition": 0.5
-    },
-    {
-      "id": "Board_Docs",
-      "type": "arrow",
-      "x": 544.618,
-      "y": 438.5,
-      "width": 88.57100000000003,
-      "height": 90,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "aG",
-      "roundness": {
-        "type": 2
-      },
-      "seed": 502521161,
-      "version": 4,
-      "versionNonce": 974466183,
-      "isDeleted": false,
-      "boundElements": [
-        {
-          "type": "text",
-          "id": "jJG3vK4C3Ag9tVZpMVCZL"
-        }
-      ],
-      "updated": 1790986257593,
-      "created": 1790986257580,
-      "link": null,
-      "locked": false,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          -88.57100000000003,
+          52.11399999999992,
           39.5
         ],
         [
-          -88.57100000000003,
-          90
+          52.11399999999992,
+          75
         ]
       ],
       "startBinding": {
         "elementId": "Board",
         "mode": "orbit",
         "fixedPoint": [
-          0.26561839131153886,
+          0.7068595843210763,
           1
         ]
       },
@@ -1529,11 +1796,11 @@
       "elbowed": false
     },
     {
-      "id": "jJG3vK4C3Ag9tVZpMVCZL",
+      "id": "Board_Docs_label",
       "type": "text",
-      "x": 398.6467679201512,
-      "y": 453.53946824563445,
-      "width": 151.77989196777344,
+      "x": 525.2129015177304,
+      "y": 485.2742708565179,
+      "width": 101.1328125,
       "height": 25,
       "angle": 0,
       "strokeColor": "#1e1e1e",
@@ -1545,36 +1812,124 @@
       "opacity": 100,
       "groupIds": [],
       "frameId": null,
-      "index": "aGV",
+      "index": "aFV",
       "roundness": null,
-      "seed": 1997819687,
+      "seed": 2106145829,
       "version": 4,
-      "versionNonce": 1488491194,
+      "versionNonce": 1313173387,
       "isDeleted": false,
       "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257593,
+      "updated": 1791827964549,
+      "created": 1791827964383,
       "link": null,
       "locked": false,
-      "text": "xcld to-mermaid",
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Docs",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "text": "to-mermaid",
       "fontSize": 20,
       "baseFontSize": null,
       "fontFamily": 5,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "Board_Docs",
-      "originalText": "xcld to-mermaid",
+      "originalText": "to-mermaid",
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": 0.5
     },
     {
-      "id": "Board_Export",
+      "id": "Diff_Wait",
       "type": "arrow",
-      "x": 690.7608,
-      "y": 444.00000000000006,
-      "width": 75.31151388327237,
-      "height": 124.22679961851469,
+      "x": 119.094,
+      "y": 638.5,
+      "width": 0,
+      "height": 46,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "aG",
+      "roundness": {
+        "type": 2
+      },
+      "seed": 2069012491,
+      "version": 4,
+      "versionNonce": 1238517701,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1791827953186,
+      "created": 1791827964363,
+      "link": null,
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Diff_Wait",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
+        }
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          24.5
+        ],
+        [
+          0,
+          45
+        ]
+      ],
+      "startBinding": {
+        "elementId": "Diff",
+        "mode": "orbit",
+        "fixedPoint": [
+          0.5001,
+          1
+        ]
+      },
+      "endBinding": {
+        "elementId": "Wait",
+        "mode": "orbit",
+        "fixedPoint": [
+          0.5001,
+          -0.044444444444444446
+        ]
+      },
+      "startArrowhead": null,
+      "endArrowhead": "arrow",
+      "elbowed": false
+    },
+    {
+      "id": "Board_Prune",
+      "type": "arrow",
+      "x": 616.816,
+      "y": 458.345,
+      "width": 203.97699999999998,
+      "height": 86.15499999999997,
       "angle": 0,
       "strokeColor": "#1e1e1e",
       "backgroundColor": "transparent",
@@ -1589,217 +1944,55 @@
       "roundness": {
         "type": 2
       },
-      "seed": 1371158471,
-      "version": 12,
-      "versionNonce": 192089283,
+      "seed": 279935525,
+      "version": 4,
+      "versionNonce": 737262917,
       "isDeleted": false,
-      "boundElements": [
-        {
-          "type": "text",
-          "id": "xCzt_oF5hmQal7-2_qsFe"
+      "boundElements": null,
+      "updated": 1791827953186,
+      "created": 1791827964363,
+      "link": null,
+      "locked": false,
+      "customData": {
+        "xcldMermaidHash": "m1-bbafa63001cdffcb",
+        "xcldOrigin": {
+          "mermaid": {
+            "source": "main",
+            "nodeId": "Board_Prune",
+            "hash": "m1-bbafa63001cdffcb"
+          },
+          "canvas": null,
+          "active": "mermaid"
         }
-      ],
-      "updated": 1790986281805,
-      "created": 1790986257580,
-      "link": null,
-      "locked": false,
+      },
       "points": [
         [
           0,
           0
         ],
         [
-          75.28620000000001,
-          33.99999999999994
+          203.97699999999998,
+          49.65499999999997
         ],
         [
-          75.31151388327237,
-          124.22679961851469
+          203.97699999999998,
+          85.15499999999997
         ]
       ],
       "startBinding": {
         "elementId": "Board",
         "mode": "orbit",
         "fixedPoint": [
-          0.7343789624565853,
-          1
+          0.9999985666244006,
+          0.887166666666667
         ]
       },
       "endBinding": {
-        "elementId": "Export",
+        "elementId": "Prune",
         "mode": "orbit",
         "fixedPoint": [
           0.5001,
           -0.044444444444444446
-        ]
-      },
-      "startArrowhead": null,
-      "endArrowhead": "arrow",
-      "elbowed": false,
-      "moveMidPointsWithElement": false
-    },
-    {
-      "id": "xCzt_oF5hmQal7-2_qsFe",
-      "type": "text",
-      "x": 642.6969214453275,
-      "y": 441.03936421039424,
-      "width": 209.7198944091797,
-      "height": 50,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "aHV",
-      "roundness": null,
-      "seed": 924513991,
-      "version": 4,
-      "versionNonce": 450530790,
-      "isDeleted": false,
-      "boundElements": [],
-      "updated": 1790986448137,
-      "created": 1790986257593,
-      "link": null,
-      "locked": false,
-      "text": "XCLD_AUTO_EXPOR\nT=save",
-      "fontSize": 20,
-      "baseFontSize": null,
-      "fontFamily": 5,
-      "textAlign": "center",
-      "verticalAlign": "middle",
-      "containerId": "Board_Export",
-      "originalText": "XCLD_AUTO_EXPORT=save",
-      "autoResize": true,
-      "lineHeight": 1.25,
-      "labelPosition": 0.5
-    },
-    {
-      "id": "Board_Versions",
-      "type": "arrow",
-      "x": 752.758,
-      "y": 429.833,
-      "width": 323.289,
-      "height": 98.66699999999997,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "aI",
-      "roundness": {
-        "type": 2
-      },
-      "seed": 1744522281,
-      "version": 4,
-      "versionNonce": 1098951847,
-      "isDeleted": false,
-      "boundElements": [],
-      "updated": 1790986257595,
-      "created": 1790986257580,
-      "link": null,
-      "locked": false,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          323.289,
-          48.16699999999997
-        ],
-        [
-          323.289,
-          98.66699999999997
-        ]
-      ],
-      "startBinding": {
-        "elementId": "Board",
-        "mode": "orbit",
-        "fixedPoint": [
-          1.000000661557969,
-          0.8555500000000005
-        ]
-      },
-      "endBinding": {
-        "elementId": "Versions",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.5001,
-          -0.044444444444444446
-        ]
-      },
-      "startArrowhead": null,
-      "endArrowhead": "arrow",
-      "elbowed": false
-    },
-    {
-      "id": "Agent_Merge",
-      "type": "arrow",
-      "x": 1076.047,
-      "y": 98.5,
-      "width": 0,
-      "height": 75,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "aJ",
-      "roundness": {
-        "type": 2
-      },
-      "seed": 558737127,
-      "version": 4,
-      "versionNonce": 612213031,
-      "isDeleted": false,
-      "boundElements": [],
-      "updated": 1790986257595,
-      "created": 1790986257580,
-      "link": null,
-      "locked": false,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          0,
-          39.5
-        ],
-        [
-          0,
-          75
-        ]
-      ],
-      "startBinding": {
-        "elementId": "Agent",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.5001,
-          1
-        ]
-      },
-      "endBinding": {
-        "elementId": "Merge",
-        "mode": "orbit",
-        "fixedPoint": [
-          0.5001,
-          -0.03333333333333333
         ]
       },
       "startArrowhead": null,

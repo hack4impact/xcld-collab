@@ -179,8 +179,8 @@ Design rules valid: 1 file(s), 0 warning(s).
 ```text
 > xcld check examples/demo
 Design check found 2 open items for examples/demo:
-  - open proposal: Versions (rectangle Versions) [open-proposals]
-  - open proposal: Merge (rectangle Merge) [open-proposals]
+  - open proposal: Wait (rectangle Wait) [open-proposals]
+  - open proposal: Prune (rectangle Prune) [open-proposals]
 ```
 
 It also warns, without failing, when a label's text contains a literal `<br>` (Mermaid
