@@ -11,7 +11,7 @@ test("to-mermaid preserves valid IDs and full note IDs", async () => {
   assert.doesNotMatch(output, /note_schem\b/);
 });
 
-// demo-converted.excalidraw is real browser output from boards/examples/demo.mmd. Excalidraw
+// demo-converted.excalidraw is real browser output from an earlier boards/examples/demo.mmd. Excalidraw
 // soft-wraps labels in narrow shapes ("Do\nne"); the author's text is in originalText.
 test("to-mermaid round-trips real converter output with unwrapped labels and Mermaid IDs", async () => {
   const output = await fileToMermaid(path.resolve("tests", "fixtures", "demo-converted.excalidraw"));
